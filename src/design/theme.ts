@@ -227,3 +227,16 @@ export const editorial = {
   },
 };
 
+// Re-export commonly used combinations
+export const themePresets = {
+  pageContainer: cn(theme.bg.primary, theme.text.primary, 'min-h-screen'),
+  cardContainer: cn(theme.components.card.base, theme.components.card.default),
+  cardSubtle: cn(theme.components.card.base, theme.components.card.subtle),
+  primaryButton: theme.components.button.primary,
+  secondaryButton: theme.components.button.secondary,
+  inputField: theme.components.input.base,
+  modalOverlay: cn(theme.utils.overlay, theme.animation.fadeIn),
+  contentSection: cn(theme.bg.secondary, theme.border.default, 'rounded-xl p-4'),
+  divider: cn(theme.border.divider, 'border-t my-4')
+};
+

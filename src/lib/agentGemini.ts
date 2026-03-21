@@ -1,6 +1,14 @@
-import { GoogleGenAI, FunctionDeclaration, FunctionCallingConfigMode, type Content, type Part } from '@google/genai';
+import { type Content, type FunctionDeclaration } from '@google/genai';
 import { logger } from './logger';
-import { applyThinkingConfig } from './gemini/client';
+import {
+  contentToInteractionInput,
+  createInteractionFunctionTools,
+  createInteractionGenerationConfig,
+  extractInteractionFunctionCalls,
+  extractInteractionText,
+  extractInteractionThoughtSummaries,
+  runModelInteraction,
+} from './gemini/interactions';
 import {
   AgentClientConfig,
   AgentFunctionCall,
@@ -14,22 +22,6 @@ import {
 import { applyMemoryUpdate } from './agentLoop';
 import { buildAgentSchemaGuidance, getAgentReadiness } from './agentSchema';
 
-// Type for Gemini API configuration
-type GeminiApiConfig = {
-  tools: Array<{
-    functionDeclarations: Array<{
-      name: string;
-      description?: string;
-      parametersJsonSchema?: Record<string, unknown>;
-    }>;
-  }>;
-  toolConfig: {
-    functionCallingConfig: {
-      mode: FunctionCallingConfigMode;
-    };
-  };
-} & Record<string, unknown>;
-
 import {
   executeReOcrRegion,
   executeExtractFieldsBatch,
@@ -41,18 +33,6 @@ import {
  */
 const MAX_INNER_ROUNDS = 10;
 
-function extractModelText(content?: Content): string {
-  if (!content?.parts) {
-    return '';
-  }
-
-  return content.parts
-    .map((part) => ('text' in part && typeof part.text === 'string' ? part.text : ''))
-    .filter(Boolean)
-    .join('\n')
-    .trim();
-}
-
 /**
  * Execute a full agent turn with multi-turn function calling.
  *
@@ -62,100 +42,73 @@ function extractModelText(content?: Content): string {
  */
 export async function executeAgentTurn(
   systemPrompt: string,
-  contents: Content[],
+  inputContent: Content,
   functions: FunctionDeclaration[],
   fileData: string,
   mimeType: string,
   memory: AgentMemory,
   clientConfig: AgentClientConfig,
   config: AgentLoopConfig,
-  onStep: StepCallback
+  onStep: StepCallback,
+  previousInteractionId?: string,
 ): Promise<AgentTurnResult> {
   if (!clientConfig.apiKey) {
     throw new Error('Please set your API key in settings');
   }
 
-  const genAI = new GoogleGenAI({ apiKey: clientConfig.apiKey });
-  const modelName = clientConfig.model;
-
-  // Build generation config
-  let generationConfig: Record<string, unknown> = {
+  const generationConfig = createInteractionGenerationConfig({
     temperature: config.temperature,
     topP: 0.95,
     maxOutputTokens: config.maxTokens || 4096,
-  };
-  generationConfig = applyThinkingConfig(generationConfig, modelName, clientConfig.thinkingConfig);
-
-  const apiConfig: GeminiApiConfig = {
-    ...generationConfig,
-    tools: [{
-      functionDeclarations: functions.map(f => ({
-        name: f.name,
-        description: f.description,
-        parametersJsonSchema: f.parametersJsonSchema
-      }))
-    }],
-    toolConfig: {
-      functionCallingConfig: {
-        mode: FunctionCallingConfigMode.AUTO,
-      }
-    }
-  };
-
-  const workingContents = [...contents];
+    toolChoice: 'validated',
+  }, clientConfig.thinkingConfig);
+  const tools = createInteractionFunctionTools(functions);
   const allSteps: AgentStep[] = [];
+  const initialInput = contentToInteractionInput(inputContent);
+  let latestInteractionId = previousInteractionId;
+  let nextInput = initialInput;
 
   for (let round = 0; round < MAX_INNER_ROUNDS; round++) {
     if (clientConfig.abortSignal?.aborted) {
       throw new Error('Agent processing cancelled');
     }
 
-    // Call the Gemini API
-    const response = await genAI.models.generateContent({
+    const interaction = await runModelInteraction({
+      apiKey: clientConfig.apiKey,
       model: clientConfig.model,
-      contents: workingContents,
-      config: {
-        ...apiConfig,
-        systemInstruction: systemPrompt,
-        ...(clientConfig.abortSignal ? { abortSignal: clientConfig.abortSignal } : {}),
-      }
+      input: nextInput,
+      systemInstruction: systemPrompt,
+      previousInteractionId: latestInteractionId,
+      tools,
+      generationConfig,
+      abortSignal: clientConfig.abortSignal,
+      store: true,
     });
+    latestInteractionId = interaction.id;
+    const outputs = interaction.outputs || [];
 
-    // Append the model's response Content to conversation history
-    const modelContent = response.candidates?.[0]?.content;
-    if (modelContent) {
-      workingContents.push(modelContent);
-    }
-
-    // Yield thinking steps from text response
-    const responseText = extractModelText(modelContent);
-    if (responseText) {
+    for (const thoughtSummary of extractInteractionThoughtSummaries(outputs)) {
       const thinkingStep: AgentStep = {
         type: 'thinking',
-        content: responseText,
+        content: thoughtSummary,
         timestamp: Date.now(),
       };
       onStep(thinkingStep);
       allSteps.push(thinkingStep);
     }
 
-    // Extract function calls
-    const rawFunctionCalls = response.functionCalls || [];
-    const functionCalls: AgentFunctionCall[] = [];
-
-    for (const fc of rawFunctionCalls) {
-      if (!fc.name || typeof fc.name !== 'string') {
-        logger.warn('Skipping invalid function call - missing or invalid name:', fc);
-        continue;
-      }
-      const rawArgs = fc.args || fc.arguments;
-      const args: Record<string, unknown> = typeof rawArgs === 'object' && rawArgs !== null
-        ? rawArgs as Record<string, unknown>
-        : {};
-      functionCalls.push({ name: fc.name, arguments: args });
+    const responseText = extractInteractionText(outputs);
+    if (responseText) {
+      const responseStep: AgentStep = {
+        type: 'thinking',
+        content: responseText,
+        timestamp: Date.now(),
+      };
+      onStep(responseStep);
+      allSteps.push(responseStep);
     }
 
-    // If no function calls, the model is done for this turn
+    const functionCalls: AgentFunctionCall[] = extractInteractionFunctionCalls(outputs);
     if (functionCalls.length === 0) {
       break;
     }
@@ -193,26 +146,21 @@ export async function executeAgentTurn(
     onStep(resultStep);
     allSteps.push(resultStep);
 
-    const functionResponseParts: Part[] = [{
-      functionResponse: {
-        name: fc.name,
-        response: {
-          output: {
-            success: result.success,
-            error: result.error ?? null,
-            data: result.data ?? null,
-          }
-        },
-      }
+    nextInput = [{
+      type: 'function_result',
+      call_id: fc.id || `${fc.name}-${round + 1}`,
+      name: fc.name,
+      is_error: !result.success,
+      result: {
+        success: result.success,
+        error: result.error ?? null,
+        data: result.data ?? null,
+      },
     }];
-
-    // Send all function results back to Gemini as a user turn with functionResponse parts
-    workingContents.push({ role: 'user', parts: functionResponseParts });
-    // Loop continues - model gets to react to results
   }
 
   return {
-    updatedContents: workingContents,
+    interactionId: latestInteractionId,
     finished: false,
     steps: allSteps,
   };

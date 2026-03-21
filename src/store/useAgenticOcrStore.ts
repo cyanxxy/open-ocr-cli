@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import { useSettingsStore } from './useSettingsStore';
 import { logger } from '../lib/logger';
 import { AgentMemory, AgentStep } from '../lib/agentTypes';
+import { createAbortController, createRunId } from './base/BaseOcrStore';
 
 // --- Type Definitions ---
 
@@ -57,6 +58,7 @@ export type AgentStatus = 'idle' | 'initializing' | 'processing' | 'analyzing' |
  * Represents a function call made by the agent
  */
 export interface AgentFunctionCall {
+  id?: string;
   name: string;
   arguments: Record<string, unknown>;
   result?: unknown;
@@ -111,6 +113,8 @@ interface AgenticOcrState {
   copyTimeoutId: ReturnType<typeof setTimeout> | null;
   /** AbortController for cancelling agent operations */
   abortController: AbortController | null;
+  /** Identifier for the currently active run */
+  activeRunId: string | null;
 
   // --- Actions ---
   /**
@@ -233,11 +237,14 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
   isCopied: false,
   copyTimeoutId: null,
   abortController: null,
+  activeRunId: null,
 
   startAgent: async (file: File, imageData: string, configOverrides?: Partial<AgentConfig>) => {
     const config = { ...DEFAULT_CONFIG, ...configOverrides };
-
-    const abortController = new AbortController();
+    const previousAbortController = get().abortController;
+    const abortController = createAbortController();
+    const runId = createRunId();
+    const isCurrentRun = () => get().activeRunId === runId;
 
     const documentMemory: DocumentMemory = {
       sessionId: generateSessionId(),
@@ -264,7 +271,9 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
       config,
       functionCalls: [],
       abortController,
+      activeRunId: runId,
     });
+    previousAbortController?.abort();
 
     get().addLog({
       type: 'info',
@@ -301,7 +310,14 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
           // Thinking is controlled by global settings, not per-agent config
         },
         (progress: number, message: string) => {
-          set({ progress: Math.max(0, Math.min(100, progress)), currentStep: message });
+          if (!isCurrentRun() || abortController.signal.aborted) {
+            return;
+          }
+
+          set({
+            progress: Math.max(0, Math.min(100, progress)),
+            currentStep: message,
+          });
         }
       );
 
@@ -309,17 +325,21 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
       let iteratorResult = await generator.next();
 
       while (!iteratorResult.done) {
-        const currentAbortController = get().abortController;
-        if (!get().isProcessing || currentAbortController?.signal.aborted) {
+        if (!isCurrentRun() || !get().isProcessing || abortController.signal.aborted) {
           logger.info('Agent stopped by user - exiting loop');
           return;
         }
 
         const step = iteratorResult.value as AgentStep;
+        const logType = step.type === 'function_call'
+          ? 'function_call'
+          : step.type === 'error'
+            ? 'error'
+            : 'info';
 
         // Update state based on agent step
         get().addLog({
-          type: step.type === 'thinking' ? 'info' : step.type as 'info' | 'warning' | 'error' | 'function_call',
+          type: logType,
           message: step.content,
           details: step.functionCall ? { functionCall: step.functionCall, result: step.functionResult } : undefined,
         });
@@ -344,11 +364,10 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
               currentIteration: parseInt(match[1], 10),
             });
           }
-        } else if (step.type === 'result' && step.content.includes('completed')) {
+        } else if (step.type === 'result') {
           set({
-            status: 'completed',
+            status: 'processing',
             currentStep: step.content,
-            isProcessing: false,
           });
         } else if (step.type === 'error') {
           set({
@@ -364,14 +383,17 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
         }
 
         // Check again before getting next step (in case stop was called during processing)
-        const checkAbortController = get().abortController;
-        if (!get().isProcessing || checkAbortController?.signal.aborted) {
+        if (!isCurrentRun() || !get().isProcessing || abortController.signal.aborted) {
           logger.info('Agent stopped by user - exiting loop');
           return;
         }
 
         // Get next step
         iteratorResult = await generator.next();
+      }
+
+      if (!isCurrentRun()) {
+        return;
       }
 
       // NOW we have the final memory from the generator's return value
@@ -406,6 +428,8 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
           error: 'Agent did not extract any fields. The document may not contain structured data, or the agent needs different configuration. Try Simple OCR for full text extraction instead.',
           isProcessing: false,
           progress: 100,
+          abortController: null,
+          activeRunId: null,
         });
 
         get().addLog({
@@ -421,6 +445,8 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
           currentStep: 'Agent processing completed',
           progress: 100,
           isProcessing: false,
+          abortController: null,
+          activeRunId: null,
         });
       }
 
@@ -430,6 +456,10 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
       });
 
     } catch (error) {
+      if (!isCurrentRun()) {
+        return;
+      }
+
       const errorMessage = error instanceof Error ? error.message : 'Agent processing failed';
       if (abortController.signal.aborted || errorMessage.toLowerCase().includes('abort') || errorMessage.toLowerCase().includes('cancel')) {
         logger.info('Agent processing cancelled');
@@ -443,6 +473,8 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
         error: errorMessage,
         isProcessing: false,
         progress: 100,
+        abortController: null,
+        activeRunId: null,
       });
 
       get().addLog({
@@ -456,16 +488,15 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
   stopAgent: () => {
     // Abort any pending operations
     const { abortController } = get();
-    if (abortController) {
-      abortController.abort();
-    }
 
     set({
       isProcessing: false,
       status: 'stopped',
       currentStep: 'Agent stopped by user',
       abortController: null,
+      activeRunId: null,
     });
+    abortController?.abort();
 
     get().addLog({
       type: 'warning',
@@ -615,6 +646,7 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
       isCopied: false,
       copyTimeoutId: null,
       abortController: null,
+      activeRunId: null,
     });
   },
 

@@ -10,6 +10,7 @@ import { FileDropzone } from '../components/organisms/FileDropzone';
 import { BulkExtractedContent } from '../components/BulkExtractedContent';
 import { BulkFileList } from '../components/organisms/BulkFileList';
 import { cn, editorial } from '../design/theme';
+import { FILE_CONSTRAINTS } from '../constants';
 
 // Type for the component's local state - uses file ID as key for stable tracking
 interface ExpandedState {
@@ -17,11 +18,8 @@ interface ExpandedState {
 }
 
 // Constants
-const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024; // 20MB
-const ACCEPTED_FILE_TYPES = {
-  'application/pdf': ['.pdf'],
-  'image/*': ['.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif'],
-};
+const MAX_FILE_SIZE_BYTES = FILE_CONSTRAINTS.MAX_SIZE;
+const ACCEPTED_FILE_TYPES = FILE_CONSTRAINTS.ACCEPTED_MIME_TYPES;
 
 const PaperTexture = () => (
   <svg className="absolute inset-0 w-full h-full opacity-[0.015] dark:opacity-[0.03] pointer-events-none" aria-hidden="true">

@@ -40,6 +40,7 @@ describe('BaseOcrStore', () => {
         isCopied: false,
         copyTimeoutId: null,
         abortController: null,
+        activeRunId: null,
       });
     });
   });

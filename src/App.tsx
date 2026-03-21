@@ -1,5 +1,6 @@
-import { useState, useCallback, useEffect, lazy, Suspense } from 'react';
+import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
 import { Routes, Route } from 'react-router';
+import { useShallow } from 'zustand/react/shallow';
 import { LayoutProvider } from './components/layout/Layout';
 import { ApiKeyBanner } from './components/ApiKeyBanner';
 import { SettingsModal } from './components/modals/SettingsModal';
@@ -15,25 +16,38 @@ const AdvancedOCR = lazy(() => import('./pages/AdvancedOCR').then(module => ({ d
 const AgenticOCR = lazy(() => import('./pages/AgenticOCR').then(module => ({ default: module.default })));
 
 function App() {
-  const apiKey = useSettingsStore(s => s.apiKey);
-  const setApiKey = useSettingsStore(s => s.setApiKey);
-  const theme = useSettingsStore(s => s.theme);
-  const setTheme = useSettingsStore(s => s.setTheme);
-  const model = useSettingsStore(s => s.model);
-  const setModel = useSettingsStore(s => s.setModel);
-  const thinkingConfig = useSettingsStore(s => s.thinkingConfig);
-  const updateThinkingConfig = useSettingsStore(s => s.updateThinkingConfig);
+  const { apiKey, hasHydrated, setApiKey, theme, setTheme, model, setModel, thinkingConfig, updateThinkingConfig } = useSettingsStore(
+    useShallow((state) => ({
+      apiKey: state.apiKey,
+      hasHydrated: state.hasHydrated,
+      setApiKey: state.setApiKey,
+      theme: state.theme,
+      setTheme: state.setTheme,
+      model: state.model,
+      setModel: state.setModel,
+      thinkingConfig: state.thinkingConfig,
+      updateThinkingConfig: state.updateThinkingConfig,
+    }))
+  );
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [showBanner, setShowBanner] = useState(!apiKey);
+  const [isApiBannerDismissed, setIsApiBannerDismissed] = useState(false);
+  const previousApiKeyRef = useRef(apiKey);
 
-
-  // Apply theme class to document
   useEffect(() => {
-    document.documentElement.classList.remove('light', 'dark', 'amoled');
-    document.documentElement.classList.add(theme);
-  }, [theme]);
+    if (!hasHydrated) {
+      return;
+    }
 
-  // Memoize event handlers to prevent unnecessary re-renders
+    const previouslyHadApiKey = Boolean(previousApiKeyRef.current);
+    const hasApiKey = Boolean(apiKey);
+
+    if (previouslyHadApiKey && !hasApiKey) {
+      setIsApiBannerDismissed(false);
+    }
+
+    previousApiKeyRef.current = apiKey;
+  }, [apiKey, hasHydrated]);
+
   const handleOpenSettings = useCallback(() => {
     setIsSettingsOpen(true);
   }, []);
@@ -43,20 +57,28 @@ function App() {
     document.getElementById('settings-button')?.focus();
   }, []);
 
-  const handleSaveSettings = useCallback((newApiKey: string, newTheme: typeof theme, newModel: typeof model, newThinkingConfig: typeof thinkingConfig) => {
-    setApiKey(newApiKey);
+  const handleSaveSettings = useCallback(async (newApiKey: string, newTheme: typeof theme, newModel: typeof model, newThinkingConfig: typeof thinkingConfig) => {
+    await setApiKey(newApiKey);
     setTheme(newTheme);
     setModel(newModel);
     updateThinkingConfig(newThinkingConfig);
     setIsSettingsOpen(false);
-    setShowBanner(false);
     document.getElementById('settings-button')?.focus();
   }, [setApiKey, setTheme, setModel, updateThinkingConfig]);
 
   const handleCloseBanner = useCallback(() => {
-    setShowBanner(false);
+    setIsApiBannerDismissed(true);
   }, []);
 
+  const showBanner = hasHydrated && !apiKey && !isApiBannerDismissed;
+
+  if (!hasHydrated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <LoadingIndicator size="lg" text="Loading settings..." />
+      </div>
+    );
+  }
 
   return (
     <>

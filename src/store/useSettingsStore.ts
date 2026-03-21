@@ -3,6 +3,8 @@ import { persist } from 'zustand/middleware';
 import { encryptData, decryptData } from '../lib/crypto';
 import { logger } from '../lib/logger';
 import type { GeminiModel, ThinkingConfig, ThinkingLevel } from '../lib/gemini/types';
+import { createSelectors } from './createSelectors';
+import { STORAGE_KEYS } from '../constants';
 
 // Re-export shared Gemini config types for convenience
 export type { GeminiModel as ModelType, ThinkingConfig, ThinkingLevel };
@@ -19,6 +21,21 @@ export type ThemeMode = 'light' | 'dark' | 'amoled';
 
 const VALID_MODELS: ModelType[] = ['gemini-3.1-pro-preview', 'gemini-3-flash-preview'];
 const VALID_THEMES: ThemeMode[] = ['light', 'dark', 'amoled'];
+
+const DEFAULT_THINKING_CONFIG: ThinkingConfig = {
+  level: 'HIGH',
+  includeThoughts: false,
+};
+
+function applyTheme(theme: ThemeMode) {
+  document.documentElement.classList.remove('light', 'dark', 'amoled');
+  if (theme === 'amoled') {
+    // AMOLED needs both: 'dark' for base dark styles, 'amoled' for deeper black overrides
+    document.documentElement.classList.add('dark', 'amoled');
+  } else {
+    document.documentElement.classList.add(theme);
+  }
+}
 
 function normalizeThinkingConfigForModel(
   model: ModelType,
@@ -38,6 +55,71 @@ function normalizeThinkingConfigForModel(
       : 'HIGH',
     includeThoughts: Boolean(thinkingConfig.includeThoughts),
   };
+}
+
+function validateRehydratedState(state: SettingsState): Partial<SettingsState> {
+  const patch: Partial<SettingsState> = {};
+
+  // Validate model - migrate legacy Gemini 3 Pro to Gemini 3.1 Pro
+  let migratedModel = state.model;
+  if (migratedModel === ('gemini-3-pro-preview' as ModelType)) {
+    migratedModel = 'gemini-3.1-pro-preview';
+  }
+  if (!VALID_MODELS.includes(migratedModel)) {
+    migratedModel = 'gemini-3-flash-preview';
+  }
+  if (migratedModel !== state.model) {
+    patch.model = migratedModel;
+  }
+
+  if (!VALID_THEMES.includes(state.theme)) {
+    patch.theme = 'light';
+  }
+
+  if (typeof state.handwritingMode !== 'boolean') {
+    patch.handwritingMode = false;
+  }
+
+  if (!state.thinkingConfig || typeof state.thinkingConfig !== 'object') {
+    patch.thinkingConfig = DEFAULT_THINKING_CONFIG;
+    return patch;
+  }
+
+  const normalizedThinkingConfig = normalizeThinkingConfigForModel(
+    migratedModel,
+    state.thinkingConfig,
+  );
+
+  if (
+    normalizedThinkingConfig.level !== state.thinkingConfig.level
+    || normalizedThinkingConfig.includeThoughts !== state.thinkingConfig.includeThoughts
+  ) {
+    patch.thinkingConfig = normalizedThinkingConfig;
+  }
+
+  return patch;
+}
+
+function readPersistedSettingsSnapshot(): Partial<SettingsState> | null {
+  try {
+    const raw = localStorage.getItem('gemini-settings');
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw) as { state?: Partial<SettingsState> };
+    if (parsed && parsed.state && typeof parsed.state === 'object') {
+      return parsed.state;
+    }
+  } catch (error) {
+    logger.error('Failed to read persisted settings snapshot:', error);
+  }
+
+  return null;
+}
+
+function queueSettingsPatch(partial: Partial<SettingsState>) {
+  queueMicrotask(() => {
+    useSettingsStoreBase.setState(partial);
+  });
 }
 
 /**
@@ -60,6 +142,8 @@ interface SettingsState {
   theme: ThemeMode;
   /** Thinking mode configuration for Gemini preview models */
   thinkingConfig: ThinkingConfig;
+  /** Whether Zustand has finished rehydrating persisted state */
+  hasHydrated: boolean;
 
   /**
    * Sets the API key. The key is encrypted before being stored in localStorage
@@ -98,34 +182,35 @@ interface SettingsState {
  * - Selected AI model.
  * - Handwriting mode preference.
  * - Application theme.
- * - Onboarding completion status.
  *
  * It uses `persist` middleware to save settings (excluding the raw API key, which is handled specially)
  * to local storage. The API key is encrypted via `encryptData` before saving to `localStorage`
  * (under the key 'gemini-api-key') and decrypted via `decryptData` during the `onRehydrateStorage`
  * process. The theme is also applied to the document element during rehydration and when set.
  */
-export const useSettingsStore = create<SettingsState>()(
+const useSettingsStoreBase = create<SettingsState>()(
   persist(
     (set) => ({
       apiKey: '',
       model: 'gemini-3-flash-preview',
       handwritingMode: false,
       theme: 'light',
-      thinkingConfig: {
-        level: 'HIGH', // Default thinking level for Gemini 3
-        includeThoughts: false,
-      },
+      thinkingConfig: DEFAULT_THINKING_CONFIG,
+      hasHydrated: false,
+
       setApiKey: async (key: string) => {
+        const trimmedKey = key.trim();
         try {
-          const trimmedKey = key.trim();
-          const encryptedKey = await encryptData(trimmedKey);
-          localStorage.setItem('gemini-api-key', encryptedKey);
-          set({ apiKey: trimmedKey });
+          if (!trimmedKey) {
+            localStorage.removeItem(STORAGE_KEYS.API_KEY);
+          } else {
+            const encryptedKey = await encryptData(trimmedKey);
+            localStorage.setItem(STORAGE_KEYS.API_KEY, encryptedKey);
+          }
         } catch (error) {
           logger.error('Failed to encrypt API key:', error);
-          set({ apiKey: key.trim() });
         }
+        set({ apiKey: trimmedKey });
       },
       setModel: (model: ModelType) => {
         if (!VALID_MODELS.includes(model)) {
@@ -140,8 +225,7 @@ export const useSettingsStore = create<SettingsState>()(
       setHandwritingMode: (enabled: boolean) => set({ handwritingMode: enabled }),
       setTheme: (theme: ThemeMode) => {
         if (!VALID_THEMES.includes(theme)) return;
-        document.documentElement.classList.remove('light', 'dark', 'amoled');
-        document.documentElement.classList.add(theme);
+        applyTheme(theme);
         set({ theme });
       },
       updateThinkingConfig: (config) => set((state) => {
@@ -165,69 +249,57 @@ export const useSettingsStore = create<SettingsState>()(
         return async (state, error) => {
           if (error) {
             logger.error('Failed to rehydrate settings:', error);
+            queueSettingsPatch({ hasHydrated: true });
             return;
           }
-          
-          if (!state) return;
+
+          if (!state) {
+            queueSettingsPatch({ hasHydrated: true });
+            return;
+          }
 
           try {
-            // Validate and clean up the rehydrated state
-            // Validate model - migrate legacy Gemini 3 Pro to Gemini 3.1 Pro
-            if (state.model === 'gemini-3-pro-preview') {
-              state.model = 'gemini-3.1-pro-preview';
-            }
+            const persistedSnapshot = readPersistedSettingsSnapshot();
+            const validationTarget = {
+              ...state,
+              ...persistedSnapshot,
+            } as SettingsState;
+            const patch = validateRehydratedState(validationTarget);
+            const theme = patch.theme ?? validationTarget.theme;
+            applyTheme(theme);
 
-            // Validate model - migrate unknown models to Gemini 3 Flash
-            if (!VALID_MODELS.includes(state.model)) {
-              state.model = 'gemini-3-flash-preview';
-            }
-
-            // Validate theme
-            if (!VALID_THEMES.includes(state.theme)) {
-              state.theme = 'light';
-            }
-
-            // Validate handwriting mode
-            if (typeof state.handwritingMode !== 'boolean') {
-              state.handwritingMode = false;
-            }
-
-            if (!state.thinkingConfig || typeof state.thinkingConfig !== 'object') {
-              state.thinkingConfig = {
-                level: 'HIGH',
-                includeThoughts: false,
-              };
-            } else {
-              state.thinkingConfig = normalizeThinkingConfigForModel(state.model, state.thinkingConfig);
-            }
-
-            // Restore theme
-            document.documentElement.classList.remove('light', 'dark', 'amoled');
-            document.documentElement.classList.add(state.theme);
-
-            // Restore API key using proper state update without circular reference
-            const encryptedKey = localStorage.getItem('gemini-api-key');
+            const encryptedKey = localStorage.getItem(STORAGE_KEYS.API_KEY);
             if (encryptedKey) {
               const decryptedKey = await decryptData(encryptedKey);
               if (decryptedKey && typeof decryptedKey === 'string') {
-                // Update state directly
-                state.apiKey = decryptedKey;
+                patch.apiKey = decryptedKey;
               }
             }
-          } catch (error) {
-            logger.error('Failed to decrypt API key or validate settings during rehydration:', error);
-            // Set safe defaults if validation/decryption fails
-            state.apiKey = '';
-            state.model = 'gemini-3-flash-preview';
-            state.theme = 'light';
-            state.handwritingMode = false;
-            state.thinkingConfig = {
-              level: 'HIGH',
-              includeThoughts: false,
-            };
+
+            queueSettingsPatch({
+              ...patch,
+              hasHydrated: true,
+            });
+          } catch (rehydrationError) {
+            logger.error('Failed to validate settings during rehydration:', rehydrationError);
+            applyTheme('light');
+            queueSettingsPatch({
+              apiKey: '',
+              model: 'gemini-3-flash-preview',
+              handwritingMode: false,
+              theme: 'light',
+              thinkingConfig: DEFAULT_THINKING_CONFIG,
+              hasHydrated: true,
+            });
           }
         };
       },
     }
   )
 );
+
+if (useSettingsStoreBase.persist.hasHydrated()) {
+  useSettingsStoreBase.setState({ hasHydrated: true });
+}
+
+export const useSettingsStore = createSelectors(useSettingsStoreBase);

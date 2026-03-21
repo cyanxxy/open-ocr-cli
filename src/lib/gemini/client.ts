@@ -79,15 +79,10 @@ export interface GenerativeModel {
 }
 
 /**
- * Get or create a Gemini model client
- * @param apiKey - The Google AI API key
- * @param modelName - The model name to use
- * @returns The configured GenerativeModel instance
+ * Get or create a raw GoogleGenAI client for APIs that need direct SDK access
+ * such as the Interactions API.
  */
-export function getModelClient(
-  apiKey: string,
-  modelName: GeminiModel = 'gemini-3-flash-preview'
-): GenerativeModel {
+export function getGenAIClient(apiKey: string): GoogleGenAI {
   if (!apiKey) {
     throw new OcrError(
       OcrErrorType.API_KEY_MISSING,
@@ -96,7 +91,7 @@ export function getModelClient(
   }
 
   const cacheKey = apiKey;
-  
+
   // Get or create GoogleGenAI instance
   let genAI: GoogleGenAI;
   if (clientCache.has(cacheKey)) {
@@ -117,6 +112,21 @@ export function getModelClient(
       );
     }
   }
+
+  return genAI;
+}
+
+/**
+ * Get or create a Gemini model client
+ * @param apiKey - The Google AI API key
+ * @param modelName - The model name to use
+ * @returns The configured GenerativeModel instance
+ */
+export function getModelClient(
+  apiKey: string,
+  modelName: GeminiModel = 'gemini-3-flash-preview'
+): GenerativeModel {
+  const genAI = getGenAIClient(apiKey);
 
   return {
     generateContent: async (params: GenerationParams) => {

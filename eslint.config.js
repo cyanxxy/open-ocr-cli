@@ -36,6 +36,13 @@ export default tseslint.config(
       // React Hooks rules for all files that might use hooks
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+        },
+      ],
     },
   },
 
@@ -113,6 +120,14 @@ export default tseslint.config(
       // Enforce strict type safety in tests - this is a production project
       '@typescript-eslint/no-explicit-any': 'error',
       'react/display-name': 'off', // Allow anonymous components in tests
+    },
+  },
+
+  // Test utilities - react-refresh not applicable
+  {
+    files: ['**/test-utils/**/*.{jsx,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
     },
   }
 );

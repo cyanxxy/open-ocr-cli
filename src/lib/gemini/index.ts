@@ -14,3 +14,6 @@ export * from './extraction';
 
 // Export URL operations
 export * from './operations';
+
+// Export interaction helpers for newer tooling flows
+export * from './interactions';

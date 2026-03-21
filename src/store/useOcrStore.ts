@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 import {
   extractTextFromFile,
   ExtractedContent,
@@ -7,12 +8,14 @@ import {
 import { useSettingsStore } from './useSettingsStore';
 import { logger } from '../lib/logger';
 import { validateFile } from '../lib/fileUtils';
-import { 
-  BaseOcrStore, 
-  createBaseOcrSlice, 
+import {
+  BaseOcrStore,
+  createBaseOcrSlice,
   createAbortController,
-  handleOcrError 
+  createRunId,
+  handleOcrError
 } from './base/BaseOcrStore';
+import { createSelectors } from './createSelectors';
 
 /**
  * OCR-specific state extending the base store
@@ -60,7 +63,8 @@ type OcrState = BaseOcrStore & OcrSpecificState & OcrSpecificActions;
  * - Copying to clipboard functionality (from BaseOcrStore)
  * - Providing actions to process a file
  */
-export const useOcrStore = create<OcrState>((set, get) => ({
+const useOcrStoreBase = create<OcrState>()(
+  devtools((set, get) => ({
   // Base store functionality
   ...createBaseOcrSlice(set, get),
   
@@ -71,8 +75,6 @@ export const useOcrStore = create<OcrState>((set, get) => ({
 
   // OCR-specific actions
   processFile: async (file: File, apiKey: string, handwritingMode: boolean) => {
-    const abortController = createAbortController();
-
     const validation = validateFile(file);
     if (!validation.valid) {
       set({ error: validation.error || 'Invalid file', isProcessing: false });
@@ -81,6 +83,10 @@ export const useOcrStore = create<OcrState>((set, get) => ({
 
     // Get model and thinkingConfig from settings store
     const { model, thinkingConfig } = useSettingsStore.getState();
+    const previousAbortController = get().abortController;
+    const abortController = createAbortController();
+    const runId = createRunId();
+    const isCurrentRun = () => get().activeRunId === runId;
 
     set({
       isProcessing: true,
@@ -88,8 +94,10 @@ export const useOcrStore = create<OcrState>((set, get) => ({
       fileName: file.name,
       progress: 0,
       extractedContent: null,
-      abortController
+      abortController,
+      activeRunId: runId,
     });
+    previousAbortController?.abort();
 
     try {
       // Read file as data URL
@@ -100,15 +108,22 @@ export const useOcrStore = create<OcrState>((set, get) => ({
         reader.readAsDataURL(file);
       });
 
+      if (!isCurrentRun() || abortController.signal.aborted) {
+        return;
+      }
+
       // Streaming callbacks to update progress
       const callbacks: StreamingCallbacks = {
         onProgress: (chunk) => {
           // Check if cancelled before processing each chunk
-          if (abortController.signal.aborted) {
+          if (abortController.signal.aborted || !isCurrentRun()) {
             throw new Error('Extraction cancelled');
           }
           logger.debug('Received chunk:', chunk.length);
           set((state) => {
+            if (state.activeRunId !== runId) {
+              return {};
+            }
             const remaining = 0.9 - state.progress;
             const increment = remaining * 0.15;
             return { progress: Math.min(state.progress + Math.max(increment, 0.005), 0.9) };
@@ -116,7 +131,7 @@ export const useOcrStore = create<OcrState>((set, get) => ({
         },
         onComplete: (content) => {
           // Check if cancelled before completing
-          if (abortController.signal.aborted) {
+          if (abortController.signal.aborted || !isCurrentRun()) {
             return;
           }
           logger.info('Text extraction completed');
@@ -125,12 +140,13 @@ export const useOcrStore = create<OcrState>((set, get) => ({
             isProcessing: false,
             progress: 1,
             error: null,
-            abortController: null
+            abortController: null,
+            activeRunId: null,
           });
         },
         onError: (error) => {
           // Don't show error if it was an abort
-          if (abortController.signal.aborted) {
+          if (abortController.signal.aborted || !isCurrentRun()) {
             return;
           }
           const errorMessage = handleOcrError(error, 'Text extraction failed');
@@ -138,11 +154,12 @@ export const useOcrStore = create<OcrState>((set, get) => ({
             error: errorMessage,
             isProcessing: false,
             progress: 0,
-            abortController: null
+            abortController: null,
+            activeRunId: null,
           });
         }
       };
-      
+
       // Log extraction start
       logger.info('Starting text extraction');
       set({ progress: 0.1 });
@@ -163,6 +180,10 @@ export const useOcrStore = create<OcrState>((set, get) => ({
       );
 
     } catch (error) {
+      if (!isCurrentRun()) {
+        return;
+      }
+
       // Check if it was cancelled
       if (abortController.signal.aborted || (error instanceof Error && error.message === 'Extraction cancelled')) {
         logger.info('Extraction cancelled by user');
@@ -170,7 +191,8 @@ export const useOcrStore = create<OcrState>((set, get) => ({
           error: 'Extraction cancelled',
           isProcessing: false,
           progress: 0,
-          abortController: null
+          abortController: null,
+          activeRunId: null,
         });
       } else {
         const errorMessage = handleOcrError(error, 'Failed to process file');
@@ -178,7 +200,8 @@ export const useOcrStore = create<OcrState>((set, get) => ({
           error: errorMessage,
           isProcessing: false,
           progress: 0,
-          abortController: null
+          abortController: null,
+          activeRunId: null,
         });
       }
     }
@@ -187,14 +210,15 @@ export const useOcrStore = create<OcrState>((set, get) => ({
   cancelExtraction: () => {
     const { abortController } = get();
     if (abortController) {
-      abortController.abort();
-      logger.info('Extraction cancelled');
       set({
         isProcessing: false,
         error: 'Extraction cancelled',
         progress: 0,
-        abortController: null
+        abortController: null,
+        activeRunId: null,
       });
+      abortController.abort();
+      logger.info('Extraction cancelled');
     }
   },
 
@@ -227,4 +251,6 @@ export const useOcrStore = create<OcrState>((set, get) => ({
     // Use base copyToClipboard method
     await get().copyToClipboard(content);
   }
-}));
+}), { name: 'OcrStore', enabled: import.meta.env.DEV }));
+
+export const useOcrStore = createSelectors(useOcrStoreBase);

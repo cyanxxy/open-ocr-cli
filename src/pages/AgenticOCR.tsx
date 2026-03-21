@@ -11,6 +11,7 @@ import { FileDropzone } from '../components/organisms/FileDropzone';
 import { ApiKeyPrompt } from '../components/organisms/ApiKeyPrompt';
 import ExtractedContent from '../components/ExtractedContent';
 import { cn, editorial } from '../design/theme';
+import { FILE_CONSTRAINTS } from '../constants';
 
 import { useImageUpload } from '../hooks/useImageUpload';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
@@ -322,7 +323,7 @@ export default function AgenticOCR() {
                     'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.heic', '.heif'],
                     'application/pdf': ['.pdf']
                   }}
-                  maxSize={20 * 1024 * 1024}
+                  maxSize={FILE_CONSTRAINTS.MAX_SIZE}
                 />
               ) : (
                 <div className="animate-scale-in">

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { createAbortController, createBaseOcrSlice, handleOcrError, type BaseOcrStore } from './base/BaseOcrStore';
+import { createAbortController, createBaseOcrSlice, createRunId, handleOcrError, type BaseOcrStore } from './base/BaseOcrStore';
 import { readFileAsDataUrl, validateFile } from '../lib/fileUtils';
 import { logger } from '../lib/logger';
 import { useSettingsStore } from './useSettingsStore';
@@ -59,8 +59,11 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
       return;
     }
 
-    const abortController = createAbortController();
     const { model, thinkingConfig } = useSettingsStore.getState();
+    const previousAbortController = get().abortController;
+    const abortController = createAbortController();
+    const runId = createRunId();
+    const isCurrentRun = () => get().activeRunId === runId;
     let preset;
     try {
       preset = getExtractionPreset(get().presetId);
@@ -79,12 +82,14 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
       progress: 0.05,
       result: null,
       abortController,
+      activeRunId: runId,
     });
+    previousAbortController?.abort();
 
     try {
       const dataUrl = await readFileAsDataUrl(file);
 
-      if (abortController.signal.aborted) {
+      if (abortController.signal.aborted || !isCurrentRun()) {
         throw new Error('Extraction cancelled');
       }
 
@@ -96,19 +101,22 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
         { abortSignal: abortController.signal },
         {
           onProgress: (chunk) => {
-            if (abortController.signal.aborted) {
+            if (abortController.signal.aborted || !isCurrentRun()) {
               throw new Error('Extraction cancelled');
             }
 
             logger.debug('Template extraction chunk received:', chunk.length);
             set((state) => {
+              if (state.activeRunId !== runId) {
+                return {};
+              }
               const remaining = 0.9 - state.progress;
               const increment = remaining * 0.18;
               return { progress: Math.min(state.progress + Math.max(increment, 0.01), 0.9) };
             });
           },
           onComplete: (result) => {
-            if (abortController.signal.aborted) {
+            if (abortController.signal.aborted || !isCurrentRun()) {
               return;
             }
 
@@ -118,10 +126,11 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
               progress: 1,
               error: null,
               abortController: null,
+              activeRunId: null,
             });
           },
           onError: (error) => {
-            if (abortController.signal.aborted) {
+            if (abortController.signal.aborted || !isCurrentRun()) {
               return;
             }
 
@@ -130,17 +139,23 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
               isProcessing: false,
               progress: 0,
               abortController: null,
+              activeRunId: null,
             });
           },
         },
       );
     } catch (error) {
+      if (!isCurrentRun()) {
+        return;
+      }
+
       if (abortController.signal.aborted || (error instanceof Error && error.message === 'Extraction cancelled')) {
         set({
           error: 'Extraction cancelled',
           isProcessing: false,
           progress: 0,
           abortController: null,
+          activeRunId: null,
         });
         return;
       }
@@ -150,6 +165,7 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
         isProcessing: false,
         progress: 0,
         abortController: null,
+        activeRunId: null,
       });
     }
   },
@@ -157,13 +173,14 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
   cancelExtraction: () => {
     const { abortController } = get();
     if (abortController) {
-      abortController.abort();
       set({
         isProcessing: false,
         error: 'Extraction cancelled',
         progress: 0,
         abortController: null,
+        activeRunId: null,
       });
+      abortController.abort();
     }
   },
 

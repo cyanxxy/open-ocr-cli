@@ -1,4 +1,5 @@
-import { getModelClient, applyThinkingConfig, isGemini3Model } from './client';
+import { getModelClient, isGemini3Model } from './client';
+import { createInteractionGenerationConfig, extractInteractionText, runModelInteraction } from './interactions';
 import { logger } from '../logger';
 import type { UrlResult } from '../../store/useWebOcrStore';
 import type { GeminiModel, ThinkingConfig } from './types';
@@ -6,7 +7,7 @@ import type { GeminiModel, ThinkingConfig } from './types';
 /**
  * Extract text from multiple URLs using Gemini's URL context feature
  * Following the official documentation: https://ai.google.dev/gemini-api/docs/url-context
- * 
+ *
  * @param urls - Array of URLs to extract content from
  * @param apiKey - The Gemini API key
  * @param analysisMode - How to analyze the URLs
@@ -26,13 +27,11 @@ export async function extractTextFromUrls(
   comparisonAnalysis?: string;
 }> {
   try {
-    const modelClient = getModelClient(apiKey, model);
-    
     logger.info(`Processing ${urls.length} URLs with mode: ${analysisMode}`);
-    
+
     // Build the prompt with URLs embedded in the text
     let prompt = '';
-    
+
     if (analysisMode === 'individual') {
       prompt = `Analyze each of the following URLs and extract their text content individually:
 
@@ -78,44 +77,54 @@ Provide:
 
 Format as a structured comparison analysis.`;
     }
-    
+
     // Configure generation parameters with model-specific defaults (Gemini 3 defaults to temperature 1.0)
-    let generationConfig: Record<string, unknown> = {
+    const generationConfig = createInteractionGenerationConfig({
       temperature: isGemini3Model(model) ? 1.0 : 0.2,
       maxOutputTokens: 8192,
       topP: 0.95,
-      topK: 40
-    };
+    }, thinkingConfig);
+    const responseFormat = analysisMode === 'individual'
+      ? {
+          type: 'object',
+          additionalProperties: false,
+          required: ['results'],
+          properties: {
+            results: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['url', 'type', 'content'],
+                properties: {
+                  url: { type: 'string' },
+                  type: { type: 'string' },
+                  title: { type: 'string' },
+                  content: { type: 'string' },
+                },
+              },
+            },
+          },
+        }
+      : undefined;
 
-    // Apply thinking config based on model type
-    generationConfig = applyThinkingConfig(generationConfig, model, thinkingConfig);
-    
-    // According to Google's JavaScript documentation, we need urlContext (camelCase)
-    // wrapped in a config object
-    // Include URLs directly in the prompt text
-    const config = {
-      tools: [{ urlContext: {} }],
-      ...(abortSignal ? { abortSignal } : {})
-    };
-    
-    // Safety settings to disable all content filtering
-    const safetySettings = [
-      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }
-    ];
-    
-    // Generate content with URL context tool enabled
-    const result = await modelClient.generateContent({
-      contents: [prompt],
+    const interaction = await runModelInteraction({
+      apiKey,
+      model,
+      input: prompt,
+      tools: [{ type: 'url_context' }],
       generationConfig,
-      safetySettings,
-      config
+      responseFormat,
+      responseMimeType: analysisMode === 'individual' ? 'application/json' : undefined,
+      abortSignal,
+      store: false,
     });
-    
-    const responseText = result.response.text();
-    
+
+    const responseText = extractInteractionText(interaction.outputs);
+    if (!responseText) {
+      throw new Error('URL context interaction returned no text response');
+    }
+
     // Parse response based on mode
     if (analysisMode === 'individual') {
       try {
@@ -128,19 +137,19 @@ Format as a structured comparison analysis.`;
       } catch {
         logger.warn('Failed to parse JSON response, falling back to text parsing');
       }
-      
+
       // Fallback: parse as text
       const results: UrlResult[] = urls.map(url => ({
         url,
         type: 'unknown' as const,
         content: `Extracted content for ${url}:\n\n${responseText}`
       }));
-      
+
       return { results };
     } else if (analysisMode === 'combined') {
       return { combinedContent: responseText };
     } else {
-      return { 
+      return {
         comparisonAnalysis: responseText,
         results: urls.map(url => ({
           url,
@@ -151,31 +160,31 @@ Format as a structured comparison analysis.`;
     }
   } catch (error) {
     logger.error('URL extraction failed:', error);
-    
+
     // Check if it's an API error
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorString = JSON.stringify(error);
-    
+
     // Check for 500 internal error - this often means the URL context feature isn't available
     // or there's an issue with the API call format
-    if (errorString.includes('500') || 
+    if (errorString.includes('500') ||
         errorString.includes('INTERNAL') ||
         errorMessage.includes('internal error')) {
       logger.warn('Gemini API internal error - attempting fallback without URL context');
       return extractTextFromUrlsFallback(urls, apiKey, analysisMode, model, abortSignal);
     }
-    
+
     // Check for various error patterns that might indicate URL context isn't supported
-    if (errorMessage.includes('tools') || 
-        errorMessage.includes('urlContext') || 
+    if (errorMessage.includes('tools') ||
+        errorMessage.includes('urlContext') ||
         errorMessage.includes('config') ||
         errorMessage.includes('not supported') ||
-        errorString.includes('500') || 
+        errorString.includes('500') ||
         errorString.includes('INTERNAL')) {
       logger.info('URL context not supported or API error, falling back to prompt-only mode');
       return extractTextFromUrlsFallback(urls, apiKey, analysisMode, model, abortSignal);
     }
-    
+
     throw error;
   }
 }
@@ -183,7 +192,7 @@ Format as a structured comparison analysis.`;
 /**
  * Fallback method when URL context is not available
  * This provides guidance to the user about the URLs without actually fetching them
- * 
+ *
  * @param urls - Array of URLs to analyze
  * @param apiKey - The Gemini API key
  * @param analysisMode - How to analyze the URLs
@@ -201,17 +210,17 @@ async function extractTextFromUrlsFallback(
   comparisonAnalysis?: string;
 }> {
   const modelClient = getModelClient(apiKey, model);
-  
+
   logger.warn('Using fallback mode - URL content cannot be directly accessed');
-  
+
   // Build a prompt that asks the model to analyze URLs based on their structure
-  let prompt = `I need to analyze the following URLs, but I cannot directly access their content. 
+  let prompt = `I need to analyze the following URLs, but I cannot directly access their content.
 
 URLs provided:
 ${urls.map((url, i) => `${i + 1}. ${url}`).join('\n')}
 
 `;
-  
+
   if (analysisMode === 'individual') {
     prompt += `Based on the URL structure and domains, please provide:
 1. What type of content each URL likely contains
@@ -234,7 +243,7 @@ Note: Direct URL access requires a model with URL context support.`;
 
 Note: Direct URL access requires a model with URL context support.`;
   }
-  
+
   // Safety settings to disable all content filtering
   const safetySettings = [
     { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
@@ -242,7 +251,7 @@ Note: Direct URL access requires a model with URL context support.`;
     { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
     { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }
   ];
-  
+
   const result = await modelClient.generateContent({
     contents: [{
       role: 'user',
@@ -255,12 +264,12 @@ Note: Direct URL access requires a model with URL context support.`;
     safetySettings,
     config: abortSignal ? { abortSignal } : undefined
   });
-  
+
   const responseText = result.response.text();
-  
+
   // Return appropriate structure based on mode with clear error messaging
   const errorNote = 'Direct URL access not available. Please ensure:\n1. You\'re using a model that supports URL context (Gemini 3.1 Pro / Gemini 3 Flash or Gemini 2.5 Pro/Flash/Flash-Lite)\n2. Your API key has access to URL context features\n\nNote: This app currently exposes Gemini 3.1 Pro and Gemini 3 Flash preview models.\n\n';
-  
+
   if (analysisMode === 'individual') {
     const results: UrlResult[] = urls.map(url => ({
       url,
@@ -270,11 +279,11 @@ Note: Direct URL access requires a model with URL context support.`;
     }));
     return { results };
   } else if (analysisMode === 'combined') {
-    return { 
+    return {
       combinedContent: errorNote + responseText
     };
   } else {
-    return { 
+    return {
       comparisonAnalysis: errorNote + responseText,
       results: urls.map(url => ({
         url,

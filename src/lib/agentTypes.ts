@@ -11,6 +11,7 @@ import type { GeminiModel, ThinkingConfig } from './gemini/types';
  * Represents a function call made by the agent
  */
 export interface AgentFunctionCall {
+  id?: string;
   name: string;
   arguments: Record<string, unknown>;
 }
@@ -117,8 +118,8 @@ export type StepCallback = (step: AgentStep) => void;
  * Result from a single agent turn (may involve multiple API calls for tool chaining)
  */
 export interface AgentTurnResult {
-  /** Conversation history to carry forward (includes all model/tool exchanges) */
-  updatedContents: Array<{ role?: string; parts?: unknown[] }>;
+  /** Latest interaction id to continue the conversation server-side. */
+  interactionId?: string;
   /** True if the runtime decided the turn has completed extraction */
   finished: boolean;
   /** All steps produced during this turn */

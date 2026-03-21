@@ -5,15 +5,13 @@ import { useDropzone } from 'react-dropzone';
 import type { LucideIcon } from 'lucide-react';
 import { UploadCloud, Image as ImageIcon, FileStack, Sparkles, AlertCircle, Layers } from 'lucide-react';
 import { cn } from '../../design/theme';
+import { FILE_CONSTRAINTS } from '../../constants';
 
 // --- Constants ---
 
-const DEFAULT_ACCEPT: Record<string, string[]> = {
-  'image/*': ['.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif'],
-  'application/pdf': ['.pdf']
-};
+const DEFAULT_ACCEPT: Record<string, string[]> = FILE_CONSTRAINTS.ACCEPTED_MIME_TYPES;
 
-const DEFAULT_MAX_SIZE = 20 * 1024 * 1024; // 20MB
+const DEFAULT_MAX_SIZE = FILE_CONSTRAINTS.MAX_SIZE;
 
 // --- Style Configuration ---
 

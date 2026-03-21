@@ -1,14 +1,17 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
-import { 
-  BaseOcrStore, 
-  createBaseOcrSlice, 
+import { devtools, persist } from 'zustand/middleware';
+import {
+  BaseOcrStore,
+  createAbortController,
+  createBaseOcrSlice,
+  createRunId,
   handleOcrError,
   formatContentForClipboard
 } from './base/BaseOcrStore';
 import { extractTextFromUrlsProgressive } from '../lib/gemini/urlOperations';
 import { useSettingsStore } from './useSettingsStore';
 import { logger } from '../lib/logger';
+import { createSelectors } from './createSelectors';
 
 export interface UrlResult {
   url: string;
@@ -43,7 +46,8 @@ const initialState: Omit<WebOcrState, keyof BaseOcrStore> = {
   analysisMode: 'individual'
 };
 
-export const useWebOcrStore = create<WebOcrStore>()(
+const useWebOcrStoreBase = create<WebOcrStore>()(
+  devtools(
   persist(
     (set, get) => ({
       ...createBaseOcrSlice(set, get),
@@ -89,19 +93,23 @@ export const useWebOcrStore = create<WebOcrStore>()(
           return;
         }
 
-        // Always create a fresh AbortController to avoid race conditions
-        const controller = new AbortController();
+        const previousAbortController = get().abortController;
+        const controller = createAbortController();
+        const runId = createRunId();
+        const isCurrentRun = () => get().activeRunId === runId;
         set({
           isProcessing: true,
           error: null,
           results: [],
           combinedContent: '',
-          abortController: controller
+          abortController: controller,
+          activeRunId: runId,
         });
-        
+        previousAbortController?.abort();
+
         try {
           logger.info(`Processing ${validUrls.length} URLs in ${analysisMode} mode`);
-          
+
           // Try URL extraction with automatic fallback
           // Pass model and thinkingConfig to the progressive extraction
           const response = await extractTextFromUrlsProgressive(
@@ -112,15 +120,15 @@ export const useWebOcrStore = create<WebOcrStore>()(
             thinkingConfig,
             controller.signal
           );
-          
-          if (controller.signal.aborted) {
+
+          if (controller.signal.aborted || !isCurrentRun()) {
             throw new Error('Operation cancelled');
           }
-          
+
           // Parse results based on analysis mode
           let results: UrlResult[] = [];
           let combinedContent = '';
-          
+
           if (analysisMode === 'individual') {
             // Parse individual results
             results = response.results || [];
@@ -141,21 +149,27 @@ export const useWebOcrStore = create<WebOcrStore>()(
             combinedContent = response.comparisonAnalysis || '';
             results = response.results || [];
           }
-          
+
           set({
             results,
             combinedContent,
             isProcessing: false,
-            abortController: null
+            abortController: null,
+            activeRunId: null,
           });
-          
+
           logger.info('URL processing completed successfully');
         } catch (error) {
+          if (!isCurrentRun()) {
+            return;
+          }
+
           const errorMessage = handleOcrError(error, 'URL processing failed');
           set({
             error: errorMessage,
             isProcessing: false,
-            abortController: null
+            abortController: null,
+            activeRunId: null,
           });
         }
       },
@@ -206,5 +220,8 @@ export const useWebOcrStore = create<WebOcrStore>()(
         analysisMode: state.analysisMode
       })
     }
-  )
+  ),
+  { name: 'WebOcrStore', enabled: import.meta.env.DEV })
 );
+
+export const useWebOcrStore = createSelectors(useWebOcrStoreBase);

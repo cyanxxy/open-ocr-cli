@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { logger } from '../lib/logger';
+import { UI_TIMING } from '../constants';
 
 interface UseCopyToClipboardResult {
   isCopied: boolean;
@@ -7,7 +8,7 @@ interface UseCopyToClipboardResult {
   reset: () => void;
 }
 
-export function useCopyToClipboard(resetInterval = 2000): UseCopyToClipboardResult {
+export function useCopyToClipboard(resetInterval = UI_TIMING.COPY_NOTIFICATION_DURATION): UseCopyToClipboardResult {
   const [isCopied, setIsCopied] = useState(false);
 
   const reset = useCallback(() => {

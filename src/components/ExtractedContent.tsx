@@ -14,11 +14,12 @@ import { Card } from './molecules/Card';
 import { logger } from '../lib/logger';
 import { cn } from '../design/theme';
 import { formatTablesInContent } from '../utils/tableFormatter';
+import { UI_TIMING } from '../constants';
 
 // --- Constants ---
 
 const PROGRESS_MIN_WIDTH = 5;
-const COPY_FEEDBACK_DURATION = 2000;
+const COPY_FEEDBACK_DURATION = UI_TIMING.COPY_NOTIFICATION_DURATION;
 
 /**
  * Configurable thresholds for bounding box heuristics.

@@ -1,5 +1,6 @@
 import { StateCreator } from 'zustand';
 import { logger } from '../../lib/logger';
+import { UI_TIMING } from '../../constants';
 
 /**
  * Base state interface for all OCR stores
@@ -15,6 +16,8 @@ export interface BaseOcrState {
   copyTimeoutId: ReturnType<typeof setTimeout> | null;
   /** AbortController for cancellable operations */
   abortController: AbortController | null;
+  /** Identifier for the currently active processing run */
+  activeRunId: string | null;
 }
 
 /**
@@ -42,7 +45,8 @@ export const initialBaseState: BaseOcrState = {
   error: null,
   isCopied: false,
   copyTimeoutId: null,
-  abortController: null
+  abortController: null,
+  activeRunId: null
 };
 
 /**
@@ -84,10 +88,10 @@ export const createBaseOcrSlice: StateCreator<
     try {
       await navigator.clipboard.writeText(content);
       
-      // Set copied state and auto-clear after 2 seconds
+      // Set copied state and auto-clear after timeout
       const newTimeoutId = setTimeout(() => {
         set({ isCopied: false, copyTimeoutId: null });
-      }, 2000);
+      }, UI_TIMING.COPY_NOTIFICATION_DURATION);
       
       set({ isCopied: true, copyTimeoutId: newTimeoutId });
       
@@ -123,6 +127,13 @@ export const createBaseOcrSlice: StateCreator<
  */
 export const createAbortController = (): AbortController => {
   return new AbortController();
+};
+
+/**
+ * Helper to create a unique run identifier for async operations
+ */
+export const createRunId = (): string => {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
 /**

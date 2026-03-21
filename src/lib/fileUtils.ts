@@ -4,9 +4,10 @@
  */
 
 import { logger } from './logger';
+import { FILE_CONSTRAINTS } from '../constants';
 
-/** Maximum allowed file size in bytes (20MB) */
-const MAX_FILE_SIZE = 20 * 1024 * 1024;
+/** Maximum allowed file size in bytes */
+const MAX_FILE_SIZE = FILE_CONSTRAINTS.MAX_SIZE;
 
 /**
  * Validates a file based on its size and MIME type.
@@ -29,7 +30,7 @@ export function validateFile(file: File | null | undefined): { valid: boolean; e
   if (file.size > MAX_FILE_SIZE) {
     return {
       valid: false,
-      error: `File "${file.name}" exceeds the maximum size of 20MB.`
+      error: `File "${file.name}" exceeds the maximum size of ${FILE_CONSTRAINTS.MAX_SIZE_LABEL}.`
     };
   }
 

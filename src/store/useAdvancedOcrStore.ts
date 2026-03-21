@@ -1,9 +1,12 @@
 import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 import { extractTextFromFile } from '../lib/gemini/extraction';
 import type { ExtractedContent } from '../lib/gemini/types';
 import { validateFile, readFileAsDataUrl } from '../lib/fileUtils';
 import { useSettingsStore } from './useSettingsStore';
 import { logger } from '../lib/logger';
+import { createSelectors } from './createSelectors';
+import { createRunId } from './base/BaseOcrStore';
 
 /**
  * Defines the state and actions for the Advanced OCR feature.
@@ -56,6 +59,8 @@ interface AdvancedOcrState {
   copyTimeoutId: ReturnType<typeof setTimeout> | null;
   /** Dictionary of timeout IDs for individual result copy feedback, to allow cleanup. */
   resultCopyTimeoutIds: { [fileId: string]: ReturnType<typeof setTimeout> | undefined };
+  /** Identifier for the currently active processing run */
+  activeRunId: string | null;
 
   /**
    * Adds new files to the list for bulk processing.
@@ -125,7 +130,8 @@ const getResultText = (content: ExtractedContent): string => {
   return parts.join('\n\n');
 };
 
-export const useAdvancedOcrStore = create<AdvancedOcrState>((set, get) => ({
+const useAdvancedOcrStoreBase = create<AdvancedOcrState>()(
+  devtools((set, get) => ({
   files: [],
   processedResults: [],
   isProcessing: false,
@@ -136,6 +142,7 @@ export const useAdvancedOcrStore = create<AdvancedOcrState>((set, get) => ({
   copiedResults: {},
   copyTimeoutId: null,
   resultCopyTimeoutIds: {},
+  activeRunId: null,
 
   addFiles: async (newFiles) => {
     const { files } = get();
@@ -184,8 +191,8 @@ export const useAdvancedOcrStore = create<AdvancedOcrState>((set, get) => ({
   cancelProcessing: () => {
     logger.info('Bulk processing cancelled by user');
     const { abortController } = get();
+    set({ isProcessing: false, abortController: null, activeRunId: null });
     if (abortController) abortController.abort();
-    set({ isProcessing: false, abortController: null });
   },
 
   processFiles: async () => {
@@ -199,22 +206,36 @@ export const useAdvancedOcrStore = create<AdvancedOcrState>((set, get) => ({
       return;
     }
 
+    const previousAbortController = get().abortController;
     const abortController = new AbortController();
-    set({ isProcessing: true, error: null, processedResults: [], progress: 0, abortController });
+    const runId = createRunId();
+    const isCurrentRun = () => get().activeRunId === runId;
+
+    set({
+      isProcessing: true,
+      error: null,
+      processedResults: [],
+      progress: 0,
+      abortController,
+      activeRunId: runId,
+    });
+    previousAbortController?.abort();
 
     const resultsAccumulator: ProcessedResult[] = [];
     let failedCount = 0;
-    let wasCancelled = false;
 
     for (const trackedFile of files) {
-      // Check if processing was cancelled
-      if (!get().isProcessing || abortController.signal.aborted) {
+      if (!isCurrentRun() || !get().isProcessing || abortController.signal.aborted) {
         logger.info('Processing stopped - cancelled by user');
-        break;
+        return;
       }
 
       try {
         const fileData = await readFileAsDataUrl(trackedFile.file);
+        if (!isCurrentRun() || abortController.signal.aborted) {
+          return;
+        }
+
         const content = await extractTextFromFile(
           fileData,
           trackedFile.file.type,
@@ -228,37 +249,41 @@ export const useAdvancedOcrStore = create<AdvancedOcrState>((set, get) => ({
           content
         });
       } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        const loweredError = errorMessage.toLowerCase();
-        if (abortController.signal.aborted || loweredError.includes('cancel') || loweredError.includes('abort')) {
-          wasCancelled = true;
-          break;
-        }
-
         logger.error(`Error processing file ${trackedFile.file.name}:`, error);
-        failedCount++;
+        failedCount += 1;
         resultsAccumulator.push({
           fileId: trackedFile.id,
           fileName: trackedFile.file.name,
           content: {
             sections: [],
-            content: `Error: ${errorMessage}`
+            content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
           }
         });
+
+        if (!isCurrentRun() || abortController.signal.aborted) {
+          return;
+        }
       }
 
-      // Update state incrementally so user sees results as they come in
-      set({ processedResults: [...resultsAccumulator], progress: resultsAccumulator.length / files.length });
+      if (!isCurrentRun()) {
+        return;
+      }
+
+      set({
+        processedResults: [...resultsAccumulator],
+        progress: resultsAccumulator.length / files.length,
+      });
+    }
+
+    if (!isCurrentRun()) {
+      return;
     }
 
     set({
       isProcessing: false,
       abortController: null,
-      error: wasCancelled
-        ? 'Processing cancelled'
-        : failedCount > 0
-          ? `${failedCount} of ${files.length} files failed to process`
-          : null
+      activeRunId: null,
+      error: failedCount > 0 ? `${failedCount} of ${files.length} files failed to process` : null,
     });
   },
 
@@ -351,10 +376,13 @@ export const useAdvancedOcrStore = create<AdvancedOcrState>((set, get) => ({
       error: null,
       progress: 0,
       abortController: null,
+      activeRunId: null,
       isCopied: false,
       copiedResults: {},
       copyTimeoutId: null,
-      resultCopyTimeoutIds: {}
+      resultCopyTimeoutIds: {},
     });
   }
-}));
+}), { name: 'AdvancedOcrStore', enabled: import.meta.env.DEV }));
+
+export const useAdvancedOcrStore = createSelectors(useAdvancedOcrStoreBase);

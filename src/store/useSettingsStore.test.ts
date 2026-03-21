@@ -145,6 +145,39 @@ describe('useSettingsStore', () => {
       expect(decryptData).toHaveBeenCalledWith('encrypted_stored-key');
       expect(useSettingsStore.getState().apiKey).toBe('stored-key');
     });
+
+    it('resets the DOM theme to light if rehydration falls back after a decrypt failure', async () => {
+      const persistedState = {
+        state: {
+          model: 'gemini-3-flash-preview',
+          handwritingMode: false,
+          theme: 'dark',
+          thinkingConfig: {
+            level: 'HIGH',
+            includeThoughts: false,
+          },
+        },
+        version: 0,
+      };
+
+      mockLocalStorage.getItem.mockImplementation((key: string) => {
+        if (key === 'gemini-settings') return JSON.stringify(persistedState);
+        if (key === 'gemini-api-key') return 'encrypted_broken-key';
+        return null;
+      });
+      vi.mocked(decryptData).mockRejectedValueOnce(new Error('Decrypt failed'));
+
+      const storeWithPersist = useSettingsStore as typeof useSettingsStore & {
+        persist: { rehydrate: () => Promise<void> };
+      };
+
+      await storeWithPersist.persist.rehydrate();
+
+      expect(useSettingsStore.getState().theme).toBe('light');
+      expect(document.documentElement.classList.contains('light')).toBe(true);
+      expect(document.documentElement.classList.contains('dark')).toBe(false);
+      expect(document.documentElement.classList.contains('amoled')).toBe(false);
+    });
   });
 
   describe('setHandwritingMode', () => {

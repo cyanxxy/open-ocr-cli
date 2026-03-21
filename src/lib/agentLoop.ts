@@ -133,8 +133,8 @@ export async function* agentLoop(
 
     const initialUserPrompt = createUserPrompt(file.name, 1);
 
-    // Build initial contents with the image (only sent once)
-    const contents: Content[] = [{
+    // Build initial user content with the image (only sent once)
+    const initialContent: Content = {
       role: 'user',
       parts: [
         { text: initialUserPrompt },
@@ -145,7 +145,8 @@ export async function* agentLoop(
           }
         }
       ]
-    }];
+    };
+    let previousInteractionId: string | undefined;
 
     while (iteration < agentConfig.maxIterations && !isComplete) {
       if (clientConfig.abortSignal?.aborted) {
@@ -167,13 +168,12 @@ export async function* agentLoop(
       );
 
       try {
-        // On iteration 2+, append a follow-up user message (no image re-send)
-        if (iteration > 1) {
-          contents.push({
-            role: 'user',
-            parts: [{ text: createFollowUpPrompt(iteration, memory) }]
-          });
-        }
+        const iterationContent: Content = iteration === 1
+          ? initialContent
+          : {
+              role: 'user',
+              parts: [{ text: createFollowUpPrompt(iteration, memory) }],
+            };
 
         const systemPrompt = createAgentSystemPrompt(memory.documentAnalysis.documentType);
 
@@ -186,24 +186,22 @@ export async function* agentLoop(
         // Execute multi-turn function calling
         const turnResult = await executeAgentTurn(
           systemPrompt,
-          contents,
+          iterationContent,
           AGENT_FUNCTIONS,
           fileData,
           file.type,
           memory,
           clientConfig,
           agentConfig,
-          () => undefined
+          () => undefined,
+          previousInteractionId,
         );
+        previousInteractionId = turnResult.interactionId;
 
         // Yield all steps produced during the turn
         for (const step of turnResult.steps) {
           yield step;
         }
-
-        // Carry forward conversation history
-        contents.length = 0;
-        contents.push(...turnResult.updatedContents as Content[]);
 
         if (turnResult.finished) {
           isComplete = true;
