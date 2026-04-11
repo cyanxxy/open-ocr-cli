@@ -87,6 +87,7 @@ describe('eval utilities', () => {
       expectedAssertions: [
         { type: 'contains', target: 'markdown', value: 'Market Street Grocer' },
         { type: 'json_field_equals', path: 'fields.total.value', expected: '27.00' },
+        { type: 'json_field_number_min', path: 'requiredCoverage', min: 0.9 },
         { type: 'table_min_rows', minRows: 2 },
       ],
       tags: ['receipt'],
@@ -101,6 +102,7 @@ describe('eval utilities', () => {
             value: '27.00',
           },
         },
+        requiredCoverage: 1,
         rows: [
           { item: 'Apples', quantity: '2', price: '4.00' },
           { item: 'Milk', quantity: '1', price: '3.50' },

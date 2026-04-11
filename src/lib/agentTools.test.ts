@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGenerateContent } = vi.hoisted(() => ({
+const { mockGenerateContent, mockCropDocumentRegion } = vi.hoisted(() => ({
   mockGenerateContent: vi.fn(),
+  mockCropDocumentRegion: vi.fn(),
 }));
 
 vi.mock('@google/genai', async () => {
@@ -17,7 +18,16 @@ vi.mock('@google/genai', async () => {
   };
 });
 
-import type { AgentMemory } from './agentTypes';
+vi.mock('./regionRaster', async () => {
+  const actual = await vi.importActual<typeof import('./regionRaster')>('./regionRaster');
+
+  return {
+    ...actual,
+    cropDocumentRegion: mockCropDocumentRegion,
+  };
+});
+
+import type { AgentMemory, NormalizedRegion } from './agentTypes';
 import {
   executeAnalyzeDocumentStructure,
   executeExtractFieldsBatch,
@@ -58,9 +68,25 @@ function createMemory(documentType = 'invoice'): AgentMemory {
   };
 }
 
+const totalRegion: NormalizedRegion = {
+  page: 1,
+  x: 0.68,
+  y: 0.72,
+  width: 0.2,
+  height: 0.08,
+  units: 'normalized',
+};
+
 describe('agentTools', () => {
   beforeEach(() => {
     mockGenerateContent.mockReset();
+    mockCropDocumentRegion.mockReset();
+    mockCropDocumentRegion.mockResolvedValue({
+      dataUrl: 'data:image/png;base64,Y3JvcA==',
+      mimeType: 'image/png',
+      width: 160,
+      height: 64,
+    });
   });
 
   it('normalizes extracted alias field names to canonical schema names in a batch', async () => {
@@ -83,6 +109,27 @@ describe('agentTools', () => {
     expect(result.success).toBe(true);
     expect(result.memoryUpdate?.extractedFields?.email?.value).toBe('nina@orbitpartners.com');
     expect(result.memoryUpdate?.extractedFields?.email_address).toBeUndefined();
+  });
+
+  it('stores typed normalized locations for extracted fields', async () => {
+    const result = await executeExtractFieldsBatch(
+      {
+        fields: [
+          {
+            field_name: 'total_amount',
+            field_value: '1471.50',
+            confidence: 0.99,
+            location: totalRegion,
+          },
+        ],
+      },
+      '',
+      '',
+      createMemory('invoice'),
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.memoryUpdate?.extractedFields?.total_amount?.location).toEqual(totalRegion);
   });
 
   it('returns schema guidance from analyze_document_structure', async () => {
@@ -161,6 +208,7 @@ describe('agentTools', () => {
             field_value: '1471.50',
             confidence: 0.99,
             validation_rule: 'currency',
+            location: totalRegion,
           },
         ],
       }),
@@ -168,8 +216,7 @@ describe('agentTools', () => {
 
     const result = await executeReOcrRegion(
       {
-        page: 1,
-        region: 'totals summary',
+        region: totalRegion,
         focus: 'invoice total',
         target_fields: ['total_amount'],
         confidence_threshold: 0.8,
@@ -187,6 +234,11 @@ describe('agentTools', () => {
       },
     );
 
+    expect(mockCropDocumentRegion).toHaveBeenCalledWith(
+      'data:application/pdf;base64,ZmFrZQ==',
+      'application/pdf',
+      totalRegion,
+    );
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({
       fieldCount: 1,
@@ -194,9 +246,31 @@ describe('agentTools', () => {
         {
           field_name: 'total_amount',
           field_value: '1471.50',
+          location: totalRegion,
         },
       ],
     });
     expect(result.memoryUpdate?.extractedFields?.total_amount?.value).toBe('1471.50');
+    expect(result.memoryUpdate?.extractedFields?.total_amount?.location).toEqual(totalRegion);
+  });
+
+  it('fails closed when re_ocr_region is called without valid normalized coordinates', async () => {
+    const result = await executeReOcrRegion(
+      {
+        region: 'top right total',
+        focus: 'invoice total',
+      },
+      'data:application/pdf;base64,ZmFrZQ==',
+      'application/pdf',
+      createMemory('invoice'),
+      {
+        apiKey: 'test-key',
+        model: 'gemini-3-flash-preview',
+      },
+    );
+
+    expect(mockCropDocumentRegion).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('"region" must be a normalized region object');
   });
 });

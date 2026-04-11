@@ -2,7 +2,7 @@
 import { create } from 'zustand';
 import { useSettingsStore } from './useSettingsStore';
 import { logger } from '../lib/logger';
-import { AgentMemory, AgentStep } from '../lib/agentTypes';
+import { AgentMemory, AgentStep, NormalizedRegion } from '../lib/agentTypes';
 import { createAbortController, createRunId } from './base/BaseOcrStore';
 
 // --- Type Definitions ---
@@ -18,7 +18,7 @@ export interface FieldResult {
   validated: boolean;
   // Extended fields from agent memory
   validationRule?: string;
-  location?: string;
+  location?: NormalizedRegion;
   validationMessage?: string;
   extractedAt?: number;
 }
@@ -52,7 +52,7 @@ export interface DocumentMemory {
 /**
  * Represents the current status of the agent
  */
-export type AgentStatus = 'idle' | 'initializing' | 'processing' | 'analyzing' | 'extracting' | 'validating' | 'completed' | 'error' | 'stopped';
+export type AgentStatus = 'idle' | 'initializing' | 'processing' | 'completed' | 'error' | 'stopped';
 
 /**
  * Represents a function call made by the agent
@@ -72,10 +72,6 @@ export interface AgentFunctionCall {
 export interface AgentConfig {
   maxIterations: number;
   confidenceThreshold: number;
-  enableFieldValidation: boolean;
-  enableCrossPageContext: boolean;
-  costOptimization: boolean;
-  enableThinking: boolean;
 }
 
 /**
@@ -191,10 +187,6 @@ interface AgenticOcrState {
 const DEFAULT_CONFIG: AgentConfig = {
   maxIterations: 5,
   confidenceThreshold: 0.8,
-  enableFieldValidation: true,
-  enableCrossPageContext: true,
-  costOptimization: true,
-  enableThinking: false,
 };
 
 /**
@@ -210,6 +202,73 @@ const generateSessionId = (): string => {
 const generateLogId = (): string => {
   return Date.now().toString(36) + Math.random().toString(36).substring(2);
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function toFieldResult(fieldData: AgentMemory['extractedFields'][string], iteration: number): FieldResult {
+  return {
+    value: fieldData.value || '',
+    confidence: fieldData.confidence ?? 0,
+    iteration,
+    validated: Boolean(fieldData.isValid ?? true),
+    validationRule: fieldData.validation_rule,
+    location: fieldData.location,
+    validationMessage: fieldData.validationMessage,
+    extractedAt: fieldData.extractedAt,
+  };
+}
+
+function getProcessedPages(extractedFields: Record<string, FieldResult>): number[] {
+  const processedPages = new Set<number>();
+
+  for (const field of Object.values(extractedFields)) {
+    if (field.location?.page) {
+      processedPages.add(field.location.page);
+    }
+  }
+
+  return Array.from(processedPages).sort((left, right) => left - right);
+}
+
+function mergeDocumentMemory(
+  current: DocumentMemory | null,
+  extractedFields: Record<string, FieldResult>,
+  options: {
+    documentAnalysis?: Partial<AgentMemory['documentAnalysis']>;
+    confidence?: number;
+    lastUpdated?: number;
+    isComplete?: boolean;
+  } = {},
+): DocumentMemory | null {
+  if (!current) {
+    return null;
+  }
+
+  const previousAnalysis = isRecord(current.globalContext.documentAnalysis)
+    ? current.globalContext.documentAnalysis
+    : {};
+  const nextAnalysis = options.documentAnalysis
+    ? { ...previousAnalysis, ...options.documentAnalysis }
+    : previousAnalysis;
+
+  return {
+    ...current,
+    extractedFields,
+    totalPages: typeof options.documentAnalysis?.pageCount === 'number'
+      ? options.documentAnalysis.pageCount
+      : current.totalPages,
+    processedPages: getProcessedPages(extractedFields),
+    globalContext: {
+      ...current.globalContext,
+      ...(Object.keys(nextAnalysis).length > 0 ? { documentAnalysis: nextAnalysis } : {}),
+    },
+    confidence: typeof options.confidence === 'number' ? options.confidence : current.confidence,
+    isComplete: options.isComplete ?? current.isComplete,
+    lastUpdated: options.lastUpdated ?? Date.now(),
+  };
+}
 
 /**
  * Zustand store for managing the state of the agentic OCR feature.
@@ -364,6 +423,11 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
               currentIteration: parseInt(match[1], 10),
             });
           }
+        } else if (step.type === 'thinking') {
+          set((state) => ({
+            status: state.currentIteration === 0 ? 'initializing' : 'processing',
+            currentStep: step.content,
+          }));
         } else if (step.type === 'result') {
           set({
             status: 'processing',
@@ -380,6 +444,38 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
             status: 'processing',
             currentStep: step.content,
           });
+        }
+
+        if (step.functionResult?.memoryUpdate) {
+          const incrementalFields = Object.fromEntries(
+            Object.entries(step.functionResult.memoryUpdate.extractedFields ?? {}).map(([fieldName, fieldData]) => [
+              fieldName,
+              toFieldResult(fieldData, get().currentIteration || 1),
+            ]),
+          );
+
+          if (
+            Object.keys(incrementalFields).length > 0
+            || step.functionResult.memoryUpdate.documentAnalysis
+            || typeof step.functionResult.memoryUpdate.confidence === 'number'
+          ) {
+            set((state) => {
+              const mergedFields = {
+                ...state.extractedFields,
+                ...incrementalFields,
+              };
+
+              return {
+                extractedFields: mergedFields,
+                documentMemory: mergeDocumentMemory(state.documentMemory, mergedFields, {
+                  documentAnalysis: step.functionResult?.memoryUpdate?.documentAnalysis,
+                  confidence: step.functionResult?.memoryUpdate?.confidence,
+                  lastUpdated: step.functionResult?.memoryUpdate?.lastUpdated,
+                  isComplete: false,
+                }),
+              };
+            });
+          }
         }
 
         // Check again before getting next step (in case stop was called during processing)
@@ -399,38 +495,51 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
       // NOW we have the final memory from the generator's return value
       const finalMemory = iteratorResult.value as AgentMemory;
 
-      // Sync extracted fields from final memory to store (SINGLE SOURCE OF TRUTH)
-      if (finalMemory && finalMemory.extractedFields) {
-        for (const [fieldName, fieldData] of Object.entries(finalMemory.extractedFields)) {
-          if (!fieldData) continue;
+      const finalFields = finalMemory?.extractedFields
+        ? Object.fromEntries(
+            Object.entries(finalMemory.extractedFields)
+              .filter(([, fieldData]) => Boolean(fieldData))
+              .map(([fieldName, fieldData]) => [fieldName, toFieldResult(fieldData, finalMemory.currentIteration)]),
+          )
+        : {};
 
-          get().updateField(fieldName, {
-            value: fieldData.value || '',
-            confidence: fieldData.confidence ?? 0.9,
-            iteration: finalMemory.currentIteration,
-            validated: Boolean(fieldData.isValid ?? true),
-            // Preserve extended field data from agent memory
-            validationRule: fieldData.validation_rule,
-            location: fieldData.location,
-            validationMessage: fieldData.validationMessage,
-            extractedAt: fieldData.extractedAt,
-          });
-        }
-      }
+      set((state) => {
+        const mergedFields = {
+          ...state.extractedFields,
+          ...finalFields,
+        };
+
+        return {
+          extractedFields: mergedFields,
+          documentMemory: mergeDocumentMemory(state.documentMemory, mergedFields, {
+            documentAnalysis: finalMemory?.documentAnalysis,
+            confidence: finalMemory?.confidence,
+            lastUpdated: finalMemory?.lastUpdated,
+            isComplete: false,
+          }),
+        };
+      });
 
       // Check if agent extracted any fields
       const finalFieldsCount = Object.keys(get().extractedFields).length;
 
-      if (finalFieldsCount === 0 && get().status !== 'error') {
+      if (finalFieldsCount === 0 && get().status !== 'error' && get().status !== 'stopped') {
         // Agent didn't extract any fields - show clear error
-        set({
+        set((state) => ({
           status: 'error',
           error: 'Agent did not extract any fields. The document may not contain structured data, or the agent needs different configuration. Try Simple OCR for full text extraction instead.',
           isProcessing: false,
           progress: 100,
           abortController: null,
           activeRunId: null,
-        });
+          documentMemory: state.documentMemory
+            ? {
+                ...state.documentMemory,
+                isComplete: false,
+                lastUpdated: Date.now(),
+              }
+            : null,
+        }));
 
         get().addLog({
           type: 'warning',
@@ -439,15 +548,22 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
       }
 
       // Final completion
-      if (get().status !== 'error' && get().status !== 'completed') {
-        set({
+      if (get().status !== 'error' && get().status !== 'completed' && get().status !== 'stopped') {
+        set((state) => ({
           status: 'completed',
           currentStep: 'Agent processing completed',
           progress: 100,
           isProcessing: false,
           abortController: null,
           activeRunId: null,
-        });
+          documentMemory: state.documentMemory
+            ? {
+                ...state.documentMemory,
+                isComplete: true,
+                lastUpdated: finalMemory?.lastUpdated ?? Date.now(),
+              }
+            : null,
+        }));
       }
 
       get().addLog({
@@ -467,7 +583,7 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
       }
 
       logger.error('Agent processing error:', error);
-      set({
+      set((state) => ({
         status: 'error',
         currentStep: 'Processing failed',
         error: errorMessage,
@@ -475,7 +591,14 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
         progress: 100,
         abortController: null,
         activeRunId: null,
-      });
+        documentMemory: state.documentMemory
+          ? {
+              ...state.documentMemory,
+              isComplete: false,
+              lastUpdated: Date.now(),
+            }
+          : null,
+      }));
 
       get().addLog({
         type: 'error',
@@ -489,13 +612,20 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
     // Abort any pending operations
     const { abortController } = get();
 
-    set({
+    set((state) => ({
       isProcessing: false,
       status: 'stopped',
       currentStep: 'Agent stopped by user',
       abortController: null,
       activeRunId: null,
-    });
+      documentMemory: state.documentMemory
+        ? {
+            ...state.documentMemory,
+            isComplete: false,
+            lastUpdated: Date.now(),
+          }
+        : null,
+    }));
     abortController?.abort();
 
     get().addLog({
@@ -537,18 +667,26 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
       documentMemory: state.documentMemory ? {
         ...state.documentMemory,
         ...updates,
+        extractedFields: updates.extractedFields
+          ? { ...state.documentMemory.extractedFields, ...updates.extractedFields }
+          : state.documentMemory.extractedFields,
         lastUpdated: Date.now(),
       } : null,
     }));
   },
 
   updateField: (key: string, result: FieldResult) => {
-    set(state => ({
-      extractedFields: {
+    set(state => {
+      const extractedFields = {
         ...state.extractedFields,
         [key]: result,
-      },
-    }));
+      };
+
+      return {
+        extractedFields,
+        documentMemory: mergeDocumentMemory(state.documentMemory, extractedFields),
+      };
+    });
 
     get().addLog({
       type: 'info',

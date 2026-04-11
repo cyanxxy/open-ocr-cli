@@ -7,6 +7,7 @@ export type EvalAssertion =
   | { type: 'not_contains'; target: 'markdown' | 'csv'; value: string }
   | { type: 'json_field_equals'; path: string; expected: string | number | boolean | null }
   | { type: 'json_field_exists'; path: string }
+  | { type: 'json_field_number_min'; path: string; min: number }
   | { type: 'table_min_rows'; minRows: number; path?: string }
   | { type: 'pass_rate_weight'; value: number }
   | { type: 'overall_score_min'; value: number };
@@ -92,6 +93,8 @@ function isAllowedAssertion(assertion: unknown): assertion is EvalAssertion {
       return typeof assertion.path === 'string' && 'expected' in assertion;
     case 'json_field_exists':
       return typeof assertion.path === 'string';
+    case 'json_field_number_min':
+      return typeof assertion.path === 'string' && typeof assertion.min === 'number';
     case 'table_min_rows':
       return typeof assertion.minRows === 'number' && (assertion.path === undefined || typeof assertion.path === 'string');
     case 'pass_rate_weight':
@@ -244,6 +247,8 @@ function formatAssertionFailure(assertion: EvalAssertion): string {
       return `Expected JSON path "${assertion.path}" to equal ${JSON.stringify(assertion.expected)}.`;
     case 'json_field_exists':
       return `Expected JSON path "${assertion.path}" to exist.`;
+    case 'json_field_number_min':
+      return `Expected JSON path "${assertion.path}" to be at least ${assertion.min}.`;
     case 'table_min_rows':
       return `Expected table at "${assertion.path ?? 'rows'}" to have at least ${assertion.minRows} rows.`;
     case 'pass_rate_weight':
@@ -280,6 +285,13 @@ export function evaluateEvalCase(evalCase: EvalCase, output: EvalRunOutput): Eva
       case 'json_field_exists': {
         const resolved = getValueAtPath(output.json, assertion.path);
         if (!resolved.found || resolved.value === null || resolved.value === '') {
+          failures.push(formatAssertionFailure(assertion));
+        }
+        break;
+      }
+      case 'json_field_number_min': {
+        const resolved = getValueAtPath(output.json, assertion.path);
+        if (!resolved.found || typeof resolved.value !== 'number' || resolved.value < assertion.min) {
           failures.push(formatAssertionFailure(assertion));
         }
         break;
@@ -382,6 +394,6 @@ export function toEvalRunOutput(result: PresetRunResult): EvalRunOutput {
   return {
     markdown: result.markdown,
     csv: result.csv,
-    json: result.json as Record<string, unknown>,
+    json: result.json as unknown as Record<string, unknown>,
   };
 }

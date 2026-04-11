@@ -34,6 +34,15 @@ export interface AgentFunctionResult {
   memoryUpdate?: AgentMemoryUpdate;
 }
 
+export interface NormalizedRegion {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  units: 'normalized';
+}
+
 /**
  * Represents a step in the agent's reasoning process
  */
@@ -74,7 +83,6 @@ export interface AgentLoopConfig {
   confidenceThreshold: number;
   temperature: number;
   maxTokens: number;
-  enableThinking?: boolean;
 }
 
 /**
@@ -88,7 +96,7 @@ export interface AgentMemory {
     value: string;
     confidence: number;
     validation_rule?: string;
-    location?: string;
+    location?: NormalizedRegion;
     isValid?: boolean;
     validationMessage?: string;
     extractedAt?: number;
@@ -118,8 +126,6 @@ export type StepCallback = (step: AgentStep) => void;
  * Result from a single agent turn (may involve multiple API calls for tool chaining)
  */
 export interface AgentTurnResult {
-  /** Latest interaction id to continue the conversation server-side. */
-  interactionId?: string;
   /** True if the runtime decided the turn has completed extraction */
   finished: boolean;
   /** All steps produced during this turn */

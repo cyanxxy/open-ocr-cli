@@ -14,6 +14,7 @@ import {
   createUserPrompt,
   createFollowUpPrompt
 } from './agentGemini';
+import type { InteractionTurn } from './gemini/interactions';
 import { getAgentReadiness } from './agentSchema';
 
 /**
@@ -24,7 +25,6 @@ const DEFAULT_AGENT_CONFIG: AgentLoopConfig = {
   confidenceThreshold: 0.8,
   temperature: 1,
   maxTokens: 4096,
-  enableThinking: true, // Always enabled for Gemini 3
 };
 
 /**
@@ -94,8 +94,7 @@ export function applyMemoryUpdate(memory: AgentMemory, update?: AgentMemoryUpdat
 
 /**
  * Autonomous agent loop that processes documents iteratively.
- * Maintains conversation history across iterations and supports
- * multi-turn function calling within each iteration.
+ * Maintains a local interaction transcript for stateless interactions.
  */
 export async function* agentLoop(
   file: File,
@@ -127,9 +126,9 @@ export async function* agentLoop(
       throw new Error('Invalid file data format');
     }
 
-    const supportedImageTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif'];
-    const normalizedMimeType = supportedImageTypes.includes(file.type) ? file.type :
-                               (file.type.startsWith('image/') ? 'image/jpeg' : file.type);
+    if (!file.type) {
+      throw new Error('File MIME type is required for agent processing');
+    }
 
     const initialUserPrompt = createUserPrompt(file.name, 1);
 
@@ -141,12 +140,12 @@ export async function* agentLoop(
         {
           inlineData: {
             data: base64Data,
-            mimeType: normalizedMimeType
+            mimeType: file.type
           }
         }
       ]
     };
-    let previousInteractionId: string | undefined;
+    const interactionTranscript: InteractionTurn[] = [];
 
     while (iteration < agentConfig.maxIterations && !isComplete) {
       if (clientConfig.abortSignal?.aborted) {
@@ -187,6 +186,7 @@ export async function* agentLoop(
         const turnResult = await executeAgentTurn(
           systemPrompt,
           iterationContent,
+          interactionTranscript,
           AGENT_FUNCTIONS,
           fileData,
           file.type,
@@ -194,9 +194,7 @@ export async function* agentLoop(
           clientConfig,
           agentConfig,
           () => undefined,
-          previousInteractionId,
         );
-        previousInteractionId = turnResult.interactionId;
 
         // Yield all steps produced during the turn
         for (const step of turnResult.steps) {

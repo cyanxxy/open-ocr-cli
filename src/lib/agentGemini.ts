@@ -2,12 +2,15 @@ import { type Content, type FunctionDeclaration } from '@google/genai';
 import { logger } from './logger';
 import {
   contentToInteractionInput,
+  createInteractionTurn,
   createInteractionFunctionTools,
   createInteractionGenerationConfig,
   extractInteractionFunctionCalls,
   extractInteractionText,
   extractInteractionThoughtSummaries,
+  outputsToModelTurn,
   runModelInteraction,
+  type InteractionTurn,
 } from './gemini/interactions';
 import {
   AgentClientConfig,
@@ -43,6 +46,7 @@ const MAX_INNER_ROUNDS = 10;
 export async function executeAgentTurn(
   systemPrompt: string,
   inputContent: Content,
+  transcript: InteractionTurn[],
   functions: FunctionDeclaration[],
   fileData: string,
   mimeType: string,
@@ -50,7 +54,6 @@ export async function executeAgentTurn(
   clientConfig: AgentClientConfig,
   config: AgentLoopConfig,
   onStep: StepCallback,
-  previousInteractionId?: string,
 ): Promise<AgentTurnResult> {
   if (!clientConfig.apiKey) {
     throw new Error('Please set your API key in settings');
@@ -64,9 +67,7 @@ export async function executeAgentTurn(
   }, clientConfig.thinkingConfig);
   const tools = createInteractionFunctionTools(functions);
   const allSteps: AgentStep[] = [];
-  const initialInput = contentToInteractionInput(inputContent);
-  let latestInteractionId = previousInteractionId;
-  let nextInput = initialInput;
+  transcript.push(createInteractionTurn('user', contentToInteractionInput(inputContent)));
 
   for (let round = 0; round < MAX_INNER_ROUNDS; round++) {
     if (clientConfig.abortSignal?.aborted) {
@@ -76,16 +77,18 @@ export async function executeAgentTurn(
     const interaction = await runModelInteraction({
       apiKey: clientConfig.apiKey,
       model: clientConfig.model,
-      input: nextInput,
+      input: transcript,
       systemInstruction: systemPrompt,
-      previousInteractionId: latestInteractionId,
       tools,
       generationConfig,
       abortSignal: clientConfig.abortSignal,
-      store: true,
+      store: false,
     });
-    latestInteractionId = interaction.id;
     const outputs = interaction.outputs || [];
+    const modelTurn = outputsToModelTurn(outputs);
+    if (modelTurn) {
+      transcript.push(modelTurn);
+    }
 
     for (const thoughtSummary of extractInteractionThoughtSummaries(outputs)) {
       const thinkingStep: AgentStep = {
@@ -110,7 +113,10 @@ export async function executeAgentTurn(
 
     const functionCalls: AgentFunctionCall[] = extractInteractionFunctionCalls(outputs);
     if (functionCalls.length === 0) {
-      break;
+      return {
+        finished: true,
+        steps: allSteps,
+      };
     }
 
     if (functionCalls.length > 1) {
@@ -123,44 +129,48 @@ export async function executeAgentTurn(
       allSteps.push(sequencingStep);
     }
 
-    const fc = functionCalls[0];
-    const callStep: AgentStep = {
-      type: 'function_call',
-      content: `Executing: ${fc.name}`,
-      functionCall: fc,
-      timestamp: Date.now(),
-    };
-    onStep(callStep);
-    allSteps.push(callStep);
+    const functionResults = [];
 
-    const result = await executeFunctionCall(fc, fileData, mimeType, memory, clientConfig);
-    applyMemoryUpdate(memory, result.memoryUpdate);
+    for (const [index, fc] of functionCalls.entries()) {
+      const callStep: AgentStep = {
+        type: 'function_call',
+        content: `Executing: ${fc.name}`,
+        functionCall: fc,
+        timestamp: Date.now(),
+      };
+      onStep(callStep);
+      allSteps.push(callStep);
 
-    const resultStep: AgentStep = {
-      type: 'result',
-      content: result.success ? `${fc.name} completed` : `${fc.name} returned an error`,
-      functionCall: fc,
-      functionResult: result,
-      timestamp: Date.now(),
-    };
-    onStep(resultStep);
-    allSteps.push(resultStep);
+      const result = await executeFunctionCall(fc, fileData, mimeType, memory, clientConfig);
+      applyMemoryUpdate(memory, result.memoryUpdate);
 
-    nextInput = [{
-      type: 'function_result',
-      call_id: fc.id || `${fc.name}-${round + 1}`,
-      name: fc.name,
-      is_error: !result.success,
-      result: {
-        success: result.success,
-        error: result.error ?? null,
-        data: result.data ?? null,
-      },
-    }];
+      const resultStep: AgentStep = {
+        type: 'result',
+        content: result.success ? `${fc.name} completed` : `${fc.name} returned an error`,
+        functionCall: fc,
+        functionResult: result,
+        timestamp: Date.now(),
+      };
+      onStep(resultStep);
+      allSteps.push(resultStep);
+
+      functionResults.push({
+        type: 'function_result' as const,
+        call_id: fc.id || `${fc.name}-${round + 1}-${index + 1}`,
+        name: fc.name,
+        is_error: !result.success,
+        result: {
+          success: result.success,
+          error: result.error ?? null,
+          data: result.data ?? null,
+        },
+      });
+    }
+
+    transcript.push(createInteractionTurn('user', functionResults));
   }
 
   return {
-    interactionId: latestInteractionId,
     finished: false,
     steps: allSteps,
   };
@@ -221,7 +231,7 @@ export function createAgentSystemPrompt(documentType?: string): string {
 WORKFLOW:
 1. **Analyze**: Call analyze_document_structure to understand document type and layout
 2. **Extract**: Call extract_fields_batch with every field you can confidently identify in this pass
-3. **Refine**: If key fields are missing or low-confidence, call re_ocr_region on the specific area
+3. **Refine**: If key fields are missing or low-confidence, call re_ocr_region on the specific normalized page area
 4. **Repeat**: After re_ocr_region, call extract_fields_batch again with improved values
 
 IMPORTANT: Call ONE tool at a time. Wait for the result before deciding your next action.
@@ -234,12 +244,14 @@ FIELD EXTRACTION RULES:
 - Each field represents ONE piece of structured information (name, date, amount, etc.)
 - Always provide the ACTUAL TEXT VALUE you see, not a description
 - Include confidence score (0.0-1.0) based on text clarity
+- Include location for fields that may need refinement as {page, x, y, width, height, units:"normalized"}
 - Prefer one high-quality extract_fields_batch call over many tiny batches
 - Reuse canonical field names exactly
 
 CORRECT EXAMPLES:
-✓ extract_fields_batch(fields=[{field_name:"invoice_number", field_value:"INV-2024-001", confidence:0.95},{field_name:"customer_name", field_value:"Acme Corporation", confidence:0.92}])
-✓ extract_fields_batch(fields=[{field_name:"email", field_value:"jordan@example.com", confidence:0.98, validation_rule:"email"}])
+✓ extract_fields_batch(fields=[{field_name:"invoice_number", field_value:"INV-2024-001", confidence:0.95, location:{page:1,x:0.72,y:0.08,width:0.18,height:0.05,units:"normalized"}},{field_name:"customer_name", field_value:"Acme Corporation", confidence:0.92}])
+✓ extract_fields_batch(fields=[{field_name:"email", field_value:"jordan@example.com", confidence:0.98, validation_rule:"email", location:{page:1,x:0.18,y:0.62,width:0.34,height:0.05,units:"normalized"}}])
+✓ re_ocr_region(region:{page:1,x:0.70,y:0.05,width:0.22,height:0.10,units:"normalized"}, focus:"invoice total")
 
 INCORRECT EXAMPLES:
 ✗ extract_fields_batch(fields=[{field_name:"invoice", field_value:"I see an invoice number in the top right", confidence:0.8}])
@@ -321,6 +333,7 @@ Focus on:
 - Fields with confidence below 0.85 that need re-extraction
 - Missing required fields that should be present for this document type
 - Validation of extracted values against each other
+- Reusing normalized field locations when you need a true region refinement
 
 If you can improve the result, call re_ocr_region and then extract_fields_batch again. Otherwise stop calling tools.`;
 }

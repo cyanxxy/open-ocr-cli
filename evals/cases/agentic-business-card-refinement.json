@@ -1,0 +1,18 @@
+{
+  "id": "agentic-business-card-refinement",
+  "mode": "agentic",
+  "inputPath": "evals/corpus/business-card.pdf",
+  "agentConfig": {
+    "maxIterations": 5,
+    "confidenceThreshold": 0.8
+  },
+  "expectedAssertions": [
+    { "type": "json_field_equals", "path": "documentType", "expected": "business card" },
+    { "type": "json_field_exists", "path": "normalizedFields.email.value" },
+    { "type": "json_field_exists", "path": "normalizedFields.website.value" },
+    { "type": "json_field_number_min", "path": "requiredCoverage", "min": 1 },
+    { "type": "contains", "target": "markdown", "value": "Orbit Partners" },
+    { "type": "pass_rate_weight", "value": 2 }
+  ],
+  "tags": ["business-card", "agentic", "refinement", "coverage"]
+}

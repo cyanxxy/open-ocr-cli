@@ -1,6 +1,6 @@
 import type { FC } from 'react';
 import { useCallback, useMemo } from 'react';
-import type { DropzoneOptions } from 'react-dropzone';
+import type { Accept, DropzoneOptions } from 'react-dropzone';
 import { useDropzone } from 'react-dropzone';
 import type { LucideIcon } from 'lucide-react';
 import { UploadCloud, Image as ImageIcon, FileStack, Sparkles, AlertCircle, Layers } from 'lucide-react';
@@ -9,7 +9,7 @@ import { FILE_CONSTRAINTS } from '../../constants';
 
 // --- Constants ---
 
-const DEFAULT_ACCEPT: Record<string, string[]> = FILE_CONSTRAINTS.ACCEPTED_MIME_TYPES;
+const DEFAULT_ACCEPT: Accept = FILE_CONSTRAINTS.ACCEPTED_MIME_TYPES;
 
 const DEFAULT_MAX_SIZE = FILE_CONSTRAINTS.MAX_SIZE;
 
@@ -75,7 +75,7 @@ export interface FileDropzoneProps {
   /** Callback function when multiple files are selected (for bulk mode) */
   onFilesSelect?: (files: File[]) => void;
   /** Accepted file types */
-  accept?: Record<string, string[]>;
+  accept?: Accept;
   /** Maximum file size in bytes */
   maxSize?: number;
   /** Whether the dropzone is disabled */
@@ -100,7 +100,7 @@ const formatFileSize = (bytes: number): string => {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(0))} ${sizes[i]}`;
 };
 
-const acceptsFileType = (accept: Record<string, string[]>, type: 'image' | 'pdf'): boolean => {
+const acceptsFileType = (accept: Accept, type: 'image' | 'pdf'): boolean => {
   return Object.keys(accept).some(k => k.includes(type));
 };
 

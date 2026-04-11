@@ -1,5 +1,17 @@
-import { describe, expect, it } from 'vitest';
-import { applyMemoryUpdate } from './agentLoop';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+const { mockExecuteAgentTurn } = vi.hoisted(() => ({
+  mockExecuteAgentTurn: vi.fn(),
+}));
+
+vi.mock('./agentGemini', () => ({
+  executeAgentTurn: mockExecuteAgentTurn,
+  createAgentSystemPrompt: vi.fn(() => 'system prompt'),
+  createUserPrompt: vi.fn(() => 'initial prompt'),
+  createFollowUpPrompt: vi.fn(() => 'follow-up prompt'),
+}));
+
+import { agentLoop, applyMemoryUpdate } from './agentLoop';
 import type { AgentMemory } from './agentTypes';
 
 function createMemory(): AgentMemory {
@@ -93,5 +105,53 @@ describe('applyMemoryUpdate', () => {
 
     expect(memory.extractedFields.invoice_number?.value).toBe('INV-1-final');
     expect(memory.extractedFields.invoice_number?.confidence).toBe(0.95);
+  });
+});
+
+describe('agentLoop', () => {
+  beforeEach(() => {
+    mockExecuteAgentTurn.mockReset();
+  });
+
+  it('stops naturally when a turn finishes without more tool calls', async () => {
+    mockExecuteAgentTurn.mockResolvedValue({
+      finished: true,
+      steps: [{
+        type: 'thinking',
+        content: 'No more tool calls are needed.',
+        timestamp: 1,
+      }],
+    });
+
+    const generator = agentLoop(
+      new File(['fixture'], 'invoice.pdf', { type: 'application/pdf' }),
+      'data:application/pdf;base64,ZmFrZQ==',
+      {
+        apiKey: 'test-key',
+        model: 'gemini-3-flash-preview',
+      },
+      {
+        maxIterations: 3,
+        confidenceThreshold: 0.8,
+        temperature: 1,
+        maxTokens: 1024,
+      },
+    );
+
+    const steps = [];
+    let current = await generator.next();
+    while (!current.done) {
+      steps.push(current.value);
+      current = await generator.next();
+    }
+
+    expect(mockExecuteAgentTurn).toHaveBeenCalledTimes(1);
+    expect(steps).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'result',
+        content: 'Document processing completed successfully',
+      }),
+    ]));
+    expect((current.value as AgentMemory).currentIteration).toBe(1);
   });
 });

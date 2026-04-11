@@ -9,6 +9,7 @@ import {
 } from './agentSchema';
 import { applyThinkingConfig } from './gemini/client';
 import { getTopKForModel, parseJsonPayload } from './gemini/structured';
+import { assertNormalizedRegion, cropDocumentRegion } from './regionRaster';
 
 // Runtime validation helpers for Gemini function call args
 
@@ -85,7 +86,7 @@ function normalizeStructuredFields(
       ? entry.validation_rule
       : inferValidationRule(field_name);
     const location = typeof entry.location === 'object' && entry.location !== null
-      ? entry.location as Record<string, unknown>
+      ? assertNormalizedRegion(entry.location, 'location')
       : undefined;
 
     const validationResult = validation_rule
@@ -96,7 +97,7 @@ function normalizeStructuredFields(
       value: field_value,
       confidence,
       validation_rule,
-      location: location ? JSON.stringify(location) : undefined,
+      location,
       isValid: validationResult.isValid,
       validationMessage: validationResult.message,
       extractedAt: Date.now(),
@@ -113,6 +114,7 @@ function normalizeStructuredFields(
       field_value,
       confidence,
       validation_rule,
+      ...(location ? { location } : {}),
       isValid: validationResult.isValid,
       validationMessage: validationResult.message,
     });
@@ -131,8 +133,19 @@ export const AGENT_FUNCTIONS: FunctionDeclaration[] = [
     parametersJsonSchema: {
       type: 'object',
       properties: {
-        page: { type: 'number', description: 'The page number to re-process.' },
-        region: { type: 'string', description: 'A description of the region to focus on (e.g., "top-left corner", "the table in the middle").' },
+        region: {
+          type: 'object',
+          description: 'Normalized region box for true region refinement.',
+          properties: {
+            page: { type: 'number', description: '1-based page number that contains the region.' },
+            x: { type: 'number', description: 'Left edge of the region in normalized page coordinates (0-1).' },
+            y: { type: 'number', description: 'Top edge of the region in normalized page coordinates (0-1).' },
+            width: { type: 'number', description: 'Region width in normalized page coordinates (0-1).' },
+            height: { type: 'number', description: 'Region height in normalized page coordinates (0-1).' },
+            units: { type: 'string', enum: ['normalized'], description: 'Must always be "normalized".' },
+          },
+          required: ['page', 'x', 'y', 'width', 'height', 'units'],
+        },
         focus: { type: 'string', description: 'Specific text or type of content to focus on within the region.' },
         target_fields: {
           type: 'array',
@@ -141,7 +154,7 @@ export const AGENT_FUNCTIONS: FunctionDeclaration[] = [
         },
         confidence_threshold: { type: 'number', description: 'The confidence threshold to aim for (0.0 to 1.0).' },
       },
-      required: ['page', 'region', 'focus'],
+      required: ['region', 'focus'],
     },
   },
   {
@@ -160,7 +173,19 @@ export const AGENT_FUNCTIONS: FunctionDeclaration[] = [
               field_value: { type: 'string', description: 'The extracted value of the field.' },
               confidence: { type: 'number', description: 'The confidence score of the extraction (0.0 to 1.0).' },
               validation_rule: { type: 'string', description: 'Optional validation rule such as "email", "phone", "date", or "currency".' },
-              location: { type: 'object', description: 'Optional field location or bounding box.' },
+              location: {
+                type: 'object',
+                description: 'Optional normalized page region for this field.',
+                properties: {
+                  page: { type: 'number' },
+                  x: { type: 'number' },
+                  y: { type: 'number' },
+                  width: { type: 'number' },
+                  height: { type: 'number' },
+                  units: { type: 'string', enum: ['normalized'] },
+                },
+                required: ['page', 'x', 'y', 'width', 'height', 'units'],
+              },
             },
             required: ['field_name', 'field_value', 'confidence'],
           },
@@ -200,8 +225,7 @@ export async function executeReOcrRegion(
   clientConfig: AgentClientConfig,
 ): Promise<AgentFunctionResult> {
   try {
-    const page = assertNumber(args, 'page');
-    const region = assertString(args, 'region');
+    const region = assertNormalizedRegion(args.region);
     const focus = assertString(args, 'focus');
     const explicitTargetFields = Array.isArray(args.target_fields)
       ? args.target_fields.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
@@ -212,7 +236,11 @@ export async function executeReOcrRegion(
       ? explicitTargetFields
       : readiness.missingRequiredFields;
     const schema = getAgentDocumentSchema(memory.documentAnalysis.documentType);
-    const base64Data = fileData.split(',')[1] || fileData;
+    const croppedRegion = await cropDocumentRegion(fileData, mimeType, region);
+    const base64Data = croppedRegion.dataUrl.split(',')[1];
+    if (!base64Data) {
+      throw new Error('Failed to generate cropped region image for refinement');
+    }
     const genAI = new GoogleGenAI({ apiKey: clientConfig.apiKey });
 
     let generationConfig: Record<string, unknown> = {
@@ -233,8 +261,9 @@ export async function executeReOcrRegion(
       'Return valid JSON only.',
       'Do not wrap the JSON in markdown fences.',
       'You are re-reading a specific region of a document to recover structured field values.',
-      'Respond with {"fields":[{"field_name":"string","field_value":"string","confidence":0.0,"validation_rule":"string","location":{"description":"string"}}]}.',
-      `Focus specifically on region "${region}" on page ${page}.`,
+      'Respond with {"fields":[{"field_name":"string","field_value":"string","confidence":0.0,"validation_rule":"string","location":{"page":1,"x":0.1,"y":0.1,"width":0.2,"height":0.1,"units":"normalized"}}]}.',
+      `This cropped image is from page ${region.page} of the original document.`,
+      `Region coordinates in the original document: ${JSON.stringify(region)}.`,
       `Prioritize this focus instruction: ${focus}.`,
       `Document type: ${normalizeAgentDocumentType(memory.documentAnalysis.documentType)}.`,
       schema
@@ -256,7 +285,7 @@ export async function executeReOcrRegion(
           { text: prompt },
           {
             inlineData: {
-              mimeType,
+              mimeType: croppedRegion.mimeType,
               data: base64Data,
             },
           },
@@ -282,19 +311,23 @@ export async function executeReOcrRegion(
       success: true,
       data: {
         region,
-        page,
         focus,
         targetFields,
         fieldCandidates: extractedSummaries,
         fieldCount: Object.keys(acceptedFields).length,
         confidenceThreshold: confidence_threshold,
+        crop: {
+          mimeType: croppedRegion.mimeType,
+          width: croppedRegion.width,
+          height: croppedRegion.height,
+        },
       },
       memoryUpdate: {
         extractedFields: acceptedFields,
         confidence: updatedReadiness.averageConfidence,
         processingHistoryItem: {
           type: 'function_call',
-          content: `Re-OCR recovered ${Object.keys(acceptedFields).length} fields from page ${page}, region: ${region}`,
+          content: `Re-OCR recovered ${Object.keys(acceptedFields).length} fields from page ${region.page}, region ${JSON.stringify(region)}`,
           functionCall: { name: 're_ocr_region', arguments: args },
           functionResult: {
             success: true,

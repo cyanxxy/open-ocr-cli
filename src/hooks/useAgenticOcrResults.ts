@@ -25,8 +25,8 @@ export function useAgenticOcrResults({ extractedFields, currentIteration, progre
   // Include status in dependencies to trigger updates when agent completes
   const hasResults = useMemo(() => {
     const hasFields = Object.keys(extractedFields).length > 0;
-    const isActivelyProcessing = status === 'processing' || status === 'analyzing' || status === 'extracting';
-    const shouldShow = hasFields || isActivelyProcessing || status === 'completed';
+    const isActivelyProcessing = status === 'initializing' || status === 'processing';
+    const shouldShow = hasFields || isActivelyProcessing || status === 'completed' || status === 'error';
     // Show results if we have fields OR if actively processing OR if completed
     return shouldShow;
   }, [extractedFields, status]);
@@ -39,9 +39,13 @@ export function useAgenticOcrResults({ extractedFields, currentIteration, progre
       // Return empty sections but still show processing message
       return { 
         title: status === 'completed' ? 'No Content Extracted' : 'Processing Document',
-        sections: status === 'completed' ? [{
+        sections: status === 'completed' || status === 'error' ? [{
           heading: 'Status',
-          content: ['No fields were extracted from the document. The agent may have encountered an issue.']
+          content: [
+            status === 'error'
+              ? 'The run ended with an error before any fields were surfaced.'
+              : 'No fields were extracted from the document. The agent may have encountered an issue.'
+          ]
         }] : []
       };
     }
@@ -67,7 +71,11 @@ export function useAgenticOcrResults({ extractedFields, currentIteration, progre
         `Iterations: ${currentIteration}`,
         `Average Confidence: ${(avgConfidence * 100).toFixed(0)}%`,
         `Overall Progress: ${(progress || 0).toFixed(0)}%`,
-        status === 'completed' ? '✅ Extraction Complete' : ''
+        status === 'completed'
+          ? '✅ Extraction Complete'
+          : status === 'stopped'
+            ? '⏸ Extraction Stopped'
+            : ''
       ].filter(Boolean)
     });
     

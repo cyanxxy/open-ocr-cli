@@ -36,4 +36,36 @@ describe('useAgenticOcrResults', () => {
     expect(result.current.formattedContent.title).toBe('No Content Extracted');
     expect(result.current.formattedContent.sections[0]?.content[0]).toContain('No fields were extracted');
   });
+
+  it('keeps partial results visible for stopped runs', () => {
+    const { result } = renderHook(() => useAgenticOcrResults({
+      extractedFields: {
+        total_amount: {
+          value: '1471.50',
+          confidence: 0.94,
+          validated: true,
+          iteration: 2,
+        },
+      },
+      currentIteration: 2,
+      progress: 65,
+      status: 'stopped',
+    }));
+
+    expect(result.current.hasResults).toBe(true);
+    const lastSection = result.current.formattedContent.sections[result.current.formattedContent.sections.length - 1];
+    expect(lastSection?.content).toContain('⏸ Extraction Stopped');
+  });
+
+  it('shows an explicit error-state message when the run fails before surfacing fields', () => {
+    const { result } = renderHook(() => useAgenticOcrResults({
+      extractedFields: {},
+      currentIteration: 0,
+      progress: 100,
+      status: 'error',
+    }));
+
+    expect(result.current.hasResults).toBe(true);
+    expect(result.current.formattedContent.sections[0]?.content[0]).toContain('ended with an error');
+  });
 });

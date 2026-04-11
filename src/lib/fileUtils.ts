@@ -35,10 +35,15 @@ export function validateFile(file: File | null | undefined): { valid: boolean; e
   }
 
   // Check file type
-  if (!file.type.startsWith('image/') && file.type !== 'application/pdf') {
+  const supportedMimeTypes: readonly string[] = [
+    ...FILE_CONSTRAINTS.SUPPORTED_IMAGE_MIME_TYPES,
+    ...FILE_CONSTRAINTS.SUPPORTED_DOCUMENT_MIME_TYPES,
+  ];
+
+  if (!supportedMimeTypes.includes(file.type)) {
     return {
       valid: false,
-      error: `File "${file.name}" is of an unsupported type. Only images and PDFs are allowed.`
+      error: `File "${file.name}" is of an unsupported type (${file.type || 'unknown'}). Supported formats: PNG, JPEG, WEBP, HEIC, HEIF, and PDF.`
     };
   }
 

@@ -54,10 +54,17 @@ describe('fileUtils', () => {
       expect(result.valid).toBe(true);
     });
 
-    it('should accept GIF files', () => {
-      const file = new File(['dummy content'], 'test.gif', { type: 'image/gif' });
+    it('should accept HEIC files', () => {
+      const file = new File(['dummy content'], 'test.heic', { type: 'image/heic' });
       const result = validateFile(file);
       expect(result.valid).toBe(true);
+    });
+
+    it('should reject unsupported image MIME types', () => {
+      const file = new File(['dummy content'], 'test.gif', { type: 'image/gif' });
+      const result = validateFile(file);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Supported formats: PNG, JPEG, WEBP, HEIC, HEIF, and PDF');
     });
 
     it('should accept files at exactly the size limit', () => {

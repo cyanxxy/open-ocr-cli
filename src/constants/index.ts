@@ -6,12 +6,24 @@
 export const FILE_CONSTRAINTS = {
   MAX_SIZE: 20 * 1024 * 1024, // 20MB
   MAX_SIZE_LABEL: '20MB',
+  SUPPORTED_IMAGE_MIME_TYPES: [
+    'image/png',
+    'image/jpeg',
+    'image/webp',
+    'image/heic',
+    'image/heif',
+  ],
+  SUPPORTED_DOCUMENT_MIME_TYPES: ['application/pdf'],
   ACCEPTED_IMAGE_TYPES: ['.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif'],
   ACCEPTED_DOCUMENT_TYPES: ['.pdf'],
   ACCEPTED_MIME_TYPES: {
-    'image/*': ['.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif'],
+    'image/png': ['.png'],
+    'image/jpeg': ['.jpg', '.jpeg'],
+    'image/webp': ['.webp'],
+    'image/heic': ['.heic'],
+    'image/heif': ['.heif'],
     'application/pdf': ['.pdf']
-  }
+  },
 } as const;
 
 // OCR processing options (Gemini 3 only)

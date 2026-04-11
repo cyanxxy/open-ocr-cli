@@ -9,6 +9,13 @@ type InteractionTextInput = {
   text: string;
 };
 
+type InteractionFunctionCallInput = {
+  type: 'function_call';
+  id?: string;
+  name: string;
+  arguments: Record<string, unknown>;
+};
+
 type InteractionBinaryInput = {
   type: 'image' | 'audio' | 'video' | 'document';
   data: string;
@@ -26,8 +33,14 @@ export type InteractionFunctionResultInput = {
 
 export type InteractionInputBlock =
   | InteractionTextInput
+  | InteractionFunctionCallInput
   | InteractionBinaryInput
   | InteractionFunctionResultInput;
+
+export interface InteractionTurn {
+  role: 'user' | 'model';
+  content: InteractionInputBlock[];
+}
 
 export interface InteractionOutput {
   type?: string;
@@ -53,7 +66,7 @@ export interface InteractionResult {
 interface InteractionRequest {
   apiKey: string;
   model: GeminiModel;
-  input: string | InteractionInputBlock[];
+  input: string | InteractionInputBlock[] | InteractionTurn[];
   systemInstruction?: string;
   previousInteractionId?: string;
   tools?: Array<Record<string, unknown>>;
@@ -111,7 +124,7 @@ export function createInteractionFunctionTools(
 export function contentToInteractionInput(content: Pick<Content, 'parts'>): InteractionInputBlock[] {
   const input: InteractionInputBlock[] = [];
 
-  for (const part of content.parts) {
+  for (const part of content.parts ?? []) {
     if ('text' in part && typeof part.text === 'string' && part.text.trim().length > 0) {
       input.push({
         type: 'text',
@@ -151,6 +164,46 @@ export function contentToInteractionInput(content: Pick<Content, 'parts'>): Inte
   }
 
   return input;
+}
+
+export function createInteractionTurn(
+  role: InteractionTurn['role'],
+  content: InteractionInputBlock[],
+): InteractionTurn {
+  return { role, content };
+}
+
+export function outputsToModelTurn(outputs?: InteractionOutput[]): InteractionTurn | null {
+  if (!outputs || outputs.length === 0) {
+    return null;
+  }
+
+  const content: InteractionInputBlock[] = [];
+
+  for (const [index, output] of outputs.entries()) {
+    if (output.type === 'text' && typeof output.text === 'string' && output.text.trim().length > 0) {
+      content.push({
+        type: 'text',
+        text: output.text,
+      });
+      continue;
+    }
+
+    if (output.type === 'function_call' && typeof output.name === 'string' && output.name.length > 0) {
+      content.push({
+        type: 'function_call',
+        id: output.id || output.call_id || `${output.name}-${index + 1}`,
+        name: output.name,
+        arguments: typeof output.arguments === 'object' && output.arguments !== null ? output.arguments : {},
+      });
+    }
+  }
+
+  if (content.length === 0) {
+    return null;
+  }
+
+  return createInteractionTurn('model', content);
 }
 
 export function extractInteractionText(outputs?: InteractionOutput[]): string {

@@ -161,6 +161,7 @@ export default function AgenticOCR() {
   const {
     file: selectedFile,
     imageData,
+    error: uploadError,
     handleDrop,
     reset: resetImageUpload
   } = useImageUpload();
@@ -177,8 +178,25 @@ export default function AgenticOCR() {
     resetAgent
   }, 'AgenticOcrStore');
 
-  const isFileProcessed = hasResults;
+  const isFileProcessed = status === 'completed' || (status === 'stopped' && hasResults);
   const canStartAgent = !!(apiKey && selectedFile && imageData && !isProcessing);
+  const isActivelyRunning = status === 'initializing' || status === 'processing';
+  const statusDisplay = {
+    idle: { badge: 'AI Agent', title: 'Ready' },
+    initializing: { badge: 'Initializing', title: 'Initializing Agent' },
+    processing: { badge: 'Processing', title: 'Correspondent Working...' },
+    completed: { badge: 'Completed', title: 'Dispatch Complete' },
+    stopped: { badge: 'Stopped', title: 'Processing Halted' },
+    error: { badge: 'Error', title: 'Processing Error' },
+  } as const;
+  const fileStatusText = {
+    idle: 'Pending',
+    initializing: 'Initializing',
+    processing: 'Processing',
+    completed: 'Processed',
+    stopped: hasResults ? 'Stopped with results' : 'Stopped',
+    error: 'Error',
+  }[status];
 
   const toggleAgentConfig = useCallback(() => {
     setShowAgentConfig(prev => !prev);
@@ -242,7 +260,7 @@ export default function AgenticOCR() {
             <div
               className={cn(
                 "w-2 h-2 rounded-full",
-                isProcessing ? "animate-pulse" : ""
+                isActivelyRunning ? "animate-pulse" : ""
               )}
               style={{ backgroundColor: '#E34234' }}
               aria-hidden="true"
@@ -251,7 +269,7 @@ export default function AgenticOCR() {
               className="text-xs font-medium tracking-widest uppercase text-stone-600 dark:text-stone-400"
               style={{ fontFamily: editorial.fonts.body }}
             >
-              {isProcessing ? 'Agent Active' : 'AI Agent'}
+              {statusDisplay[status].badge}
             </span>
           </div>
 
@@ -319,17 +337,17 @@ export default function AgenticOCR() {
               {!selectedFile ? (
                 <FileDropzone
                   onFileSelect={(file) => handleDrop([file])}
-                  accept={{
-                    'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.heic', '.heif'],
-                    'application/pdf': ['.pdf']
-                  }}
+                  accept={FILE_CONSTRAINTS.ACCEPTED_MIME_TYPES}
                   maxSize={FILE_CONSTRAINTS.MAX_SIZE}
+                  error={uploadError}
                 />
               ) : (
                 <div className="animate-scale-in">
                   <FileListItem
                     file={selectedFile}
                     isProcessed={isFileProcessed}
+                    isProcessing={isActivelyRunning}
+                    statusText={fileStatusText}
                     onRemoveFile={handleResetOrRemove}
                   />
                 </div>
@@ -456,15 +474,15 @@ export default function AgenticOCR() {
                     <div className="relative">
                       <div
                         className="w-11 h-11 rounded-xl flex items-center justify-center shadow-lg"
-                        style={{ backgroundColor: isProcessing ? '#E34234' : '#1C1917' }}
+                        style={{ backgroundColor: isActivelyRunning ? '#E34234' : '#1C1917' }}
                       >
-                        {isProcessing ? (
+                        {isActivelyRunning ? (
                           <Loader className="w-5 h-5 text-white animate-spin" aria-hidden="true" />
                         ) : (
                           <Cpu className="w-5 h-5 text-white" aria-hidden="true" />
                         )}
                       </div>
-                      {isProcessing && (
+                      {isActivelyRunning && (
                         <span
                           className="absolute -top-1 -right-1 w-3 h-3 border-2 border-white dark:border-stone-900 rounded-full animate-pulse"
                           style={{ backgroundColor: '#22C55E' }}
@@ -478,9 +496,7 @@ export default function AgenticOCR() {
                           className="text-sm font-semibold text-stone-900 dark:text-stone-100"
                           style={{ fontFamily: editorial.fonts.heading }}
                         >
-                          {status === 'processing' ? 'Correspondent Working...' :
-                           status === 'completed' ? 'Dispatch Complete' :
-                           status === 'stopped' ? 'Processing Halted' : 'Ready'}
+                          {statusDisplay[status].title}
                         </p>
                         <span
                           className="text-xs font-semibold px-2.5 py-1 rounded-full"
@@ -575,7 +591,7 @@ export default function AgenticOCR() {
         </div>
 
         {/* Results Section */}
-        {(hasResults || isProcessing || status === 'processing' || status === 'completed' || status === 'stopped') && (
+        {(hasResults || status === 'initializing' || status === 'processing' || status === 'completed' || status === 'stopped' || status === 'error') && (
           <section className="mt-8 sm:mt-10">
             {/* Section header */}
             <div className="flex items-center gap-3 mb-6">
