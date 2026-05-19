@@ -12,7 +12,7 @@ export interface TestResult {
 }
 
 // Enhanced function to test the Gemini API with detailed results
-export async function testGemini(apiKey: string, model: ModelType = 'gemini-3-flash-preview'): Promise<TestResult> {
+export async function testGemini(apiKey: string, model: ModelType = 'gemini-3.5-flash'): Promise<TestResult> {
   const startTime = Date.now();
   
   try {

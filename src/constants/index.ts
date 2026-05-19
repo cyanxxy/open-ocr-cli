@@ -28,9 +28,10 @@ export const FILE_CONSTRAINTS = {
 
 // OCR processing options (Gemini 3 only)
 export const OCR_OPTIONS = {
-  DEFAULT_MODEL: 'gemini-3-flash-preview',
+  DEFAULT_MODEL: 'gemini-3.5-flash',
   MODELS: [
-    { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash', description: 'Fast with advanced reasoning (recommended)' },
+    { value: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', description: 'Ultra-fast frontier-level intelligence (recommended)' },
+    { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash', description: 'Fast with advanced reasoning' },
     { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro', description: 'Maximum reasoning and performance' }
   ],
   DEFAULT_TEMPERATURE: 1.0, // Gemini 3 requires temperature at 1.0

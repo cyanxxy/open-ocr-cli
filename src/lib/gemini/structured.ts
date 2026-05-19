@@ -3,6 +3,7 @@ import type { GeminiModel } from './types';
 export function getTopKForModel(model: GeminiModel): number {
   switch (model) {
     case 'gemini-3-flash-preview':
+    case 'gemini-3.5-flash':
       return 64;
     case 'gemini-3.1-pro-preview':
       return 40;

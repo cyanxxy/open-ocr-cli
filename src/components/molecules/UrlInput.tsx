@@ -3,6 +3,7 @@ import { useState, useCallback, useId } from 'react';
 import { Link, X, Plus, Globe, AlertCircle } from 'lucide-react';
 import { Button } from '../atoms/Button';
 import { cn } from '../../design/theme';
+import { parseSupportedHttpUrl } from '../../lib/urlValidation';
 
 interface UrlInputProps {
   urls: string[];
@@ -32,8 +33,10 @@ const UrlItem: React.FC<UrlItemProps> = ({ url, index, onUpdate, onRemove, disab
 
     try {
       const urlObj = new URL(value);
-      if (!['http:', 'https:'].includes(urlObj.protocol)) {
+      if (!parseSupportedHttpUrl(value)) {
         setError('URL must start with http:// or https://');
+      } else if (!urlObj.hostname) {
+        setError('Invalid URL format');
       } else {
         setError('');
       }

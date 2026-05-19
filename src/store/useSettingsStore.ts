@@ -19,8 +19,9 @@ export type ModelType = GeminiModel;
  */
 export type ThemeMode = 'light' | 'dark' | 'amoled';
 
-const VALID_MODELS: ModelType[] = ['gemini-3.1-pro-preview', 'gemini-3-flash-preview'];
+const VALID_MODELS: ModelType[] = ['gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-3.5-flash'];
 const VALID_THEMES: ThemeMode[] = ['light', 'dark', 'amoled'];
+const VALID_LEVELS: ThinkingLevel[] = ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'];
 
 const DEFAULT_THINKING_CONFIG: ThinkingConfig = {
   level: 'HIGH',
@@ -37,37 +38,41 @@ function applyTheme(theme: ThemeMode) {
   }
 }
 
-function normalizeThinkingConfigForModel(
-  model: ModelType,
-  thinkingConfig: ThinkingConfig,
-): ThinkingConfig {
-  const allowedLevels: ThinkingLevel[] = model === 'gemini-3-flash-preview'
-    ? ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH']
-    : ['LOW', 'MEDIUM', 'HIGH'];
-  const rawLevel = typeof thinkingConfig.level === 'string'
-    ? thinkingConfig.level.toUpperCase()
-    : thinkingConfig.level;
+function migratePersistedModel(raw: string | undefined): ModelType {
+  if (raw === 'gemini-3-pro-preview') {
+    return 'gemini-3.1-pro-preview';
+  }
 
-  return {
-    ...thinkingConfig,
-    level: allowedLevels.includes(rawLevel as ThinkingLevel)
-      ? (rawLevel as ThinkingLevel)
-      : 'HIGH',
-    includeThoughts: Boolean(thinkingConfig.includeThoughts),
-  };
+  if (raw && VALID_MODELS.includes(raw as ModelType)) {
+    return raw as ModelType;
+  }
+
+  return 'gemini-3.5-flash';
+}
+
+function migrateThinkingLevel(raw: string | undefined): ThinkingLevel {
+  if (!raw) return 'HIGH';
+
+  const upper = raw.toUpperCase() as ThinkingLevel;
+  if (VALID_LEVELS.includes(upper)) {
+    return upper;
+  }
+
+  return 'HIGH';
+}
+
+function clampThinkingLevel(model: ModelType, level: ThinkingLevel): ThinkingLevel {
+  const allowed = (model === 'gemini-3-flash-preview' || model === 'gemini-3.5-flash')
+    ? (['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'] as const)
+    : (['LOW', 'MEDIUM', 'HIGH'] as const);
+
+  return (allowed as readonly string[]).includes(level) ? level : 'HIGH';
 }
 
 function validateRehydratedState(state: SettingsState): Partial<SettingsState> {
   const patch: Partial<SettingsState> = {};
 
-  // Validate model - migrate legacy Gemini 3 Pro to Gemini 3.1 Pro
-  let migratedModel = state.model;
-  if (migratedModel === ('gemini-3-pro-preview' as ModelType)) {
-    migratedModel = 'gemini-3.1-pro-preview';
-  }
-  if (!VALID_MODELS.includes(migratedModel)) {
-    migratedModel = 'gemini-3-flash-preview';
-  }
+  const migratedModel = migratePersistedModel(state.model);
   if (migratedModel !== state.model) {
     patch.model = migratedModel;
   }
@@ -80,15 +85,23 @@ function validateRehydratedState(state: SettingsState): Partial<SettingsState> {
     patch.handwritingMode = false;
   }
 
+  if (typeof state.hasSeenOnboarding !== 'boolean') {
+    patch.hasSeenOnboarding = false;
+  }
+
   if (!state.thinkingConfig || typeof state.thinkingConfig !== 'object') {
     patch.thinkingConfig = DEFAULT_THINKING_CONFIG;
     return patch;
   }
 
-  const normalizedThinkingConfig = normalizeThinkingConfigForModel(
-    migratedModel,
-    state.thinkingConfig,
-  );
+  const migratedLevel = migrateThinkingLevel(state.thinkingConfig.level);
+  const includeThoughts = typeof state.thinkingConfig.includeThoughts === 'boolean'
+    ? state.thinkingConfig.includeThoughts
+    : false;
+  const normalizedThinkingConfig = {
+    level: clampThinkingLevel(migratedModel, migratedLevel),
+    includeThoughts,
+  };
 
   if (
     normalizedThinkingConfig.level !== state.thinkingConfig.level
@@ -140,61 +153,29 @@ interface SettingsState {
   handwritingMode: boolean;
   /** The currently active {@link ThemeMode} for the application. */
   theme: ThemeMode;
+  /** Whether the user has seen the onboarding flow. */
+  hasSeenOnboarding: boolean;
   /** Thinking mode configuration for Gemini preview models */
   thinkingConfig: ThinkingConfig;
   /** Whether Zustand has finished rehydrating persisted state */
   hasHydrated: boolean;
 
-  /**
-   * Sets the API key. The key is encrypted before being stored in localStorage
-   * and also updated in the Zustand state.
-   * @param key - The API key string to set.
-   */
-  setApiKey: (key: string) => void;
-  /**
-   * Sets the AI model to be used for OCR and other generative tasks.
-   * @param model - The {@link ModelType} to set.
-   */
+  setApiKey: (key: string) => Promise<void>;
   setModel: (model: ModelType) => void;
-  /**
-   * Enables or disables handwriting-specific OCR enhancements.
-   * @param enabled - `true` to enable handwriting mode, `false` to disable.
-   */
   setHandwritingMode: (enabled: boolean) => void;
-  /**
-   * Sets the application theme. It updates the class on the HTML document root
-   * to apply theme styles and updates the state.
-   * @param theme - The {@link ThemeMode} to apply.
-   */
   setTheme: (theme: ThemeMode) => void;
-  /**
-   * Updates thinking mode configuration
-   * @param config - Partial thinking configuration update
-   */
+  setHasSeenOnboarding: (seen: boolean) => void;
   updateThinkingConfig: (config: Partial<ThinkingConfig>) => void;
 }
 
-/**
- * Zustand store for managing application settings.
- *
- * This store handles:
- * - User's API key (encrypted in localStorage).
- * - Selected AI model.
- * - Handwriting mode preference.
- * - Application theme.
- *
- * It uses `persist` middleware to save settings (excluding the raw API key, which is handled specially)
- * to local storage. The API key is encrypted via `encryptData` before saving to `localStorage`
- * (under the key 'gemini-api-key') and decrypted via `decryptData` during the `onRehydrateStorage`
- * process. The theme is also applied to the document element during rehydration and when set.
- */
 const useSettingsStoreBase = create<SettingsState>()(
   persist(
     (set) => ({
       apiKey: '',
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-3.5-flash',
       handwritingMode: false,
       theme: 'light',
+      hasSeenOnboarding: false,
       thinkingConfig: DEFAULT_THINKING_CONFIG,
       hasHydrated: false,
 
@@ -204,36 +185,53 @@ const useSettingsStoreBase = create<SettingsState>()(
           if (!trimmedKey) {
             localStorage.removeItem(STORAGE_KEYS.API_KEY);
           } else {
-            const encryptedKey = await encryptData(trimmedKey);
-            localStorage.setItem(STORAGE_KEYS.API_KEY, encryptedKey);
+            const obfuscatedKey = await encryptData(trimmedKey);
+            localStorage.setItem(STORAGE_KEYS.API_KEY, obfuscatedKey);
           }
         } catch (error) {
-          logger.error('Failed to encrypt API key:', error);
+          logger.error('Failed to obfuscate API key for browser-local storage:', error);
         }
         set({ apiKey: trimmedKey });
       },
-      setModel: (model: ModelType) => {
-        if (!VALID_MODELS.includes(model)) {
+
+      setModel: (model) => {
+        const rawModel = model as string;
+        if (rawModel !== 'gemini-3-pro-preview' && !VALID_MODELS.includes(rawModel as ModelType)) {
           return;
         }
 
+        const normalizedModel = migratePersistedModel(rawModel);
         set((state) => ({
-          model,
-          thinkingConfig: normalizeThinkingConfigForModel(model, state.thinkingConfig),
+          model: normalizedModel,
+          thinkingConfig: {
+            ...state.thinkingConfig,
+            level: clampThinkingLevel(normalizedModel, state.thinkingConfig.level),
+          },
         }));
       },
-      setHandwritingMode: (enabled: boolean) => set({ handwritingMode: enabled }),
-      setTheme: (theme: ThemeMode) => {
+
+      setHandwritingMode: (enabled) => set({ handwritingMode: enabled }),
+
+      setTheme: (theme) => {
         if (!VALID_THEMES.includes(theme)) return;
         applyTheme(theme);
         set({ theme });
       },
+
+      setHasSeenOnboarding: (seen) => set({ hasSeenOnboarding: seen }),
+
       updateThinkingConfig: (config) => set((state) => {
+        const level = clampThinkingLevel(
+          state.model,
+          migrateThinkingLevel(config.level ?? state.thinkingConfig.level),
+        );
+
         return {
-          thinkingConfig: normalizeThinkingConfigForModel(state.model, {
+          thinkingConfig: {
             ...state.thinkingConfig,
             ...config,
-          }),
+            level,
+          },
         };
       }),
     }),
@@ -243,7 +241,8 @@ const useSettingsStoreBase = create<SettingsState>()(
         model: state.model,
         handwritingMode: state.handwritingMode,
         theme: state.theme,
-        thinkingConfig: state.thinkingConfig
+        hasSeenOnboarding: state.hasSeenOnboarding,
+        thinkingConfig: state.thinkingConfig,
       }),
       onRehydrateStorage: () => {
         return async (state, error) => {
@@ -268,11 +267,11 @@ const useSettingsStoreBase = create<SettingsState>()(
             const theme = patch.theme ?? validationTarget.theme;
             applyTheme(theme);
 
-            const encryptedKey = localStorage.getItem(STORAGE_KEYS.API_KEY);
-            if (encryptedKey) {
-              const decryptedKey = await decryptData(encryptedKey);
-              if (decryptedKey && typeof decryptedKey === 'string') {
-                patch.apiKey = decryptedKey;
+            const obfuscatedKey = localStorage.getItem(STORAGE_KEYS.API_KEY);
+            if (obfuscatedKey) {
+              const restoredKey = await decryptData(obfuscatedKey);
+              if (restoredKey && typeof restoredKey === 'string') {
+                patch.apiKey = restoredKey;
               }
             }
 
@@ -285,17 +284,18 @@ const useSettingsStoreBase = create<SettingsState>()(
             applyTheme('light');
             queueSettingsPatch({
               apiKey: '',
-              model: 'gemini-3-flash-preview',
+              model: 'gemini-3.5-flash',
               handwritingMode: false,
               theme: 'light',
+              hasSeenOnboarding: false,
               thinkingConfig: DEFAULT_THINKING_CONFIG,
               hasHydrated: true,
             });
           }
         };
       },
-    }
-  )
+    },
+  ),
 );
 
 if (useSettingsStoreBase.persist.hasHydrated()) {

@@ -188,7 +188,8 @@ export interface PresetStreamingCallbacks {
  */
 export type GeminiModel =
   | 'gemini-3.1-pro-preview'
-  | 'gemini-3-flash-preview';
+  | 'gemini-3-flash-preview'
+  | 'gemini-3.5-flash';
 
 /**
  * Thinking levels for Gemini preview models (use the SDK enum or uppercase strings)
@@ -199,7 +200,7 @@ export type GeminiModel =
  *
  * Note: According to official Gemini API docs:
  * - Gemini 3.1 Pro supports: 'LOW', 'MEDIUM', 'HIGH'
- * - Gemini 3 Flash supports: 'MINIMAL', 'LOW', 'MEDIUM', 'HIGH'
+ * - Gemini 3 Flash / Gemini 3.5 Flash support: 'MINIMAL', 'LOW', 'MEDIUM', 'HIGH'
  * - Thinking isn't fully disabled for Gemini preview models; MINIMAL is the lightest setting
  */
 export type ThinkingLevel = 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH';

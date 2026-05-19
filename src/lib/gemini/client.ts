@@ -124,7 +124,7 @@ export function getGenAIClient(apiKey: string): GoogleGenAI {
  */
 export function getModelClient(
   apiKey: string,
-  modelName: GeminiModel = 'gemini-3-flash-preview'
+  modelName: GeminiModel = 'gemini-3.5-flash'
 ): GenerativeModel {
   const genAI = getGenAIClient(apiKey);
 
@@ -225,21 +225,21 @@ export function getModelClient(
  * Check if a model is a Gemini 3 model
  */
 export function isGemini3Model(modelName: GeminiModel): boolean {
-  return modelName === 'gemini-3.1-pro-preview' || modelName === 'gemini-3-flash-preview';
+  return modelName === 'gemini-3.1-pro-preview'
+    || modelName === 'gemini-3-flash-preview'
+    || modelName === 'gemini-3.5-flash';
 }
 
 /**
- * Apply thinking configuration for Gemini preview models
- * @param generationConfig - The base generation config
- * @param modelName - The model name
- * @param thinkingConfig - The thinking configuration
- * @returns Updated generation config with thinking settings
+ * Apply thinking configuration for Gemini preview models.
  *
- * Note: According to official Gemini API documentation:
- * - Use the SDK's ThinkingLevel enum (or equivalent uppercase strings)
- * - Gemini 3.1 Pro supports: 'LOW', 'MEDIUM', 'HIGH'
- * - Gemini 3 Flash supports: 'MINIMAL', 'LOW', 'MEDIUM', 'HIGH'
- * - Thinking isn't fully disabled for Gemini preview models; MINIMAL is the lightest setting
+ * Per the Gemini 3 API docs, `thinkingLevel` is sent as a lowercase string
+ * (`"minimal" | "low" | "medium" | "high"`). The internal `ThinkingLevel` type
+ * is uppercase to match how settings are stored in the UI, so we lowercase
+ * only at the wire boundary here.
+ *
+ * - Gemini 3.1 Pro supports: low, medium, high
+ * - Gemini 3 Flash / Gemini 3.5 Flash support: minimal, low, medium, high
  */
 export function applyThinkingConfig(
   generationConfig: Record<string, unknown>,
@@ -248,7 +248,7 @@ export function applyThinkingConfig(
 ) {
   const rawLevel = thinkingConfig?.level ?? 'HIGH';
   const normalized = typeof rawLevel === 'string' ? rawLevel.toUpperCase() : rawLevel;
-  const isFlash = modelName === 'gemini-3-flash-preview';
+  const isFlash = modelName === 'gemini-3-flash-preview' || modelName === 'gemini-3.5-flash';
   const allowed = isFlash
     ? (['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'] as const)
     : (['LOW', 'MEDIUM', 'HIGH'] as const);
@@ -257,7 +257,7 @@ export function applyThinkingConfig(
   return {
     ...generationConfig,
     thinkingConfig: {
-      thinkingLevel: level,
+      thinkingLevel: level.toLowerCase(),
       ...(thinkingConfig?.includeThoughts && { includeThoughts: true }),
     },
   };

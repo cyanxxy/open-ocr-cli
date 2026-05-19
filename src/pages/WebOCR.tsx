@@ -15,6 +15,7 @@ import MarkdownRenderer from '../components/MarkdownRenderer';
 
 // Theme
 import { cn, editorial } from '../design/theme';
+import { isSupportedHttpUrl } from '../lib/urlValidation';
 
 // Paper texture SVG for background
 const PaperTexture = () => (
@@ -86,6 +87,7 @@ interface UrlResultCardProps {
 const UrlResultCard: React.FC<UrlResultCardProps> = ({ result, index }) => {
   const [isCopied, setIsCopied] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasSafeUrl = isSupportedHttpUrl(result.url);
 
   useEffect(() => {
     return () => {
@@ -141,16 +143,26 @@ const UrlResultCard: React.FC<UrlResultCardProps> = ({ result, index }) => {
               >
                 {result.title || `Dispatch ${index + 1}`}
               </h4>
-              <a
-                href={result.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs flex items-center gap-1 hover:underline transition-colors"
-                style={{ color: '#E34234', fontFamily: editorial.fonts.body }}
-              >
-                <Link className="w-3 h-3" />
-                <span className="truncate">{result.url}</span>
-              </a>
+              {hasSafeUrl ? (
+                <a
+                  href={result.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs flex items-center gap-1 hover:underline transition-colors"
+                  style={{ color: '#E34234', fontFamily: editorial.fonts.body }}
+                >
+                  <Link className="w-3 h-3" />
+                  <span className="truncate">{result.url}</span>
+                </a>
+              ) : (
+                <span
+                  className="text-xs flex items-center gap-1 text-stone-500 dark:text-stone-400"
+                  style={{ fontFamily: editorial.fonts.body }}
+                >
+                  <Link className="w-3 h-3" />
+                  <span className="truncate">{result.url}</span>
+                </span>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">

@@ -11,6 +11,7 @@ import {
 import { extractTextFromUrlsProgressive } from '../lib/gemini/urlOperations';
 import { useSettingsStore } from './useSettingsStore';
 import { logger } from '../lib/logger';
+import { getUnsupportedUrls } from '../lib/urlValidation';
 import { createSelectors } from './createSelectors';
 
 export interface UrlResult {
@@ -76,19 +77,11 @@ const useWebOcrStoreBase = create<WebOcrStore>()(
           return;
         }
 
-        // Validate URL formats
-        const invalidUrls: string[] = [];
-        validUrls.forEach(url => {
-          try {
-            new URL(url);
-          } catch {
-            invalidUrls.push(url);
-          }
-        });
+        const invalidUrls = getUnsupportedUrls(validUrls);
 
         if (invalidUrls.length > 0) {
           set({
-            error: `Invalid URL format: ${invalidUrls.join(', ')}`
+            error: `Only http:// and https:// URLs are supported: ${invalidUrls.join(', ')}`
           });
           return;
         }
@@ -130,24 +123,25 @@ const useWebOcrStoreBase = create<WebOcrStore>()(
           let combinedContent = '';
 
           if (analysisMode === 'individual') {
-            // Parse individual results
             results = response.results || [];
+            if (results.length === 0) {
+              throw new Error('Grounded URL extraction did not return any per-URL results.');
+            }
+
             combinedContent = results
               .filter(r => !r.error)
               .map(r => `## ${r.url}\n\n${r.content}`)
               .join('\n\n---\n\n');
           } else if (analysisMode === 'combined') {
-            // All content combined
-            combinedContent = response.combinedContent || '';
-            results = validUrls.map(url => ({
-              url,
-              content: 'See combined results',
-              type: 'unknown' as const
-            }));
+            combinedContent = response.combinedContent?.trim() || '';
+            if (!combinedContent) {
+              throw new Error('Grounded URL extraction did not return combined content.');
+            }
           } else if (analysisMode === 'comparison') {
-            // Comparison analysis
-            combinedContent = response.comparisonAnalysis || '';
-            results = response.results || [];
+            combinedContent = response.comparisonAnalysis?.trim() || '';
+            if (!combinedContent) {
+              throw new Error('Grounded URL extraction did not return comparison analysis.');
+            }
           }
 
           set({

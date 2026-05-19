@@ -63,6 +63,14 @@ export interface InteractionResult {
   outputs?: InteractionOutput[];
 }
 
+export interface UrlContextResultSummary {
+  hasToolError: boolean;
+  results: Array<{
+    status?: 'success' | 'error' | 'paywall' | 'unsafe';
+    url?: string;
+  }>;
+}
+
 interface InteractionRequest {
   apiKey: string;
   model: GeminiModel;
@@ -256,6 +264,35 @@ export function extractInteractionFunctionCalls(outputs?: InteractionOutput[]): 
       arguments: typeof output.arguments === 'object' && output.arguments !== null ? output.arguments : {},
     }];
   });
+}
+
+export function summarizeUrlContextResults(outputs?: InteractionOutput[]): UrlContextResultSummary {
+  if (!outputs) {
+    return { hasToolError: false, results: [] };
+  }
+
+  return outputs.reduce<UrlContextResultSummary>((summary, output) => {
+    if (output.type !== 'url_context_result') {
+      return summary;
+    }
+
+    if (output.is_error) {
+      summary.hasToolError = true;
+    }
+
+    if (Array.isArray(output.result)) {
+      summary.results.push(
+        ...(output.result as Array<{ status?: 'success' | 'error' | 'paywall' | 'unsafe'; url?: string }>)
+          .filter((entry) => typeof entry === 'object' && entry !== null)
+          .map((entry) => ({
+            status: entry.status,
+            url: entry.url,
+          })),
+      );
+    }
+
+    return summary;
+  }, { hasToolError: false, results: [] });
 }
 
 export async function runModelInteraction({

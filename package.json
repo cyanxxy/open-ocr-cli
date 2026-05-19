@@ -34,8 +34,10 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:watch": "vitest --watch",
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest --ui",
+    "typecheck": "tsc --noEmit",
     "evals": "tsx evals/run.ts",
     "evals:report": "tsx evals/render-report.ts",
     "evals:validate": "tsx evals/validate.ts"

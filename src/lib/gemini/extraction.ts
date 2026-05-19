@@ -106,11 +106,12 @@ function buildGenerationConfig(
   thinkingConfig?: { level: 'LOW' | 'MEDIUM' | 'HIGH'; includeThoughts?: boolean }
 ): Record<string, unknown> {
   // Gemini preview models default to temperature 1.0; keep unless you have a reason to tune
+  const isFlashModel = modelName === 'gemini-3-flash-preview' || modelName === 'gemini-3.5-flash';
   let config: Record<string, unknown> = {
     temperature: options?.temperature ?? 1.0,
-    maxOutputTokens: options?.maxTokens ?? (modelName === 'gemini-3.1-pro-preview' ? 65536 : 65536),
+    maxOutputTokens: options?.maxTokens ?? 65536,
     topP: 0.95,
-    topK: modelName === 'gemini-3-flash-preview' ? 64 : 40
+    topK: isFlashModel ? 64 : 40
   };
 
   if (options?.structuredOutput || options?.outputFormat === 'json') {
