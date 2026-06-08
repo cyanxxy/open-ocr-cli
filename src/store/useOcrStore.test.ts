@@ -87,7 +87,6 @@ describe('useOcrStore', () => {
       thinkingConfig: { level: 'HIGH', includeThoughts: false },
       handwritingMode: false,
       theme: 'light',
-      hasSeenOnboarding: false,
     });
 
     vi.clearAllMocks();
@@ -299,9 +298,9 @@ describe('useOcrStore', () => {
         title: 'Document Title',
         headings: ['Heading 1', 'Heading 2'],
         content: 'Main content text',
-        tables: [{ content: 'Table data' }],
+        tables: [{ headers: [], rows: [], content: 'Table data' }],
         code: ['const x = 1;'],
-        lists: [{ items: ['Item 1', 'Item 2'] }],
+        lists: [{ type: 'unordered', items: ['Item 1', 'Item 2'] }],
         sections: [],
       };
       useOcrStore.setState({ extractedContent: contentWithAllFields });

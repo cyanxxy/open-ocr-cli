@@ -7,7 +7,7 @@ import { createSelectors } from './createSelectors';
 import { STORAGE_KEYS } from '../constants';
 
 // Re-export shared Gemini config types for convenience
-export type { GeminiModel as ModelType, ThinkingConfig, ThinkingLevel };
+export type { GeminiModel, ThinkingConfig, ThinkingLevel };
 
 /**
  * Defines the available Gemini preview model types that the user can select.

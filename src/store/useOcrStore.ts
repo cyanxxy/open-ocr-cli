@@ -166,7 +166,7 @@ const useOcrStoreBase = create<OcrState>()(
 
       // Extract text from file with clientConfig
       const extractionOptions = {
-        ...(handwritingMode ? { handwritingStyle: 'general' } : {}),
+        ...(handwritingMode ? { handwritingStyle: 'general' as const } : {}),
         abortSignal: abortController.signal
       };
 

@@ -69,7 +69,6 @@ describe('useTemplateOcrStore process flow', () => {
       thinkingConfig: { level: 'HIGH', includeThoughts: false },
       handwritingMode: false,
       theme: 'light',
-      hasSeenOnboarding: false,
     });
 
     mockValidateFile.mockReturnValue({ valid: true });

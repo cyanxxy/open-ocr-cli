@@ -35,9 +35,7 @@ export const OCR_OPTIONS = {
     { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro', description: 'Maximum reasoning and performance' }
   ],
   DEFAULT_TEMPERATURE: 1.0, // Gemini 3 requires temperature at 1.0
-  DEFAULT_MAX_TOKENS: 65536, // Gemini 3 Flash supports up to 65,536 output tokens
-  MAX_RETRIES: 3,
-  RETRY_DELAY: 1000 // ms
+  DEFAULT_MAX_TOKENS: 65536 // Gemini 3 Flash supports up to 65,536 output tokens
 } as const;
 
 // Agent OCR configuration

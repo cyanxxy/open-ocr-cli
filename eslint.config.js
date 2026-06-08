@@ -7,7 +7,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   // Global ignores
-  { ignores: ['dist', 'coverage', 'node_modules', '*.config.js', 'src/setupTests.ts'] },
+  { ignores: ['dist', '**/dist/**', 'coverage', '**/coverage/**', 'node_modules', '.claude/**', '*.config.js', 'src/setupTests.ts'] },
 
   // Base configuration for all JS/TS files
   {

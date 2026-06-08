@@ -8,7 +8,7 @@ interface UseCopyToClipboardResult {
   reset: () => void;
 }
 
-export function useCopyToClipboard(resetInterval = UI_TIMING.COPY_NOTIFICATION_DURATION): UseCopyToClipboardResult {
+export function useCopyToClipboard(resetInterval: number = UI_TIMING.COPY_NOTIFICATION_DURATION): UseCopyToClipboardResult {
   const [isCopied, setIsCopied] = useState(false);
 
   const reset = useCallback(() => {

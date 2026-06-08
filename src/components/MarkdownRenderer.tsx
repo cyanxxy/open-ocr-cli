@@ -1,14 +1,13 @@
-import type { FC } from 'react';
+import type { FC, ComponentProps } from 'react';
 import { memo } from 'react';
 import { Streamdown, type ControlsConfig } from 'streamdown';
-import type { BundledTheme } from 'shiki';
 import { FileX2 } from 'lucide-react';
 import { cn } from '../design/theme';
 import 'katex/dist/katex.min.css';
 
 // --- Constants ---
 
-const SHIKI_THEME: [BundledTheme, BundledTheme] = ['github-light', 'github-dark'];
+const SHIKI_THEME: NonNullable<ComponentProps<typeof Streamdown>['shikiTheme']> = ['github-light', 'github-dark'];
 
 const STREAMDOWN_CONTROLS: ControlsConfig = {
   code: true,

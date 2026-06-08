@@ -86,7 +86,7 @@ describe('executeAgentTurn', () => {
     mockExecuteReOcrRegion.mockReset();
   });
 
-  it('treats a response with no tool calls as natural completion', async () => {
+  it('treats a response with no tool calls as natural completion once fields exist', async () => {
     mockRunModelInteraction.mockResolvedValue({
       id: 'interaction-1',
       outputs: [{
@@ -95,7 +95,54 @@ describe('executeAgentTurn', () => {
       }],
     });
 
+    // Seed memory so a tool-call-free turn is a genuine completion, not an early bailout.
+    const memory = createMemory();
+    memory.extractedFields.invoice_number = { value: 'INV-1', confidence: 0.95 };
+
     const transcript: Array<{ role: 'user' | 'model'; content: unknown[] }> = [];
+    const result = await executeAgentTurn(
+      'system prompt',
+      createInputContent(),
+      transcript as never,
+      functions,
+      'data:application/pdf;base64,ZmFrZQ==',
+      'application/pdf',
+      memory,
+      {
+        apiKey: 'test-key',
+        model: 'gemini-3-flash-preview',
+      },
+      {
+        maxIterations: 4,
+        confidenceThreshold: 0.8,
+        temperature: 1,
+        maxTokens: 1024,
+      },
+      vi.fn(),
+    );
+
+    expect(result.finished).toBe(true);
+    expect(mockRunModelInteraction).toHaveBeenCalledTimes(1);
+    expect(mockRunModelInteraction).toHaveBeenCalledWith(expect.objectContaining({
+      store: false,
+      input: transcript,
+    }));
+    expect(mockRunModelInteraction.mock.calls[0]?.[0]).not.toHaveProperty('previousInteractionId');
+    expect(transcript).toHaveLength(2);
+  });
+
+  it('nudges the model to use its tools instead of finishing empty on a prose-only opener', async () => {
+    // Model opens with prose and never calls a tool; with no extracted fields yet this
+    // must NOT be treated as completion (regression guard for the empty-result bug).
+    mockRunModelInteraction.mockResolvedValue({
+      id: 'interaction-1',
+      outputs: [{
+        type: 'text',
+        text: 'Let me analyze this document first.',
+      }],
+    });
+
+    const transcript: Array<{ role: 'user' | 'model'; content: Array<{ type: string; text?: string }> }> = [];
     const result = await executeAgentTurn(
       'system prompt',
       createInputContent(),
@@ -117,13 +164,15 @@ describe('executeAgentTurn', () => {
       vi.fn(),
     );
 
+    // It nudges once (a second model interaction) before giving up.
+    expect(mockRunModelInteraction).toHaveBeenCalledTimes(2);
     expect(result.finished).toBe(true);
-    expect(mockRunModelInteraction).toHaveBeenCalledWith(expect.objectContaining({
-      store: false,
-      input: transcript,
-    }));
-    expect(mockRunModelInteraction.mock.calls[0]?.[0]).not.toHaveProperty('previousInteractionId');
-    expect(transcript).toHaveLength(2);
+
+    const nudgeTurn = transcript.find((turn) =>
+      turn.role === 'user'
+      && turn.content.some((block) => block.type === 'text' && /call.*tools/i.test(block.text ?? '')),
+    );
+    expect(nudgeTurn).toBeDefined();
   });
 
   it('executes multiple tool calls serially and returns one function result block per call', async () => {

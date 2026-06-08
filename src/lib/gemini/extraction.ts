@@ -12,7 +12,8 @@ import type {
   ExtractionOptions,
   ExtractionInstruction,
   GeminiModel,
-  GeminiClientConfig
+  GeminiClientConfig,
+  ThinkingConfig
 } from './types';
 
 /**
@@ -103,7 +104,7 @@ function processMarkdownIntoExtractedContent(
 function buildGenerationConfig(
   modelName: GeminiModel,
   options?: ExtractionOptions,
-  thinkingConfig?: { level: 'LOW' | 'MEDIUM' | 'HIGH'; includeThoughts?: boolean }
+  thinkingConfig?: ThinkingConfig
 ): Record<string, unknown> {
   // Gemini preview models default to temperature 1.0; keep unless you have a reason to tune
   const isFlashModel = modelName === 'gemini-3-flash-preview' || modelName === 'gemini-3.5-flash';

@@ -183,9 +183,7 @@ export function BulkExtractedContent({
                         let markdownInputForRenderer = '';
                         const rawSectionLines = Array.isArray(section.content)
                           ? section.content
-                          : typeof section.content === 'string'
-                            ? section.content.split('\n')
-                            : [];
+                          : [];
                         const hasContent = rawSectionLines.some((line) => line.trim() !== '');
 
                         if (hasContent) {

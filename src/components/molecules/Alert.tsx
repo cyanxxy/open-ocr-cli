@@ -5,7 +5,7 @@ import { theme, cn } from '../../design/theme';
 
 export interface AlertProps {
   /** The content to be displayed inside the alert message */
-  children: ReactNode;
+  children?: ReactNode;
   /** The visual style and type of the alert */
   variant?: 'info' | 'success' | 'warning' | 'error';
   /** Optional title for the alert */

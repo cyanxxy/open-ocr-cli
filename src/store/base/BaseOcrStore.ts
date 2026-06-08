@@ -1,4 +1,4 @@
-import { StateCreator } from 'zustand';
+import type { StoreApi } from 'zustand';
 import { logger } from '../../lib/logger';
 import { UI_TIMING } from '../../constants';
 
@@ -57,12 +57,10 @@ export const initialBaseState: BaseOcrState = {
  * @param get - Zustand get function
  * @returns Base store slice
  */
-export const createBaseOcrSlice: StateCreator<
-  BaseOcrStore,
-  [],
-  [],
-  BaseOcrStore
-> = (set, get) => ({
+export const createBaseOcrSlice = (
+  set: StoreApi<BaseOcrStore>['setState'],
+  get: StoreApi<BaseOcrStore>['getState'],
+): BaseOcrStore => ({
   ...initialBaseState,
 
   setError: (error: string | null) => {

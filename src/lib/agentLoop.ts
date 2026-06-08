@@ -69,9 +69,18 @@ export function applyMemoryUpdate(memory: AgentMemory, update?: AgentMemoryUpdat
       const shouldReplace = incomingConfidence > existingConfidence
         || (incomingConfidence === existingConfidence && incomingExtractedAt >= existingExtractedAt);
 
-      memory.extractedFields[fieldName] = shouldReplace
+      const merged = shouldReplace
         ? { ...existingField, ...incomingField }
         : { ...incomingField, ...existingField };
+
+      // Never drop a previously-known region just because the newer extraction omitted
+      // one. extract_fields_batch frequently leaves `location` undefined, which would
+      // otherwise clobber a precise region established earlier by re_ocr_region.
+      if (merged.location == null) {
+        merged.location = incomingField.location ?? existingField.location;
+      }
+
+      memory.extractedFields[fieldName] = merged;
     }
   }
 

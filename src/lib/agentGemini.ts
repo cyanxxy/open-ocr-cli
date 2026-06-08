@@ -67,6 +67,8 @@ export async function executeAgentTurn(
   }, clientConfig.thinkingConfig);
   const tools = createInteractionFunctionTools(functions);
   const allSteps: AgentStep[] = [];
+  let hasCalledTools = false;
+  let nudgedToUseTools = false;
   transcript.push(createInteractionTurn('user', contentToInteractionInput(inputContent)));
 
   for (let round = 0; round < MAX_INNER_ROUNDS; round++) {
@@ -113,11 +115,35 @@ export async function executeAgentTurn(
 
     const functionCalls: AgentFunctionCall[] = extractInteractionFunctionCalls(outputs);
     if (functionCalls.length === 0) {
+      // A turn with no tool calls is only a genuine completion if the agent has already
+      // done work. Models (especially with thinking enabled) sometimes open with a prose
+      // preamble and no tool call; treating that as "done" would end the run with zero
+      // extracted fields. Nudge the model toward the tool workflow once before giving up.
+      const hasExtraction = Object.keys(memory.extractedFields).length > 0;
+      if (!hasCalledTools && !hasExtraction && !nudgedToUseTools && round < MAX_INNER_ROUNDS - 1) {
+        nudgedToUseTools = true;
+        const nudgeStep: AgentStep = {
+          type: 'thinking',
+          content: 'No tool call received yet; prompting the agent to begin extraction with its tools.',
+          timestamp: Date.now(),
+        };
+        onStep(nudgeStep);
+        allSteps.push(nudgeStep);
+        transcript.push(createInteractionTurn('user', [{
+          type: 'text',
+          text: 'You have not called any tools yet and no fields have been extracted. '
+            + 'Begin now by calling analyze_document_structure, then extract_fields_batch. '
+            + 'Respond with a tool call, not prose.',
+        }]));
+        continue;
+      }
       return {
         finished: true,
         steps: allSteps,
       };
     }
+
+    hasCalledTools = true;
 
     if (functionCalls.length > 1) {
       const sequencingStep: AgentStep = {
@@ -283,23 +309,13 @@ Remember: You are extracting structured data fields, not performing full OCR. Fo
  */
 export function createUserPrompt(
   fileName: string,
-  iteration: number,
-  previousResults?: Record<string, unknown>
+  iteration: number
 ): string {
-  let prompt = `Process this document: ${fileName}
+  return `Process this document: ${fileName}
 
-This is iteration ${iteration} of the autonomous extraction process.`;
+This is iteration ${iteration} of the autonomous extraction process.
 
-  if (previousResults && Object.keys(previousResults).length > 0) {
-    prompt += `\n\nPrevious extraction results:
-${JSON.stringify(previousResults, null, 2)}
-
-Analyze these results and determine if improvement is needed. Focus on fields with low confidence or missing information.`;
-  }
-
-  prompt += `\n\nBegin processing now.`;
-
-  return prompt;
+Begin processing now.`;
 }
 
 /**
