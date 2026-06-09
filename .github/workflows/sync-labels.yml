@@ -16,7 +16,7 @@ jobs:
   sync-labels:
     name: Sync Repository Labels
     runs-on: ubuntu-latest
-    if: github.repository == 'cyanxxy/open-Gemini-ocr'
+    if: github.repository == 'cyanxxy/gemini-ocr'
 
     steps:
       - name: Checkout repository

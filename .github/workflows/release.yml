@@ -13,7 +13,7 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     # Only run on the main repository, not forks
-    if: github.repository == 'cyanxxy/open-Gemini-ocr'
+    if: github.repository == 'cyanxxy/gemini-ocr'
 
     steps:
       - name: Checkout repository
