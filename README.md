@@ -4,9 +4,10 @@
 
 **A browser-first OCR workspace for images, PDFs, and URLs — powered by Google Gemini.**
 
+[![CI](https://github.com/cyanxxy/gemini-ocr/actions/workflows/ci.yml/badge.svg)](https://github.com/cyanxxy/gemini-ocr/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node](https://img.shields.io/badge/node-%3E%3D20.19-43853d.svg)](package.json)
-[![React](https://img.shields.io/badge/React-18-149eca.svg)](https://react.dev/)
+[![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-7-646cff.svg)](https://vite.dev/)
 
@@ -102,7 +103,7 @@ npm run dev              # start Vite dev server
 npm run build            # production build
 npm run preview          # preview the production build
 npm run lint             # ESLint
-npm run typecheck        # tsc --noEmit
+npm run typecheck        # tsc --noEmit for the app + node project configs
 npm run test             # Vitest (interactive)
 npm run test:run         # Vitest (single run)
 npm run test:watch       # Vitest watch mode
@@ -112,11 +113,28 @@ npm run evals:report     # render latest eval run
 npm run evals:validate   # validate eval cases/corpus
 ```
 
+## Quality Gates
+
+Every push and pull request runs the same checks in CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+
+- **Type-check** — `tsc --noEmit` against both the app and node project configs.
+- **Lint** — ESLint (flat config) with React, hooks, and TypeScript rules.
+- **Tests + coverage** — Vitest with enforced coverage thresholds.
+- **Dependency audit** — `audit-ci` fails the build on moderate-or-higher advisories.
+- **Eval fixtures** — `evals:validate` statically checks the eval cases and corpus.
+- **Build** — a production Vite build must succeed.
+
+Run the core checks locally before opening a PR:
+
+```bash
+npm run typecheck && npm run lint && npm run test:run && npm run build
+```
+
 ## Tech Stack
 
 | Category   | Tools                                       |
 | ---------- | ------------------------------------------- |
-| App        | React 18 · TypeScript · Vite 7              |
+| App        | React 19 · TypeScript · Vite 7              |
 | Routing    | React Router 7                              |
 | State      | Zustand                                     |
 | Gemini     | `@google/genai`                             |
@@ -137,7 +155,6 @@ src/
   store/         Zustand stores (one per mode + settings)
   hooks/         Reusable hooks
   design/        Theme primitives
-  test-utils/    Shared test helpers and mocks
 evals/           Assertion-based AI eval suite
 ```
 
@@ -146,6 +163,8 @@ evals/           Assertion-based AI eval suite
 - The API key is stored in `localStorage` with **lightweight obfuscation only** — treat it as accessible to anyone who can read browser storage on that device.
 - Use Open Gemini OCR on trusted, private devices. For production deployments, route Gemini calls through a server-side proxy rather than shipping a long-lived API key to browsers.
 - Files are read client-side and sent directly to the Gemini API. No data is sent to any other service.
+- The included Netlify/Vercel configs send hardening response headers — `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Strict-Transport-Security`, and a restrictive `Permissions-Policy` — alongside the in-document CSP. (`Strict-Transport-Security` omits `preload`; opt in deliberately, as it is an irreversible HTTPS-only commitment.)
+- Production builds ship without source maps; set `build.sourcemap` to `'hidden'` in `vite.config.ts` if your error tracker needs them.
 
 Vulnerability reports: see [SECURITY.md](SECURITY.md).
 
