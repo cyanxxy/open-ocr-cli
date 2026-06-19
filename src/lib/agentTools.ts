@@ -7,7 +7,7 @@ import {
   normalizeAgentDocumentType,
   normalizeAgentFieldName,
 } from './agentSchema';
-import { applyThinkingConfig } from './gemini/client';
+import { applyThinkingConfig, isFatalGeminiError } from './gemini/client';
 import { getTopKForModel, parseJsonPayload } from './gemini/structured';
 import { assertNormalizedRegion, cropDocumentRegion } from './regionRaster';
 
@@ -300,6 +300,15 @@ export async function executeReOcrRegion(
       return entryConfidence >= confidence_threshold;
     });
     const { acceptedFields, extractedSummaries } = normalizeStructuredFields(filteredFields, memory);
+
+    // The model only ever saw the CROPPED image, so any location it returns is
+    // crop-relative — meaningless in the original document frame. Overwrite each
+    // recovered field's location with the known original-frame region so a later
+    // re_ocr_region re-crops the correct area instead of a wrong one.
+    for (const field of Object.values(acceptedFields)) {
+      field.location = region;
+    }
+
     const simulatedFields = { ...memory.extractedFields, ...acceptedFields };
     applyCodeDrivenReviews(simulatedFields);
     const updatedReadiness = getAgentReadiness({
@@ -342,6 +351,11 @@ export async function executeReOcrRegion(
       }
     };
   } catch (error) {
+    // Surface non-retryable API failures so the agent loop stops instead of
+    // continuing to call tools against an exhausted/unauthorized endpoint.
+    if (isFatalGeminiError(error)) {
+      throw error;
+    }
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Re-OCR failed',

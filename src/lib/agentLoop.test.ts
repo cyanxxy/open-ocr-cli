@@ -12,7 +12,21 @@ vi.mock('./agentGemini', () => ({
 }));
 
 import { agentLoop, applyMemoryUpdate } from './agentLoop';
-import type { AgentMemory } from './agentTypes';
+import type { AgentMemory, AgentStep } from './agentTypes';
+
+async function drainLoop(generator: AsyncGenerator<AgentStep, AgentMemory>) {
+  const steps: AgentStep[] = [];
+  let current = await generator.next();
+  while (!current.done) {
+    steps.push(current.value);
+    current = await generator.next();
+  }
+  return { steps, memory: current.value };
+}
+
+const FIXTURE_FILE = () => new File(['fixture'], 'invoice.pdf', { type: 'application/pdf' });
+const FIXTURE_DATA = 'data:application/pdf;base64,ZmFrZQ==';
+const BASE_CONFIG = { confidenceThreshold: 0.8, temperature: 1, maxTokens: 1024 };
 
 function createMemory(): AgentMemory {
   return {
@@ -153,5 +167,65 @@ describe('agentLoop', () => {
       }),
     ]));
     expect((current.value as AgentMemory).currentIteration).toBe(1);
+  });
+
+  it('finalizes instead of looping when the inner tool-call rounds are exhausted', async () => {
+    mockExecuteAgentTurn.mockResolvedValue({ finished: false, steps: [] });
+
+    const { steps } = await drainLoop(agentLoop(
+      FIXTURE_FILE(),
+      FIXTURE_DATA,
+      { apiKey: 'test-key', model: 'gemini-3-flash-preview' },
+      { maxIterations: 3, ...BASE_CONFIG },
+    ));
+
+    // Terminal: a single turn that exhausts its rounds must NOT start a new
+    // iteration on top of a dangling function_result turn.
+    expect(mockExecuteAgentTurn).toHaveBeenCalledTimes(1);
+    expect(steps.some((s) => s.type === 'result' && s.content.includes('tool-call limit'))).toBe(true);
+  });
+
+  it('breaks immediately on a fatal API error and emits an error step', async () => {
+    mockExecuteAgentTurn.mockRejectedValue(new Error('RESOURCE_EXHAUSTED: quota exceeded'));
+
+    const { steps } = await drainLoop(agentLoop(
+      FIXTURE_FILE(),
+      FIXTURE_DATA,
+      { apiKey: 'test-key', model: 'gemini-3-flash-preview' },
+      { maxIterations: 3, ...BASE_CONFIG },
+    ));
+
+    expect(mockExecuteAgentTurn).toHaveBeenCalledTimes(1);
+    expect(steps.some((s) => s.type === 'error')).toBe(true);
+  });
+
+  it('retries a transient error and stops at max iterations', async () => {
+    mockExecuteAgentTurn.mockRejectedValue(new Error('temporary network blip'));
+
+    const { steps } = await drainLoop(agentLoop(
+      FIXTURE_FILE(),
+      FIXTURE_DATA,
+      { apiKey: 'test-key', model: 'gemini-3-flash-preview' },
+      { maxIterations: 2, ...BASE_CONFIG },
+    ));
+
+    expect(mockExecuteAgentTurn).toHaveBeenCalledTimes(2);
+    expect(steps.some((s) => s.type === 'result' && s.content.includes('Maximum iterations reached'))).toBe(true);
+  });
+
+  it('returns immediately without calling the model when already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const { steps, memory } = await drainLoop(agentLoop(
+      FIXTURE_FILE(),
+      FIXTURE_DATA,
+      { apiKey: 'test-key', model: 'gemini-3-flash-preview', abortSignal: controller.signal },
+      { maxIterations: 3, ...BASE_CONFIG },
+    ));
+
+    expect(mockExecuteAgentTurn).not.toHaveBeenCalled();
+    expect(steps.some((s) => s.type === 'error')).toBe(false);
+    expect(memory.extractedFields).toEqual({});
   });
 });

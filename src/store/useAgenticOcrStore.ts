@@ -220,6 +220,47 @@ function toFieldResult(fieldData: AgentMemory['extractedFields'][string], iterat
   };
 }
 
+/**
+ * Merge incoming fields into existing ones keeping the higher-confidence value
+ * (newer wins on ties), preserving a previously-known region when the newer
+ * extraction omits one. Mirrors `applyMemoryUpdate` in agentLoop so the live
+ * progress UI shows the same intermediate values as the final result instead of
+ * letting a low-confidence re-extraction clobber a better earlier one.
+ */
+function mergeFieldByConfidence(
+  existing: Record<string, FieldResult>,
+  incoming: Record<string, FieldResult>,
+): Record<string, FieldResult> {
+  const merged: Record<string, FieldResult> = { ...existing };
+
+  for (const [name, incomingField] of Object.entries(incoming)) {
+    const existingField = merged[name];
+    if (!existingField) {
+      merged[name] = incomingField;
+      continue;
+    }
+
+    const incomingConfidence = incomingField.confidence ?? 0;
+    const existingConfidence = existingField.confidence ?? 0;
+    const incomingAt = incomingField.extractedAt ?? 0;
+    const existingAt = existingField.extractedAt ?? 0;
+    const shouldReplace = incomingConfidence > existingConfidence
+      || (incomingConfidence === existingConfidence && incomingAt >= existingAt);
+
+    const winner = shouldReplace
+      ? { ...existingField, ...incomingField }
+      : { ...incomingField, ...existingField };
+
+    if (winner.location == null) {
+      winner.location = incomingField.location ?? existingField.location;
+    }
+
+    merged[name] = winner;
+  }
+
+  return merged;
+}
+
 function getProcessedPages(extractedFields: Record<string, FieldResult>): number[] {
   const processedPages = new Set<number>();
 
@@ -460,10 +501,7 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
             || typeof step.functionResult.memoryUpdate.confidence === 'number'
           ) {
             set((state) => {
-              const mergedFields = {
-                ...state.extractedFields,
-                ...incrementalFields,
-              };
+              const mergedFields = mergeFieldByConfidence(state.extractedFields, incrementalFields);
 
               return {
                 extractedFields: mergedFields,
@@ -711,11 +749,9 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
       };
     });
 
-    get().addLog({
-      type: 'function_call',
-      message: `Function called: ${functionCall.name}`,
-      details: functionCall,
-    });
+    // NOTE: the processing loop already emits a 'function_call' log for each step
+    // (see the addLog call in the agentLoop iterator). Logging again here would
+    // double every entry in the capped log buffer.
   },
 
   copyToClipboard: async () => {

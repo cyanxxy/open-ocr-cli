@@ -15,7 +15,18 @@ import {
   createFollowUpPrompt
 } from './agentGemini';
 import type { InteractionTurn } from './gemini/interactions';
-import { getAgentReadiness } from './agentSchema';
+import { isFatalGeminiError } from './gemini/client';
+
+/**
+ * A cancellation is identified by the abort signal or a fetch-level AbortError —
+ * never by substring-matching the message. The previous `includes('cancel')` /
+ * `includes('abort')` check misclassified genuine errors that merely mentioned
+ * those words as user cancellations and swallowed them with no error step.
+ */
+function wasAborted(error: unknown, abortSignal?: AbortSignal): boolean {
+  if (abortSignal?.aborted) return true;
+  return error instanceof Error && error.name === 'AbortError';
+}
 
 /**
  * Default agent configuration (Gemini 3)
@@ -220,38 +231,22 @@ export async function* agentLoop(
           break;
         }
 
-        // Check if we should stop based on confidence
-        const readiness = getAgentReadiness(memory);
-        if (
-          readiness.fieldCount > 0
-          && memory.confidence >= agentConfig.confidenceThreshold
-          && readiness.missingRequiredFields.length === 0
-        ) {
-          yield {
-            type: 'result',
-            content: `Target confidence and required coverage reached: ${(memory.confidence || 0).toFixed(2)}`,
-            timestamp: Date.now(),
-          };
-          isComplete = true;
-          break;
-        } else if (memory.confidence >= agentConfig.confidenceThreshold && readiness.missingRequiredFields.length > 0) {
-          yield {
-            type: 'thinking',
-            content: `Confidence target reached, but required fields are still missing: ${readiness.missingRequiredFields.join(', ')}`,
-            timestamp: Date.now(),
-          };
-        }
-
-        // Update progress
-        onProgress?.(
-          20 + iteration * (60 / agentConfig.maxIterations),
-          `Iteration ${iteration} completed`
-        );
+        // turnResult.finished === false means the inner loop hit MAX_INNER_ROUNDS
+        // without the model converging. Treat that as terminal: continuing to the
+        // next iteration would append a fresh user turn on top of the dangling
+        // function_result turn, producing two consecutive user turns and a
+        // malformed transcript. Finalize with whatever was gathered instead.
+        yield {
+          type: 'result',
+          content: `Reached the per-document tool-call limit; finalizing with ${Object.keys(memory.extractedFields).length} field(s) and ${(memory.confidence || 0).toFixed(2)} confidence.`,
+          timestamp: Date.now(),
+        };
+        isComplete = true;
+        break;
 
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Iteration failed';
-        const loweredError = errorMessage.toLowerCase();
-        if (clientConfig.abortSignal?.aborted || loweredError.includes('cancel') || loweredError.includes('abort')) {
+        if (wasAborted(error, clientConfig.abortSignal)) {
           return memory;
         }
 
@@ -261,8 +256,9 @@ export async function* agentLoop(
           timestamp: Date.now(),
         };
 
-        // Continue to next iteration unless it's a critical error
-        if (errorMessage.includes('API key') || errorMessage.includes('quota')) {
+        // Stop entirely on non-retryable failures (auth, permission, quota,
+        // rate limit); otherwise continue to the next iteration.
+        if (isFatalGeminiError(error)) {
           break;
         }
       }
@@ -293,8 +289,7 @@ export async function* agentLoop(
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Agent processing failed';
-    const loweredError = errorMessage.toLowerCase();
-    if (clientConfig.abortSignal?.aborted || loweredError.includes('cancel') || loweredError.includes('abort')) {
+    if (wasAborted(error, clientConfig.abortSignal)) {
       return memory;
     }
 
