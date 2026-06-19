@@ -60,10 +60,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(({
       size === 'sm' ? 'w-3 h-3' : size === 'md' ? 'w-4 h-4' : 'w-5 h-5'
     );
 
-    // If it's already a React element, clone it to apply sizing classes
-    if (React.isValidElement(icon)) {
+    // If it's already a React element, clone it to apply sizing classes.
+    // Parametrize isValidElement so props are typed (React 19 defaults element props to `unknown`).
+    if (React.isValidElement<React.HTMLAttributes<HTMLElement>>(icon)) {
       return React.cloneElement(icon, {
-        className: cn(iconClass, (icon.props as { className?: string }).className),
+        className: cn(iconClass, icon.props.className),
         'aria-hidden': true
       });
     }
