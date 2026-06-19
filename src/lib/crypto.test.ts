@@ -110,11 +110,14 @@ describe('crypto', () => {
     });
   });
 
-  describe('security properties', () => {
-    it('should not contain the original key in encrypted form', async () => {
+  // NOTE: this is reversible XOR obfuscation (with a key kept in localStorage),
+  // not encryption. Its only goal is to keep the API key out of plaintext in
+  // localStorage against casual inspection — it does not provide confidentiality.
+  describe('obfuscation properties', () => {
+    it('should not store the original key in plaintext form', async () => {
       const encrypted = await encryptData(testApiKey);
 
-      // The encrypted result shouldn't contain the original key
+      // The obfuscated result shouldn't contain the original key verbatim
       expect(encrypted.includes(testApiKey)).toBe(false);
     });
 

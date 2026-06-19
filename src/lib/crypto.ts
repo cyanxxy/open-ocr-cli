@@ -13,8 +13,8 @@ const ENCRYPTION_KEY_NAME = 'gemini-encryption-key';
 /** Character set used for generating random encryption keys */
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 
-/** Cached encryption key to avoid repeated localStorage access */
-const key = getOrCreateKey();
+/** Lazily-resolved, memoized key — avoids touching localStorage at import time. */
+let cachedKey: string | null = null;
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -72,19 +72,36 @@ function xorDecrypt(encryptedData: string, key: string): string {
   }
 }
 
+function generateKey(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(32)))
+    .map(x => CHARS.charAt(x % CHARS.length))
+    .join('');
+}
+
 /**
- * Retrieves an existing encryption key from localStorage or generates a new one.
+ * Retrieves an existing encryption key from localStorage or generates a new one,
+ * memoizing the result. Falls back to an in-memory key when localStorage is
+ * unavailable (Node, SSR, the headless agent engine) so importing this module
+ * never throws outside the browser.
  * @returns The encryption key as a 32-character string.
  */
 function getOrCreateKey(): string {
+  if (cachedKey !== null) {
+    return cachedKey;
+  }
+
+  if (typeof localStorage === 'undefined') {
+    cachedKey = generateKey();
+    return cachedKey;
+  }
+
   let key = localStorage.getItem(ENCRYPTION_KEY_NAME);
   if (!key) {
-    key = Array.from(crypto.getRandomValues(new Uint8Array(32)))
-      .map(x => CHARS.charAt(x % CHARS.length))
-      .join('');
+    key = generateKey();
     localStorage.setItem(ENCRYPTION_KEY_NAME, key);
   }
-  return key;
+  cachedKey = key;
+  return cachedKey;
 }
 
 /**
@@ -93,7 +110,7 @@ function getOrCreateKey(): string {
  * @returns A Promise resolving to the encrypted data as a base64-encoded string.
  */
 export async function encryptData(data: string): Promise<string> {
-  return xorEncrypt(data, key);
+  return xorEncrypt(data, getOrCreateKey());
 }
 
 /**
@@ -102,5 +119,5 @@ export async function encryptData(data: string): Promise<string> {
  * @returns A Promise resolving to the decrypted string, or an empty string if decryption fails.
  */
 export async function decryptData(encryptedData: string): Promise<string> {
-  return xorDecrypt(encryptedData, key);
+  return xorDecrypt(encryptedData, getOrCreateKey());
 }
