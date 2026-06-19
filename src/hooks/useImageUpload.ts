@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { validateFile, readFileAsDataUrl } from '../lib/fileUtils';
 import { logger } from '../lib/logger';
 
@@ -22,6 +22,12 @@ export function useImageUpload(options?: UseImageUploadOptions): UseImageUploadR
   const [imageData, setImageData] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Keep callbacks in a ref so processFile (and the handlers built on it) keep a
+  // stable identity even when callers pass a fresh inline `options` object each
+  // render — otherwise every render would rebuild handleFileChange/handleDrop.
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   const reset = useCallback(() => {
     setFile(null);
@@ -48,8 +54,8 @@ export function useImageUpload(options?: UseImageUploadOptions): UseImageUploadR
       setImageData(data);
 
       // Call success callback if provided
-      if (options?.onSuccess) {
-        options.onSuccess(data, file);
+      if (optionsRef.current?.onSuccess) {
+        optionsRef.current.onSuccess(data, file);
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to process file';
@@ -57,13 +63,13 @@ export function useImageUpload(options?: UseImageUploadOptions): UseImageUploadR
       setError(errorMessage);
 
       // Call error callback if provided
-      if (options?.onError) {
-        options.onError(errorMessage);
+      if (optionsRef.current?.onError) {
+        optionsRef.current.onError(errorMessage);
       }
     } finally {
       setIsLoading(false);
     }
-  }, [options]);
+  }, []);
 
   const handleFileChange = useCallback(async (files: FileList | null): Promise<void> => {
     if (!files || files.length === 0) return;

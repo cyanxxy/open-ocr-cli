@@ -61,6 +61,8 @@ export function SettingsModal({
   const modalRef = useRef<HTMLDivElement>(null);
   const apiKeyInputRef = useRef<HTMLInputElement>(null);
   const wasOpen = useRef(false);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+  const backdropMouseDownRef = useRef(false);
 
   // Sync local state only when modal transitions from closed to open
   useEffect(() => {
@@ -76,11 +78,16 @@ export function SettingsModal({
 
   useEffect(() => {
     if (isOpen) {
+      // Own the full focus lifecycle: remember what was focused before opening,
+      // move focus into the modal, and restore it on close/unmount so callers
+      // don't need to reach back in via a hardcoded element id.
+      previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
       const timer = setTimeout(() => apiKeyInputRef.current?.focus(), 50);
       document.body.style.overflow = 'hidden';
       return () => {
         clearTimeout(timer);
         document.body.style.overflow = '';
+        previouslyFocusedRef.current?.focus?.();
       };
     }
     document.body.style.overflow = '';
@@ -136,10 +143,17 @@ export function SettingsModal({
       className="fixed inset-0 z-50 flex items-center justify-center"
       onKeyDown={handleKeyDown}
     >
-      {/* Backdrop */}
+      {/* Backdrop — close only when both the press and release happen on the
+          backdrop itself, so a text drag that ends here doesn't discard edits. */}
       <div
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-        onClick={onClose}
+        onMouseDown={(e) => { backdropMouseDownRef.current = e.target === e.currentTarget; }}
+        onClick={(e) => {
+          if (backdropMouseDownRef.current && e.target === e.currentTarget) {
+            onClose();
+          }
+          backdropMouseDownRef.current = false;
+        }}
       />
 
       {/* Modal */}

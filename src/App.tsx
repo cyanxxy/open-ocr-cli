@@ -53,8 +53,8 @@ function App() {
   }, []);
 
   const handleCloseSettings = useCallback(() => {
+    // SettingsModal restores focus to the trigger on close.
     setIsSettingsOpen(false);
-    document.getElementById('settings-button')?.focus();
   }, []);
 
   const handleSaveSettings = useCallback(async (newApiKey: string, newTheme: typeof theme, newModel: typeof model, newThinkingConfig: typeof thinkingConfig) => {
@@ -63,7 +63,6 @@ function App() {
     setModel(newModel);
     updateThinkingConfig(newThinkingConfig);
     setIsSettingsOpen(false);
-    document.getElementById('settings-button')?.focus();
   }, [setApiKey, setTheme, setModel, updateThinkingConfig]);
 
   const handleCloseBanner = useCallback(() => {
@@ -82,8 +81,8 @@ function App() {
 
   return (
     <>
-      {/* API Key Banner */}
-      {showBanner && !apiKey && (
+      {/* API Key Banner (showBanner already requires !apiKey) */}
+      {showBanner && (
         <ApiKeyBanner
           onOpenSettings={handleOpenSettings}
           onClose={handleCloseBanner}

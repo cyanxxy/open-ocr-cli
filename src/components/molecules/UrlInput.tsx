@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useState, useCallback, useId } from 'react';
+import { useCallback, useId, useMemo } from 'react';
 import { Link, X, Plus, Globe, AlertCircle } from 'lucide-react';
 import { Button } from '../atoms/Button';
 import { cn } from '../../design/theme';
@@ -21,34 +21,27 @@ interface UrlItemProps {
 }
 
 const UrlItem: React.FC<UrlItemProps> = ({ url, index, onUpdate, onRemove, disabled }) => {
-  const [error, setError] = useState<string>('');
   const inputId = useId();
   const errorId = useId();
 
-  const validateUrl = (value: string) => {
-    if (!value) {
-      setError('');
-      return;
-    }
-
+  // Derive the validation error from the current `url` prop instead of holding it
+  // in local state. With a list keyed by index, local state would otherwise stay
+  // attached to the slot (not the value) and strand a stale error on the wrong
+  // row after a middle-row removal.
+  const error = useMemo(() => {
+    if (!url) return '';
     try {
-      const urlObj = new URL(value);
-      if (!parseSupportedHttpUrl(value)) {
-        setError('URL must start with http:// or https://');
-      } else if (!urlObj.hostname) {
-        setError('Invalid URL format');
-      } else {
-        setError('');
-      }
+      const urlObj = new URL(url);
+      if (!parseSupportedHttpUrl(url)) return 'URL must start with http:// or https://';
+      if (!urlObj.hostname) return 'Invalid URL format';
+      return '';
     } catch {
-      setError('Invalid URL format');
+      return 'Invalid URL format';
     }
-  };
+  }, [url]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value;
-    onUpdate(index, value);
-    validateUrl(value);
+    onUpdate(index, e.target.value);
   };
 
   return (

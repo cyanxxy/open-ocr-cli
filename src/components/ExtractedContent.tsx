@@ -474,7 +474,8 @@ const LoadingState = ({
               <div className="absolute inset-0 animate-pulse motion-reduce:animate-none bg-white/20" />
             </div>
           </div>
-          <span className="sr-only">{Math.round(clampedProgress)} percent complete</span>
+          {/* The progressbar (aria-live + aria-valuenow) is the single announcing
+              surface; a separate sr-only percent span would double announcements. */}
         </div>
 
         {onCancel && (
@@ -583,6 +584,38 @@ const ExtractedContent = ({
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);
   }, [isMaximized, handleClose]);
+
+  // Trap Tab focus within the maximized dialog (it declares aria-modal, so focus
+  // must not escape to the page behind it).
+  useEffect(() => {
+    if (!isMaximized) return;
+
+    const handleTab = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const container = modalRef.current;
+      if (!container) return;
+
+      const focusable = container.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+
+      if (event.shiftKey && (active === first || active === container)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener('keydown', handleTab);
+    return () => window.removeEventListener('keydown', handleTab);
+  }, [isMaximized]);
 
   // Handle Body Scroll Lock
   useEffect(() => {
