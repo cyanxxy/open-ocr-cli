@@ -131,13 +131,11 @@ export function getModelClient(
   return {
     generateContent: async (params: GenerationParams) => {
       let contents: ContentListUnion = params.contents || '';
-      if (typeof params === 'string') {
-        contents = params;
-      } else if (params.prompt) {
+      if (params.prompt) {
         contents = params.prompt;
       }
 
-      const rawGenerationConfig = typeof params === 'string' ? {} : (params.generationConfig || {});
+      const rawGenerationConfig = params.generationConfig || {};
       const { maxTokens, maxOutputTokens, ...restGenerationConfig } = rawGenerationConfig;
       const mappedGenerationConfig = {
         ...restGenerationConfig,
@@ -148,10 +146,10 @@ export function getModelClient(
 
       const config: Record<string, unknown> = {
         ...mappedGenerationConfig,
-        ...((typeof params === 'string' ? {} : params.config) || {})
+        ...(params.config || {})
       };
 
-      if (typeof params !== 'string' && params.safetySettings && !('safetySettings' in config)) {
+      if (params.safetySettings && !('safetySettings' in config)) {
         config.safetySettings = params.safetySettings;
       }
 
@@ -174,13 +172,11 @@ export function getModelClient(
       // Handle streaming with new SDK
       let contents: ContentListUnion = params.contents || '';
 
-      if (typeof params === 'string') {
-        contents = params;
-      } else if (params.prompt) {
+      if (params.prompt) {
         contents = params.prompt;
       }
 
-      const rawGenerationConfig = typeof params === 'string' ? {} : (params.generationConfig || {});
+      const rawGenerationConfig = params.generationConfig || {};
       const { maxTokens, maxOutputTokens, ...restGenerationConfig } = rawGenerationConfig;
       const mappedGenerationConfig = {
         ...restGenerationConfig,
@@ -191,10 +187,10 @@ export function getModelClient(
 
       const config: Record<string, unknown> = {
         ...mappedGenerationConfig,
-        ...((typeof params === 'string' ? {} : params.config) || {})
+        ...(params.config || {})
       };
 
-      if (typeof params !== 'string' && params.safetySettings && !('safetySettings' in config)) {
+      if (params.safetySettings && !('safetySettings' in config)) {
         config.safetySettings = params.safetySettings;
       }
 
@@ -241,23 +237,60 @@ export function isGemini3Model(modelName: GeminiModel): boolean {
  * - Gemini 3.1 Pro supports: low, medium, high
  * - Gemini 3 Flash / Gemini 3.5 Flash support: minimal, low, medium, high
  */
-export function applyThinkingConfig(
-  generationConfig: Record<string, unknown>,
+/**
+ * Detect non-retryable Gemini API failures (auth, permission, quota/rate-limit).
+ * The agent loop uses this to stop entirely rather than burn iterations against
+ * an endpoint that will keep rejecting every request.
+ */
+export function isFatalGeminiError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    message.includes('resource_exhausted')
+    || message.includes('rate limit')
+    || message.includes('rate-limit')
+    || message.includes('quota')
+    || message.includes('429')
+    || message.includes('api key')
+    || message.includes('api_key_invalid')
+    || message.includes('permission_denied')
+    || message.includes('permission denied')
+  );
+}
+
+/**
+ * Resolve a UI `ThinkingLevel` to the lowercase wire value the Gemini API
+ * expects (`"minimal" | "low" | "medium" | "high"`), clamped to what the given
+ * model supports. Shared by both the `generateContent` path (applyThinkingConfig)
+ * and the Interactions API path (createInteractionGenerationConfig) so they
+ * never diverge.
+ *
+ * - Gemini 3.1 Pro supports: low, medium, high
+ * - Gemini 3 Flash / Gemini 3.5 Flash support: minimal, low, medium, high
+ * - Unsupported/unknown levels fall back to `high`.
+ */
+export function normalizeThinkingLevel(
+  level: ThinkingLevel | undefined,
   modelName: GeminiModel,
-  thinkingConfig?: { level: ThinkingLevel; includeThoughts?: boolean }
-) {
-  const rawLevel = thinkingConfig?.level ?? 'HIGH';
+): 'minimal' | 'low' | 'medium' | 'high' {
+  const rawLevel = level ?? 'HIGH';
   const normalized = typeof rawLevel === 'string' ? rawLevel.toUpperCase() : rawLevel;
   const isFlash = modelName === 'gemini-3-flash-preview' || modelName === 'gemini-3.5-flash';
   const allowed = isFlash
     ? (['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'] as const)
     : (['LOW', 'MEDIUM', 'HIGH'] as const);
-  const level = (allowed as readonly string[]).includes(normalized) ? normalized : 'HIGH';
+  const resolved = (allowed as readonly string[]).includes(normalized) ? normalized : 'HIGH';
+  return resolved.toLowerCase() as 'minimal' | 'low' | 'medium' | 'high';
+}
 
+export function applyThinkingConfig(
+  generationConfig: Record<string, unknown>,
+  modelName: GeminiModel,
+  thinkingConfig?: { level: ThinkingLevel; includeThoughts?: boolean }
+) {
   return {
     ...generationConfig,
     thinkingConfig: {
-      thinkingLevel: level.toLowerCase(),
+      thinkingLevel: normalizeThinkingLevel(thinkingConfig?.level, modelName),
       ...(thinkingConfig?.includeThoughts && { includeThoughts: true }),
     },
   };

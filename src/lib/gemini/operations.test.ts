@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./client', () => ({
   isGemini3Model: vi.fn(() => true),
+  normalizeThinkingLevel: vi.fn(() => 'high'),
 }));
 
 vi.mock('./interactions', async () => {
@@ -144,6 +145,80 @@ describe('extractTextFromUrls', () => {
       ),
     ).rejects.toThrow(
       'Grounded URL extraction did not return a complete result for every requested URL. Web OCR only returns verified URL-context results and will not guess content.',
+    );
+  });
+
+  it('pairs content with the correct URL even when the model reorders results', async () => {
+    mockRunModelInteraction.mockResolvedValueOnce({
+      id: 'interaction-5',
+      status: 'completed',
+      outputs: [
+        {
+          type: 'url_context_result',
+          result: [
+            { status: 'success', url: 'https://example.com' },
+            { status: 'success', url: 'https://example.org' },
+          ],
+        },
+        {
+          type: 'text',
+          // Returned in the OPPOSITE order from the request, with a trailing
+          // slash + www variation to exercise normalized matching.
+          text: JSON.stringify({
+            results: [
+              { url: 'https://www.example.org/', type: 'webpage', content: 'Org content' },
+              { url: 'https://example.com', type: 'webpage', content: 'Com content' },
+            ],
+          }),
+        },
+      ],
+    });
+
+    const result = await extractTextFromUrls(
+      ['https://example.com', 'https://example.org'],
+      'test-api-key',
+      'individual',
+      'gemini-3-flash-preview',
+    );
+
+    const byUrl = Object.fromEntries((result.results ?? []).map((r) => [r.url, r.content]));
+    expect(byUrl['https://example.com']).toBe('Com content');
+    expect(byUrl['https://example.org']).toBe('Org content');
+  });
+
+  it('fails closed when individual mode returns a result for an unrequested URL', async () => {
+    mockRunModelInteraction.mockResolvedValueOnce({
+      id: 'interaction-6',
+      status: 'completed',
+      outputs: [
+        {
+          type: 'url_context_result',
+          result: [
+            { status: 'success', url: 'https://example.com' },
+            { status: 'success', url: 'https://example.org' },
+          ],
+        },
+        {
+          type: 'text',
+          text: JSON.stringify({
+            results: [
+              { url: 'https://example.com', type: 'webpage', content: 'Com content' },
+              { url: 'https://evil.example.net', type: 'webpage', content: 'Unexpected content' },
+            ],
+          }),
+        },
+      ],
+    });
+
+    await expect(
+      extractTextFromUrls(
+        ['https://example.com', 'https://example.org'],
+        'test-api-key',
+        'individual',
+        'gemini-3-flash-preview',
+      ),
+    ).rejects.toThrow(
+      'Grounded URL extraction returned a result for an unexpected URL (https://evil.example.net).',
     );
   });
 });

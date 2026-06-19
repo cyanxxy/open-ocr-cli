@@ -1,5 +1,5 @@
 import type { Content, FunctionDeclaration } from '@google/genai';
-import { getGenAIClient } from './client';
+import { getGenAIClient, normalizeThinkingLevel } from './client';
 import type { GeminiModel, ThinkingConfig } from './types';
 
 type InteractionToolChoice = 'auto' | 'any' | 'none' | 'validated';
@@ -85,10 +85,6 @@ interface InteractionRequest {
   store?: boolean;
 }
 
-function mapThinkingLevel(level?: ThinkingConfig['level']): 'low' | 'high' {
-  return level === 'HIGH' || level === 'MEDIUM' ? 'high' : 'low';
-}
-
 export function createInteractionGenerationConfig(
   config: {
     temperature?: number;
@@ -96,6 +92,7 @@ export function createInteractionGenerationConfig(
     topP?: number;
     toolChoice?: InteractionToolChoice;
   },
+  model: GeminiModel,
   thinkingConfig?: ThinkingConfig,
 ): Record<string, unknown> {
   const generationConfig: Record<string, unknown> = {
@@ -105,9 +102,11 @@ export function createInteractionGenerationConfig(
     ...(config.toolChoice ? { tool_choice: config.toolChoice } : {}),
   };
 
-  const effectiveThinkingConfig = thinkingConfig ?? { level: 'HIGH', includeThoughts: false };
-  generationConfig.thinking_level = mapThinkingLevel(effectiveThinkingConfig.level);
-  generationConfig.thinking_summaries = effectiveThinkingConfig.includeThoughts ? 'auto' : 'none';
+  // Map the UI level to the model-gated lowercase wire value. MEDIUM/MINIMAL are
+  // preserved here (the previous mapping collapsed everything to low/high, which
+  // silently over-reasoned and over-billed on the Interactions path).
+  generationConfig.thinking_level = normalizeThinkingLevel(thinkingConfig?.level, model);
+  generationConfig.thinking_summaries = thinkingConfig?.includeThoughts ? 'auto' : 'none';
 
   return generationConfig;
 }

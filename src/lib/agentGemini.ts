@@ -23,6 +23,7 @@ import {
   AgentTurnResult
 } from './agentTypes';
 import { applyMemoryUpdate } from './agentLoop';
+import { isFatalGeminiError } from './gemini/client';
 import { buildAgentSchemaGuidance, getAgentReadiness } from './agentSchema';
 
 import {
@@ -64,7 +65,7 @@ export async function executeAgentTurn(
     topP: 0.95,
     maxOutputTokens: config.maxTokens || 4096,
     toolChoice: 'validated',
-  }, clientConfig.thinkingConfig);
+  }, clientConfig.model, clientConfig.thinkingConfig);
   const tools = createInteractionFunctionTools(functions);
   const allSteps: AgentStep[] = [];
   let hasCalledTools = false;
@@ -229,6 +230,13 @@ export async function executeFunctionCall(
         throw new Error(`Unknown function: ${name}`);
     }
   } catch (error) {
+    // Non-retryable failures (bad API key, quota, rate limit) must NOT be
+    // downgraded to a per-tool error result — that would let the loop keep
+    // hammering an exhausted endpoint. Surface them so the outer loop can stop.
+    if (isFatalGeminiError(error)) {
+      throw error;
+    }
+
     const errorMessage = error instanceof Error ? error.message : 'Function execution failed';
     const errorDetails = {
       functionName: name,

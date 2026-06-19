@@ -27,6 +27,23 @@ function normalizeResultType(value: unknown): UrlResult['type'] {
   }
 }
 
+/**
+ * Normalize a URL for matching so trivial differences (scheme casing, `www.`,
+ * trailing slash) don't prevent a returned entry from being resolved back to the
+ * exact URL the user requested.
+ */
+function normalizeUrlForMatch(value: string): string {
+  const trimmed = value.trim();
+  try {
+    const parsed = new URL(trimmed);
+    const host = parsed.host.toLowerCase().replace(/^www\./, '');
+    const path = parsed.pathname.replace(/\/+$/, '') || '/';
+    return `${host}${path}${parsed.search}`;
+  } catch {
+    return trimmed.toLowerCase().replace(/\/+$/, '');
+  }
+}
+
 function parseIndividualResults(responseText: string, urls: string[]): UrlResult[] {
   const jsonMatch = responseText.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
@@ -38,7 +55,15 @@ function parseIndividualResults(responseText: string, urls: string[]): UrlResult
     throw createGroundedUrlError('Grounded URL extraction did not return a complete result for every requested URL.');
   }
 
-  return parsed.results.map((entry, index) => {
+  // Resolve each returned entry back to the requested URL by content, never by
+  // array position: the model can reorder results, and trusting the index (or a
+  // blindly-returned url) silently mislabels which URL produced which text.
+  const remaining = new Map<string, string>();
+  for (const url of urls) {
+    remaining.set(normalizeUrlForMatch(url), url);
+  }
+
+  return parsed.results.map((entry) => {
     if (!entry || typeof entry !== 'object') {
       throw createGroundedUrlError('Grounded URL extraction returned a malformed result entry.');
     }
@@ -50,12 +75,23 @@ function parseIndividualResults(responseText: string, urls: string[]): UrlResult
       content?: unknown;
     };
 
+    if (typeof result.url !== 'string') {
+      throw createGroundedUrlError('Grounded URL extraction returned a result without its source URL.');
+    }
+
+    const matchKey = normalizeUrlForMatch(result.url);
+    const requestedUrl = remaining.get(matchKey);
+    if (!requestedUrl) {
+      throw createGroundedUrlError(`Grounded URL extraction returned a result for an unexpected URL (${result.url}).`);
+    }
+    remaining.delete(matchKey);
+
     if (typeof result.content !== 'string' || result.content.trim().length === 0) {
       throw createGroundedUrlError('Grounded URL extraction returned an empty result for at least one URL.');
     }
 
     return {
-      url: typeof result.url === 'string' ? result.url : urls[index],
+      url: requestedUrl,
       type: normalizeResultType(result.type),
       title: typeof result.title === 'string' ? result.title : undefined,
       content: result.content.trim(),
@@ -193,7 +229,7 @@ Format as a structured comparison analysis.`;
       temperature: isGemini3Model(model) ? 1.0 : 0.2,
       maxOutputTokens: 8192,
       topP: 0.95,
-    }, thinkingConfig);
+    }, model, thinkingConfig);
 
     const responseFormat = analysisMode === 'individual'
       ? {
