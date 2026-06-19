@@ -9,3 +9,15 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+# Security response headers (frame-ancestors / HSTS / nosniff cannot be set via a
+# meta tag, so they live here). HSTS intentionally omits `preload` — that is an
+# irreversible HTTPS-only commitment; add it deliberately if desired.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
