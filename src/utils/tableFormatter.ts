@@ -123,7 +123,14 @@ export function formatAsMarkdownTable(content: string): string {
   
   if (!detection.isTable) {
     const lines = content.trim().split('\n');
-    if (lines.length > 1 && lines.every(line => !/[.!?]/.test(line))) {
+    // Only synthesize a single-column table from a clean vertical list: every
+    // line must be punctuation-free AND carry no table signals (a pipe or a
+    // multi-space gap). Otherwise a multi-line block that merely failed full
+    // table detection would be wrongly wrapped into a spurious one-column table.
+    const isCleanVerticalList = lines.length > 1 && lines.every(
+      line => !/[.!?]/.test(line) && !line.includes('|') && !/\S+\s{2,}\S+/.test(line),
+    );
+    if (isCleanVerticalList) {
       const rows = lines.map(line => [line.trim()]);
       const header = rows[0][0];
       const separator = '-'.repeat(Math.max(3, header.length + 2));

@@ -49,7 +49,57 @@ function clampConfidence(value: unknown): number {
   return Math.min(1, Math.max(0, value));
 }
 
-function normalizeFieldValue(value: unknown, type: PresetExtractedField['type']): PrimitiveFieldValue {
+/**
+ * Parse a human-formatted number that may use US ("1,234.56"), European
+ * ("1.234,56"), or plain ("1234") grouping/decimal conventions, with optional
+ * currency symbols/letters. Returns null when no numeric value can be recovered
+ * so the caller can fall back to the original string.
+ *
+ * The previous implementation stripped everything except digits/dots/minus,
+ * which corrupted thousands-separated and European values (e.g. "1.234,56"
+ * became NaN, "1,234.56" became 1.234).
+ */
+function parseLocaleNumber(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!/[0-9]/.test(trimmed)) {
+    return null;
+  }
+
+  const sign = /^-/.test(trimmed) ? -1 : 1;
+  let cleaned = trimmed.replace(/[^0-9.,]/g, '');
+  if (cleaned === '') {
+    return null;
+  }
+
+  const hasComma = cleaned.includes(',');
+  const hasDot = cleaned.includes('.');
+
+  if (hasComma && hasDot) {
+    // The right-most separator is the decimal point; the other is grouping.
+    const decimalSep = cleaned.lastIndexOf(',') > cleaned.lastIndexOf('.') ? ',' : '.';
+    const groupSep = decimalSep === ',' ? '.' : ',';
+    cleaned = cleaned.split(groupSep).join('').replace(decimalSep, '.');
+  } else if (hasComma) {
+    // Only commas: a single comma with a non-3-digit tail is a decimal comma
+    // ("1,5", "1234,56"); otherwise treat commas as grouping ("1,234", "1,234,567").
+    const parts = cleaned.split(',');
+    cleaned = parts.length === 2 && parts[1].length !== 3
+      ? `${parts[0]}.${parts[1]}`
+      : parts.join('');
+  } else if (hasDot) {
+    // Only dots: multiple dots can only be grouping ("1.234.567"); a single dot
+    // is treated as the decimal point.
+    const parts = cleaned.split('.');
+    if (parts.length > 2) {
+      cleaned = parts.join('');
+    }
+  }
+
+  const result = Number(cleaned);
+  return Number.isFinite(result) ? sign * result : null;
+}
+
+export function normalizeFieldValue(value: unknown, type: PresetExtractedField['type']): PrimitiveFieldValue {
   if (value == null) {
     return type === 'list' ? [] : null;
   }
@@ -78,8 +128,8 @@ function normalizeFieldValue(value: unknown, type: PresetExtractedField['type'])
     if (typeof value === 'number') {
       return value;
     }
-    const numeric = Number(String(value).replace(/[^0-9.-]+/g, ''));
-    return Number.isFinite(numeric) ? numeric : String(value).trim();
+    const numeric = parseLocaleNumber(String(value));
+    return numeric !== null ? numeric : String(value).trim();
   }
 
   if (type === 'currency') {
@@ -88,10 +138,8 @@ function normalizeFieldValue(value: unknown, type: PresetExtractedField['type'])
     }
 
     const trimmed = String(value).trim();
-    const numeric = Number(trimmed.replace(/[^0-9.-]+/g, ''));
-    return Number.isFinite(numeric) && /[0-9]/.test(trimmed)
-      ? numeric.toFixed(2)
-      : trimmed;
+    const numeric = parseLocaleNumber(trimmed);
+    return numeric !== null ? numeric.toFixed(2) : trimmed;
   }
 
   return String(value).trim();

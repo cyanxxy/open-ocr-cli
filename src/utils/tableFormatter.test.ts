@@ -275,6 +275,15 @@ describe('tableFormatter', () => {
       expect(result).toBe(expected);
     });
 
+    it('should not wrap non-table multi-line text into a spurious single-column table', () => {
+      // A stray pipe and a multi-space gap are table signals; a block that
+      // failed full table detection must pass through unchanged, not become a
+      // bogus one-column table.
+      const input = 'Field|\nName  Value';
+      const result = formatAsMarkdownTable(input);
+      expect(result).toBe(input);
+    });
+
     it('should handle data with quotes', () => {
       const input =
         'Name,Description\n"John Doe","A person with, commas"\n"Jane Smith","Another person"';

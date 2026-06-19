@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { PresetStructuredOutput } from '../gemini/types';
-import { buildPresetCsv, buildPresetMarkdown, buildPresetPrompt, runExtractionPreset } from './engine';
+import { buildPresetCsv, buildPresetMarkdown, buildPresetPrompt, normalizeFieldValue, runExtractionPreset } from './engine';
 import { getExtractionPreset } from './presets';
 
 vi.mock('@google/genai', () => ({
@@ -106,5 +106,43 @@ describe('template engine helpers', () => {
 
     expect(result.json.fields.total?.value).toBe('1471.50');
     expect(result.json.fields.currency?.value).toBe('USD');
+  });
+});
+
+describe('normalizeFieldValue number/currency parsing', () => {
+  it('parses US-formatted numbers', () => {
+    expect(normalizeFieldValue('1,234.56', 'number')).toBe(1234.56);
+    expect(normalizeFieldValue('1,234', 'number')).toBe(1234);
+    expect(normalizeFieldValue('1,234,567', 'number')).toBe(1234567);
+  });
+
+  it('parses European-formatted numbers', () => {
+    expect(normalizeFieldValue('1.234,56', 'number')).toBe(1234.56);
+    expect(normalizeFieldValue('1.234.567', 'number')).toBe(1234567);
+    expect(normalizeFieldValue('1,5', 'number')).toBe(1.5);
+  });
+
+  it('parses plain and signed numbers', () => {
+    expect(normalizeFieldValue('1234', 'number')).toBe(1234);
+    expect(normalizeFieldValue('-1.234,56', 'number')).toBe(-1234.56);
+    expect(normalizeFieldValue(19.5, 'number')).toBe(19.5);
+  });
+
+  it('falls back to the trimmed string for non-numeric values', () => {
+    expect(normalizeFieldValue('not a number', 'number')).toBe('not a number');
+    expect(normalizeFieldValue('  N/A  ', 'number')).toBe('N/A');
+  });
+
+  it('normalizes currency across US/European/plain formats to two decimals', () => {
+    expect(normalizeFieldValue('1,234.56', 'currency')).toBe('1234.56');
+    expect(normalizeFieldValue('1.234,56', 'currency')).toBe('1234.56');
+    expect(normalizeFieldValue('€1.234,56', 'currency')).toBe('1234.56');
+    expect(normalizeFieldValue('1234', 'currency')).toBe('1234.00');
+    expect(normalizeFieldValue('1.234.567', 'currency')).toBe('1234567.00');
+    expect(normalizeFieldValue(1471.5, 'currency')).toBe('1471.50');
+  });
+
+  it('keeps non-numeric currency values verbatim', () => {
+    expect(normalizeFieldValue('USD', 'currency')).toBe('USD');
   });
 });
