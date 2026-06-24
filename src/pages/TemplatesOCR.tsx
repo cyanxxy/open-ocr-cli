@@ -31,7 +31,10 @@ function triggerArtifactDownload(filename: string, content: string, mimeType: st
   anchor.href = url;
   anchor.download = filename;
   anchor.click();
-  URL.revokeObjectURL(url);
+  // audit T-08: defer revoke so the browser can finish fetching the blob URL.
+  // Some browsers (Firefox, older Chromium) fetch the download asynchronously,
+  // so an immediate revoke can yield an empty/failed download.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 type ArtifactView = 'markdown' | 'json' | 'csv';
@@ -192,7 +195,7 @@ export default function TemplatesOCR() {
               OCR that ships <em className="font-normal italic">usable data</em>
             </h1>
             <p className="max-w-3xl mx-auto text-lg text-stone-500 dark:text-stone-400 leading-relaxed" style={{ fontFamily: editorial.fonts.body }}>
-              Pick a preset, upload a document, and get markdown, JSON, and CSV artifacts from the same extraction run.
+              Pick a preset, upload a document, and get markdown and JSON from every run, plus tabular CSV for table presets like invoice and receipt.
             </p>
           </header>
 
@@ -381,7 +384,7 @@ export default function TemplatesOCR() {
                   Output artifacts
                 </p>
                 <h2 className="text-xl font-semibold text-stone-900 dark:text-stone-100" style={{ fontFamily: editorial.fonts.heading }}>
-                  Markdown, JSON, and CSV from one run
+                  Markdown and JSON from one run, plus CSV for table presets
                 </h2>
               </div>
 

@@ -22,6 +22,46 @@ describe('urlValidation', () => {
       expect(parseSupportedHttpUrl('not a url')).toBeNull();
       expect(parseSupportedHttpUrl('://missing-scheme')).toBeNull();
     });
+
+    // audit H-08: Gemini URL Context only supports publicly-accessible URLs.
+    it('rejects URLs with embedded credentials', () => {
+      expect(parseSupportedHttpUrl('http://user:pass@example.com')).toBeNull();
+      expect(parseSupportedHttpUrl('https://admin@example.com/secret')).toBeNull();
+    });
+
+    it('rejects loopback and localhost hosts', () => {
+      expect(parseSupportedHttpUrl('http://localhost/path')).toBeNull();
+      expect(parseSupportedHttpUrl('http://127.0.0.1/foo')).toBeNull();
+      expect(parseSupportedHttpUrl('http://0.0.0.0/')).toBeNull();
+      expect(parseSupportedHttpUrl('http://[::1]/')).toBeNull();
+    });
+
+    it('rejects private and link-local IPv4 ranges', () => {
+      expect(parseSupportedHttpUrl('http://10.0.0.1/')).toBeNull();
+      expect(parseSupportedHttpUrl('http://172.16.0.1/')).toBeNull();
+      expect(parseSupportedHttpUrl('http://172.31.255.255/')).toBeNull();
+      expect(parseSupportedHttpUrl('http://192.168.1.1/')).toBeNull();
+      expect(parseSupportedHttpUrl('http://169.254.1.1/')).toBeNull();
+      expect(parseSupportedHttpUrl('http://100.64.0.1/')).toBeNull();
+    });
+
+    it('rejects private IPv6 ranges', () => {
+      expect(parseSupportedHttpUrl('http://[fd00::1]/')).toBeNull();
+      expect(parseSupportedHttpUrl('http://[fe80::1]/')).toBeNull();
+    });
+
+    it('rejects tunnelling hosts (ngrok/pinggy/localtunnel)', () => {
+      expect(parseSupportedHttpUrl('https://abc123.ngrok.io/')).toBeNull();
+      expect(parseSupportedHttpUrl('https://abc.ngrok-free.app/')).toBeNull();
+      expect(parseSupportedHttpUrl('https://demo.pinggy.io/')).toBeNull();
+      expect(parseSupportedHttpUrl('https://demo.loca.lt/')).toBeNull();
+    });
+
+    it('still accepts ordinary public hosts (172.x outside the private block, public IPs)', () => {
+      expect(parseSupportedHttpUrl('https://example.com/path')?.protocol).toBe('https:');
+      expect(parseSupportedHttpUrl('http://172.15.0.1/')?.protocol).toBe('http:');
+      expect(parseSupportedHttpUrl('http://8.8.8.8/')?.protocol).toBe('http:');
+    });
   });
 
   describe('isSupportedHttpUrl', () => {

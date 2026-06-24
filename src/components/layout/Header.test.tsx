@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { BrowserRouter } from 'react-router';
 import { Header } from './Header';
 
@@ -82,5 +82,85 @@ describe('Header', () => {
     // Check mobile nav exists (has two navigation elements)
     const navElements = screen.getAllByRole('navigation');
     expect(navElements.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // audit X-01: the brand must not be a heading so each route keeps a single page-level h1
+  it('should not render an h1 heading (brand is a non-heading span)', () => {
+    const onOpenSettings = vi.fn();
+    const { container } = renderWithRouter(
+      <Header apiKey="" onOpenSettings={onOpenSettings} />
+    );
+
+    expect(container.querySelectorAll('h1')).toHaveLength(0);
+    expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
+  });
+
+  // audit X-02: every icon-only mobile nav link exposes an accessible name and current-page state
+  it('should give every mobile nav link an accessible name', () => {
+    const onOpenSettings = vi.fn();
+    renderWithRouter(<Header apiKey="" onOpenSettings={onOpenSettings} />);
+
+    const mobileNav = screen
+      .getAllByRole('navigation')
+      .find((nav) => nav.className.includes('md:hidden'));
+    expect(mobileNav).toBeDefined();
+
+    const expectedLabels = ['Simple OCR', 'Templates', 'Web OCR', 'Bulk OCR', 'Agentic OCR'];
+    for (const label of expectedLabels) {
+      expect(within(mobileNav as HTMLElement).getByRole('link', { name: label })).toBeInTheDocument();
+    }
+
+    // No mobile nav link should have an empty accessible name.
+    const links = within(mobileNav as HTMLElement).getAllByRole('link');
+    expect(links).toHaveLength(expectedLabels.length);
+    for (const link of links) {
+      expect(link.getAttribute('aria-label')).toBeTruthy();
+    }
+  });
+
+  // audit X-02: the active mobile link is marked aria-current="page"
+  it('should mark the active mobile nav link with aria-current="page"', () => {
+    const onOpenSettings = vi.fn();
+    renderWithRouter(<Header apiKey="" onOpenSettings={onOpenSettings} />);
+
+    const mobileNav = screen
+      .getAllByRole('navigation')
+      .find((nav) => nav.className.includes('md:hidden')) as HTMLElement;
+
+    // BrowserRouter starts at "/", which is the Simple OCR link.
+    const activeLink = within(mobileNav).getByRole('link', { name: 'Simple OCR' });
+    expect(activeLink).toHaveAttribute('aria-current', 'page');
+
+    const inactiveLink = within(mobileNav).getByRole('link', { name: 'Templates' });
+    expect(inactiveLink).not.toHaveAttribute('aria-current');
+  });
+
+  // audit X-03: action buttons must declare type="button" so they never submit a wrapping form
+  it('should declare type="button" on the settings/API-key button', () => {
+    const onOpenSettings = vi.fn();
+    const { rerender } = renderWithRouter(
+      <Header apiKey="" onOpenSettings={onOpenSettings} />
+    );
+
+    expect(screen.getByRole('button', { name: 'Add API Key' })).toHaveAttribute('type', 'button');
+
+    rerender(
+      <BrowserRouter>
+        <Header apiKey="test-api-key" onOpenSettings={onOpenSettings} />
+      </BrowserRouter>
+    );
+    expect(screen.getByRole('button', { name: 'Open settings' })).toHaveAttribute('type', 'button');
+  });
+
+  // audit X-05: the live-status dot disables its pulse under prefers-reduced-motion
+  it('should disable the live indicator pulse for reduced motion', () => {
+    const onOpenSettings = vi.fn();
+    const { container } = renderWithRouter(
+      <Header apiKey="key" onOpenSettings={onOpenSettings} />
+    );
+
+    const pulse = container.querySelector('.animate-pulse');
+    expect(pulse).not.toBeNull();
+    expect(pulse?.className).toContain('motion-reduce:animate-none');
   });
 });

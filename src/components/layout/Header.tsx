@@ -36,7 +36,9 @@ export function Header({ apiKey, onOpenSettings }: HeaderProps) {
                 "shadow-lg shadow-stone-900/20 dark:shadow-black/30",
                 "transition-all duration-300 ease-out",
                 "group-hover:shadow-xl group-hover:shadow-stone-900/30 dark:group-hover:shadow-black/40",
-                "group-hover:-translate-y-0.5 group-hover:rotate-[-2deg]"
+                "group-hover:-translate-y-0.5 group-hover:rotate-[-2deg]",
+                // audit X-05: respect prefers-reduced-motion for the logo hover transform
+                "motion-reduce:transition-none motion-reduce:transform-none"
               )}>
                 <Newspaper
                   className="w-4 h-4 sm:w-5 sm:h-5 md:w-6 md:h-6 text-stone-100 dark:text-stone-900"
@@ -50,9 +52,10 @@ export function Header({ apiKey, onOpenSettings }: HeaderProps) {
                 <span
                   className={cn(
                     "absolute inset-0 rounded-full",
+                    // audit X-05: disable the pulse animation under prefers-reduced-motion
                     apiKey
-                      ? "bg-emerald-500 animate-pulse"
-                      : "bg-amber-500 animate-pulse"
+                      ? "bg-emerald-500 animate-pulse motion-reduce:animate-none"
+                      : "bg-amber-500 animate-pulse motion-reduce:animate-none"
                   )}
                   style={{ animationDuration: '2s' }}
                 />
@@ -67,11 +70,12 @@ export function Header({ apiKey, onOpenSettings }: HeaderProps) {
 
             {/* Brand text */}
             <div className="flex flex-col">
-              <h1
+              {/* audit X-01: brand is a non-heading <span> so each route keeps a single page-level <h1> */}
+              <span
                 className={cn(
                   "text-base sm:text-xl md:text-2xl tracking-tight",
                   "text-stone-900 dark:text-stone-100",
-                  "transition-colors duration-200",
+                  "transition-colors duration-200 motion-reduce:transition-none",
                   "group-hover:text-stone-700 dark:group-hover:text-white"
                 )}
                 style={{ fontFamily: "'Playfair Display', Georgia, serif" }}
@@ -79,7 +83,7 @@ export function Header({ apiKey, onOpenSettings }: HeaderProps) {
                 <span className="font-semibold">Gemini</span>
                 {' '}
                 <em className="font-normal italic">OCR</em>
-              </h1>
+              </span>
 
               {/* Tagline - hidden on mobile */}
               <div className="hidden md:flex items-center gap-2 mt-0.5">
@@ -126,32 +130,36 @@ export function Header({ apiKey, onOpenSettings }: HeaderProps) {
               role="navigation"
               aria-label="Main navigation"
             >
-              <MobileNavLink to="/" isActive={location.pathname === '/'}>
-                <FileText className="w-3.5 h-3.5" />
+              {/* audit X-02: icon-only links carry an accessible name; icons are decorative */}
+              <MobileNavLink to="/" isActive={location.pathname === '/'} ariaLabel="Simple OCR">
+                <FileText className="w-3.5 h-3.5" aria-hidden="true" />
               </MobileNavLink>
-              <MobileNavLink to="/templates" isActive={location.pathname === '/templates'}>
-                <BadgeCheck className="w-3.5 h-3.5" />
+              <MobileNavLink to="/templates" isActive={location.pathname === '/templates'} ariaLabel="Templates">
+                <BadgeCheck className="w-3.5 h-3.5" aria-hidden="true" />
               </MobileNavLink>
-              <MobileNavLink to="/web" isActive={location.pathname === '/web'}>
-                <Globe className="w-3.5 h-3.5" />
+              <MobileNavLink to="/web" isActive={location.pathname === '/web'} ariaLabel="Web OCR">
+                <Globe className="w-3.5 h-3.5" aria-hidden="true" />
               </MobileNavLink>
-              <MobileNavLink to="/advanced" isActive={location.pathname === '/advanced'}>
-                <Layers className="w-3.5 h-3.5" />
+              <MobileNavLink to="/advanced" isActive={location.pathname === '/advanced'} ariaLabel="Bulk OCR">
+                <Layers className="w-3.5 h-3.5" aria-hidden="true" />
               </MobileNavLink>
-              <MobileNavLink to="/agentic" isActive={location.pathname === '/agentic'}>
-                <Bot className="w-3.5 h-3.5" />
+              <MobileNavLink to="/agentic" isActive={location.pathname === '/agentic'} ariaLabel="Agentic OCR">
+                <Bot className="w-3.5 h-3.5" aria-hidden="true" />
               </MobileNavLink>
             </nav>
 
             {/* Settings Button */}
             <button
               id="settings-button"
+              type="button"
               onClick={onOpenSettings}
               className={cn(
                 "relative flex items-center justify-center gap-1.5 sm:gap-2 rounded-lg sm:rounded-xl text-xs sm:text-sm font-medium",
                 "transition-all duration-200 ease-out",
                 "focus:outline-none focus:ring-2 focus:ring-offset-2",
                 "active:scale-95",
+                // audit X-05: neutralize transition/transform when prefers-reduced-motion is set
+                "motion-reduce:transition-none motion-reduce:transform-none",
                 !apiKey
                   ? "px-2.5 py-2 sm:px-4 sm:py-2.5 bg-gradient-to-b from-[#E34234] to-[#C9352A] text-white shadow-lg shadow-[#E34234]/30 hover:shadow-xl hover:shadow-[#E34234]/40 hover:-translate-y-0.5 focus:ring-[#E34234]/50 border border-[#E34234]"
                   : "p-2 sm:px-3 sm:py-2.5 bg-white dark:bg-stone-900 amoled:bg-stone-950 text-stone-600 dark:text-stone-400 border border-stone-200 dark:border-stone-700 amoled:border-stone-800 hover:bg-stone-50 dark:hover:bg-stone-800 amoled:hover:bg-stone-900 hover:text-stone-900 dark:hover:text-stone-200 hover:border-stone-300 dark:hover:border-stone-600 focus:ring-stone-500/30 shadow-sm hover:shadow"
@@ -178,7 +186,7 @@ export function Header({ apiKey, onOpenSettings }: HeaderProps) {
 interface NavLinkProps {
   to: string;
   isActive: boolean;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }>;
   children: React.ReactNode;
 }
 
@@ -188,7 +196,7 @@ function NavLink({ to, isActive, icon: Icon, children }: NavLinkProps) {
       to={to}
       className={cn(
         "relative flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium",
-        "transition-all duration-200 ease-out",
+        "transition-all duration-200 ease-out motion-reduce:transition-none",
         "focus:outline-none focus:ring-2 focus:ring-stone-500/20",
         isActive
           ? "bg-white dark:bg-stone-800 amoled:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-sm border border-stone-200/50 dark:border-stone-700/50"
@@ -197,8 +205,9 @@ function NavLink({ to, isActive, icon: Icon, children }: NavLinkProps) {
       style={{ fontFamily: "'Source Sans 3', sans-serif" }}
       aria-current={isActive ? 'page' : undefined}
     >
-      <Icon className={cn(
-        "w-4 h-4 transition-colors",
+      {/* audit X-02: icon is decorative; the visible label provides the accessible name */}
+      <Icon aria-hidden="true" className={cn(
+        "w-4 h-4 transition-colors motion-reduce:transition-none",
         isActive
           ? "text-stone-700 dark:text-stone-300"
           : "text-stone-400 dark:text-stone-500"
@@ -219,20 +228,23 @@ function NavLink({ to, isActive, icon: Icon, children }: NavLinkProps) {
 interface MobileNavLinkProps {
   to: string;
   isActive: boolean;
+  /** audit X-02: accessible name for the icon-only link */
+  ariaLabel: string;
   children: React.ReactNode;
 }
 
-function MobileNavLink({ to, isActive, children }: MobileNavLinkProps) {
+function MobileNavLink({ to, isActive, ariaLabel, children }: MobileNavLinkProps) {
   return (
     <Link
       to={to}
       className={cn(
         "flex items-center justify-center w-9 h-9 rounded-md",
-        "transition-all duration-200",
+        "transition-all duration-200 motion-reduce:transition-none",
         isActive
           ? "bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 shadow-sm"
           : "text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-300 hover:bg-white/50 dark:hover:bg-stone-800/50"
       )}
+      aria-label={ariaLabel}
       aria-current={isActive ? 'page' : undefined}
     >
       {children}

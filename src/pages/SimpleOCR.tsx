@@ -21,6 +21,7 @@ import ExtractedContent from '../components/ExtractedContent';
 
 // --- Theme ---
 import { cn } from '../design/theme';
+import { isNonPreviewableImage, generateUuid } from '../lib/fileUtils';
 
 /**
  * SimpleOCR - Editorial Scanner Design
@@ -65,8 +66,18 @@ export default function SimpleOCR() {
     };
   }, []);
 
+  // Assign a collision-proof identity per File instance. name+size+lastModified
+  // is not unique (two distinct files can share all three), so we attach a
+  // crypto-random token to each File object via a WeakMap; re-deriving for the
+  // SAME File instance returns the same id, while two distinct files always get
+  // different ids (audit U-02).
+  const fileIdMapRef = useRef<WeakMap<File, string>>(new WeakMap());
   const generateFileId = useCallback((file: File): string => {
-    return `${file.name}-${file.size}-${file.lastModified}`;
+    const existing = fileIdMapRef.current.get(file);
+    if (existing) return existing;
+    const id = `${file.name}-${file.size}-${file.lastModified}-${generateUuid()}`;
+    fileIdMapRef.current.set(file, id);
+    return id;
   }, []);
 
   const isFileProcessed = useMemo(() => {
@@ -85,8 +96,10 @@ export default function SimpleOCR() {
     setSelectedFile(file);
     reset();
 
-    // Create preview for images
-    if (file.type.startsWith('image/')) {
+    // Create preview for images the browser can actually render. HEIC/HEIF
+    // upload fine to the API but cannot be displayed via <img> on most
+    // browsers, so we skip the preview to avoid a broken-image icon (audit B-09).
+    if (file.type.startsWith('image/') && !isNonPreviewableImage(file)) {
       const url = URL.createObjectURL(file);
       setPreviewUrl(url);
     } else {
@@ -225,7 +238,17 @@ export default function SimpleOCR() {
                 className="text-2xl sm:text-3xl font-semibold text-stone-900 dark:text-stone-100"
                 style={{ fontFamily: "'Playfair Display', Georgia, serif" }}
               >
-                Scanning<span className="text-stone-400">...</span>
+                {/* Heading reflects the actual processing state instead of always
+                    reading "Scanning..." (audit U-04). */}
+                {isProcessing ? (
+                  <>
+                    Scanning<span className="text-stone-400">...</span>
+                  </>
+                ) : isFileProcessed ? (
+                  'Extraction Complete'
+                ) : (
+                  'Ready to Extract'
+                )}
               </h1>
             </div>
           </div>
@@ -315,7 +338,10 @@ export default function SimpleOCR() {
                         className="text-sm text-stone-500 dark:text-stone-400"
                         style={{ fontFamily: "'Source Sans 3', sans-serif" }}
                       >
-                        PDF Document
+                        {/* HEIC/HEIF cannot be previewed in-browser (audit B-09). */}
+                        {selectedFile.type === 'application/pdf'
+                          ? 'PDF Document'
+                          : 'Preview unavailable'}
                       </p>
                     </div>
                   )}

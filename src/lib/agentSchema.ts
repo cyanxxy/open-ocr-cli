@@ -20,11 +20,29 @@ export interface AgentReadiness {
   documentType: string;
   hasSchema: boolean;
   fieldCount: number;
+  /** Number of populated fields the validators did not flag invalid. */
+  validFieldCount: number;
+  /** Mean confidence of populated fields, clamped to [0, 1]. */
   averageConfidence: number;
   requiredFields: string[];
   optionalFields: string[];
   missingRequiredFields: string[];
   requiredCoverage: number;
+}
+
+/** Outcome of the deterministic completion check the runtime owns. */
+export interface AgentCompletion {
+  complete: boolean;
+  reason:
+    | 'confidence-and-coverage-met'
+    | 'no-fields'
+    | 'missing-required-fields'
+    | 'below-confidence-threshold';
+}
+
+function clampConfidence(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
 }
 
 type AgentExtractionSnapshot = Pick<AgentMemory, 'documentAnalysis' | 'extractedFields'>;
@@ -195,21 +213,28 @@ export function normalizeAgentFieldName(documentType: string | undefined, fieldN
 export function getAgentReadiness(snapshot: AgentExtractionSnapshot): AgentReadiness {
   const schema = getAgentDocumentSchema(snapshot.documentAnalysis.documentType);
   const fields = Object.values(snapshot.extractedFields);
-  const validValues = fields.filter((field) => String(field.value || '').trim().length > 0);
-  const averageConfidence = validValues.length > 0
-    ? validValues.reduce((sum, field) => sum + field.confidence, 0) / validValues.length
+  const populated = fields.filter((field) => String(field.value || '').trim().length > 0);
+  // Confidence is clamped per-field to [0, 1] so a model that returns an
+  // out-of-range score (e.g. 1.4 or a NaN) cannot inflate readiness.
+  const averageConfidence = populated.length > 0
+    ? populated.reduce((sum, field) => sum + clampConfidence(field.confidence), 0) / populated.length
     : 0;
+  const validFieldCount = populated.filter((field) => field.isValid !== false).length;
 
   if (!schema) {
     return {
       documentType: normalizeAgentDocumentType(snapshot.documentAnalysis.documentType),
       hasSchema: false,
-      fieldCount: validValues.length,
+      fieldCount: populated.length,
+      validFieldCount,
       averageConfidence,
       requiredFields: [],
       optionalFields: [],
       missingRequiredFields: [],
-      requiredCoverage: validValues.length > 0 ? 1 : 0,
+      // No known schema means we cannot assert required-field coverage; report 0
+      // when nothing has been extracted, otherwise 1 (no known requirements left
+      // to satisfy). Completion still gates on confidence + a valid field below.
+      requiredCoverage: populated.length > 0 ? 1 : 0,
     };
   }
 
@@ -225,13 +250,47 @@ export function getAgentReadiness(snapshot: AgentExtractionSnapshot): AgentReadi
   return {
     documentType: schema.documentType,
     hasSchema: true,
-    fieldCount: validValues.length,
+    fieldCount: populated.length,
+    validFieldCount,
     averageConfidence,
     requiredFields: schema.requiredFields,
     optionalFields: schema.optionalFields,
     missingRequiredFields,
     requiredCoverage,
   };
+}
+
+/**
+ * Deterministic completion decision owned by the runtime (not the model).
+ *
+ * A run is only "complete" when, for the document's schema, every required
+ * field is populated AND overall confidence clears the configured threshold
+ * AND at least one populated field survived validation. For unknown document
+ * types (no schema) we cannot assert coverage, so completion requires a valid
+ * field plus the confidence threshold. This is what makes `confidenceThreshold`
+ * a real control instead of a value the loop ignored (audit C-03 / Q-08).
+ */
+export function evaluateAgentCompletion(
+  snapshot: AgentExtractionSnapshot,
+  confidence: number,
+  confidenceThreshold: number,
+): AgentCompletion {
+  const readiness = getAgentReadiness(snapshot);
+  const effectiveConfidence = Math.max(clampConfidence(confidence), readiness.averageConfidence);
+
+  if (readiness.validFieldCount === 0) {
+    return { complete: false, reason: 'no-fields' };
+  }
+
+  if (readiness.hasSchema && readiness.missingRequiredFields.length > 0) {
+    return { complete: false, reason: 'missing-required-fields' };
+  }
+
+  if (effectiveConfidence < confidenceThreshold) {
+    return { complete: false, reason: 'below-confidence-threshold' };
+  }
+
+  return { complete: true, reason: 'confidence-and-coverage-met' };
 }
 
 export function buildAgentSchemaGuidance(documentType?: string): string {

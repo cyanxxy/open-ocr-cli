@@ -1,26 +1,36 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { PresetStructuredOutput } from '../gemini/types';
+import type { ExtractionPreset, PresetStructuredOutput } from '../gemini/types';
 import { buildPresetCsv, buildPresetMarkdown, buildPresetPrompt, normalizeFieldValue, runExtractionPreset } from './engine';
 import { getExtractionPreset } from './presets';
+
+// Mutable payload so individual tests can drive the mocked model response
+// (used to exercise the validation report and row-cap behavior).
+let mockModelPayload: unknown = {
+  documentType: 'Invoice',
+  summary: 'Structured extraction for invoice.',
+  fields: {
+    total: { value: '1471.5', confidence: 0.97 },
+    currency: { value: 'USD', confidence: 0.99 },
+  },
+  rows: [],
+};
 
 vi.mock('@google/genai', () => ({
   GoogleGenAI: class {
     models = {
       generateContent: vi.fn(async () => ({
-        text: JSON.stringify({
-          documentType: 'Invoice',
-          summary: 'Structured extraction for invoice.',
-          fields: {
-            total: { value: '1471.5', confidence: 0.97 },
-            currency: { value: 'USD', confidence: 0.99 },
-          },
-          rows: [],
-        }),
+        text: JSON.stringify(mockModelPayload),
       })),
     };
   },
 }));
+
+const testClientConfig = {
+  apiKey: 'test-key',
+  model: 'gemini-3-flash-preview' as const,
+  thinkingConfig: { level: 'MINIMAL' as const, includeThoughts: false },
+};
 
 describe('template engine helpers', () => {
   it('builds markdown with escaped field and row values', () => {
@@ -144,5 +154,198 @@ describe('normalizeFieldValue number/currency parsing', () => {
 
   it('keeps non-numeric currency values verbatim', () => {
     expect(normalizeFieldValue('USD', 'currency')).toBe('USD');
+  });
+
+  // audit T-03: currency identifier captured as text stays untouched; the
+  // numeric currency type continues to coerce numbers.
+  it('treats a currency code as text rather than a numeric amount', () => {
+    expect(normalizeFieldValue('USD', 'text')).toBe('USD');
+    expect(normalizeFieldValue('EUR 1,234.56', 'text')).toBe('EUR 1,234.56');
+    expect(normalizeFieldValue('USD', 'currency')).not.toMatch(/^\d/);
+  });
+});
+
+// audit H-11: CSV formula injection
+describe('buildPresetCsv formula-injection neutralization', () => {
+  const tablePreset = getExtractionPreset('receipt');
+
+  const csvFor = (rows: Array<Record<string, string>>): string | undefined =>
+    buildPresetCsv(
+      {
+        presetId: 'receipt',
+        documentType: 'Receipt',
+        summary: 'x',
+        fields: {},
+        rows,
+      },
+      tablePreset,
+    );
+
+  it('prefixes formula-leading cells (=, @, +/- that are not plain numbers) with a single quote', () => {
+    const csv = csvFor([
+      { item: '=SUM(A1:A9)', quantity: '+1+2', price: '-2+3' },
+      { item: '@cmd', quantity: '1', price: '2' },
+    ]);
+
+    expect(csv).toBeDefined();
+    const lines = (csv as string).split('\n');
+    // Header then two data rows.
+    expect(lines[1].startsWith("'=SUM(A1:A9)")).toBe(true);
+    expect(lines[1]).toContain("'+1+2"); // +1+2 is not a well-formed number -> escaped
+    expect(lines[1]).toContain("'-2+3"); // -2+3 is a formula, not a number -> escaped
+    expect(lines[2].startsWith("'@cmd")).toBe(true);
+  });
+
+  it('does NOT mangle legitimate negative/positive numeric amounts', () => {
+    const csv = csvFor([
+      { item: 'Refund', quantity: '1', price: '-50.00' },
+      { item: 'Tip', quantity: '1', price: '+3.5' },
+    ]);
+    expect(csv).toBeDefined();
+    const lines = (csv as string).split('\n');
+    // Well-formed numbers must be exported verbatim so non-Excel consumers
+    // (Sheets, pandas, DB imports) read them as numbers, not text.
+    expect(lines[1]).toContain('-50.00');
+    expect(lines[1]).not.toContain("'-50.00");
+    expect(lines[2]).toContain('+3.5');
+    expect(lines[2]).not.toContain("'+3.5");
+  });
+
+  it('quotes and prefixes cells beginning with a tab or carriage return', () => {
+    const csv = csvFor([{ item: '\t=2+2', quantity: '\rdanger', price: '1' }]);
+    expect(csv).toBeDefined();
+    const dataRow = (csv as string).split('\n')[1];
+    // Leading TAB/CR triggers both the formula prefix and double-quote wrapping.
+    expect(dataRow).toContain("\"'\t=2+2\"");
+    expect(dataRow).toContain("\"'\rdanger\"");
+  });
+
+  it('leaves benign cells untouched', () => {
+    const csv = csvFor([{ item: 'Coffee', quantity: '2', price: '8.50' }]);
+    expect(csv).toBe('item,quantity,price\nCoffee,2,8.50');
+  });
+});
+
+// audit T-05: markdown escaping beyond pipes
+describe('buildPresetMarkdown cell hardening', () => {
+  const preset = getExtractionPreset('resume');
+
+  const markdownForField = (value: string): string =>
+    buildPresetMarkdown(
+      {
+        presetId: 'resume',
+        documentType: 'Resume',
+        summary: 'x',
+        fields: {
+          full_name: { value, confidence: 0.9, required: true, type: 'text' },
+        },
+      },
+      preset,
+    );
+
+  it('collapses newlines so the table row stays on one line', () => {
+    const md = markdownForField('line1\nline2');
+    const fullNameRow = md.split('\n').find((line) => line.includes('full_name'));
+    expect(fullNameRow).toBeDefined();
+    expect(fullNameRow).toContain('line1 line2');
+  });
+
+  it('escapes backticks and angle brackets to block code spans and raw HTML', () => {
+    const md = markdownForField('`code` <script>alert(1)</script>');
+    expect(md).toContain('\\`code\\`');
+    expect(md).toContain('&lt;script&gt;');
+    expect(md).not.toContain('<script>');
+  });
+});
+
+// audit T-01 / T-02 / T-09: keying contract, validation report, row cap
+describe('preset normalization contract and validation', () => {
+  afterEach(() => {
+    mockModelPayload = {
+      documentType: 'Invoice',
+      summary: 'Structured extraction for invoice.',
+      fields: { total: { value: '1471.5', confidence: 0.97 }, currency: { value: 'USD', confidence: 0.99 } },
+      rows: [],
+    };
+  });
+
+  it('keys fields by rule.field for every shipped preset rule (T-01)', async () => {
+    for (const presetId of ['invoice', 'receipt', 'resume', 'business-card']) {
+      const preset: ExtractionPreset = getExtractionPreset(presetId);
+      mockModelPayload = { documentType: 'X', summary: 'y', fields: {}, rows: [] };
+      const result = await runExtractionPreset('data:application/pdf;base64,ZmFrZQ==', 'application/pdf', testClientConfig, preset);
+      for (const rule of preset.rules) {
+        expect(result.json.fields).toHaveProperty(rule.field);
+      }
+    }
+  });
+
+  it('reports a required field that is missing (T-02)', async () => {
+    const preset = getExtractionPreset('invoice');
+    // invoice_number, invoice_date, vendor_name, total are required.
+    mockModelPayload = { documentType: 'Invoice', summary: 'y', fields: {}, rows: [] };
+    const result = await runExtractionPreset('data:application/pdf;base64,ZmFrZQ==', 'application/pdf', testClientConfig, preset);
+
+    expect(result.json.validationErrors).toBeDefined();
+    expect(result.json.validationErrors?.some((msg) => msg.includes('invoice_number'))).toBe(true);
+    expect(result.json.validationErrors?.some((msg) => msg.includes('total'))).toBe(true);
+    // The validation report is surfaced in the markdown artifact.
+    expect(result.markdown).toContain('## Validation');
+  });
+
+  it('caps rows at the limit and reports truncation (T-09)', async () => {
+    const preset = getExtractionPreset('receipt');
+    const rows = Array.from({ length: 600 }, (_unused, index) => ({ item: `item-${index}`, quantity: '1', price: '1.00' }));
+    mockModelPayload = { documentType: 'Receipt', summary: 'y', fields: {}, rows };
+
+    const result = await runExtractionPreset('data:application/pdf;base64,ZmFrZQ==', 'application/pdf', testClientConfig, preset);
+
+    expect(result.json.rows?.length).toBe(500);
+    expect(result.json.validationErrors?.some((msg) => msg.includes('truncated'))).toBe(true);
+  });
+
+  it('reports values that violate a rule pattern (T-02)', async () => {
+    const patternPreset: ExtractionPreset = {
+      id: 'invoice',
+      label: 'Invoice',
+      description: 'pattern test',
+      outputShape: 'record',
+      rules: [
+        { id: 'code', field: 'code', description: 'fixed code', type: 'text', pattern: '^[A-Z]{3}-\\d{4}$' },
+      ],
+    };
+    mockModelPayload = { documentType: 'X', summary: 'y', fields: { code: { value: 'not-a-code', confidence: 0.9 } } };
+
+    const result = await runExtractionPreset('data:application/pdf;base64,ZmFrZQ==', 'application/pdf', testClientConfig, patternPreset);
+    expect(result.json.validationErrors?.some((msg) => msg.includes('code') && msg.includes('does not match'))).toBe(true);
+  });
+
+  it('bounds an oversized string field value (T-09)', async () => {
+    const preset = getExtractionPreset('resume');
+    const huge = 'x'.repeat(50000);
+    mockModelPayload = { documentType: 'Resume', summary: 'y', fields: { headline: { value: huge, confidence: 0.9 } } };
+
+    const result = await runExtractionPreset('data:application/pdf;base64,ZmFrZQ==', 'application/pdf', testClientConfig, preset);
+    const headline = result.json.fields.headline?.value;
+    expect(typeof headline).toBe('string');
+    expect((headline as string).length).toBeLessThanOrEqual(20000);
+  });
+
+  it('does not emit validationErrors when every required field is present (T-02)', async () => {
+    const preset = getExtractionPreset('invoice');
+    mockModelPayload = {
+      documentType: 'Invoice',
+      summary: 'y',
+      fields: {
+        invoice_number: { value: 'INV-1', confidence: 0.9 },
+        invoice_date: { value: '2026-01-01', confidence: 0.9 },
+        vendor_name: { value: 'Acme', confidence: 0.9 },
+        total: { value: '10.00', confidence: 0.9 },
+      },
+      rows: [],
+    };
+
+    const result = await runExtractionPreset('data:application/pdf;base64,ZmFrZQ==', 'application/pdf', testClientConfig, preset);
+    expect(result.json.validationErrors).toBeUndefined();
   });
 });

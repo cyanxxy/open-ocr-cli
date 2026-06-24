@@ -1,4 +1,4 @@
-import type { ExtractionPreset } from '../gemini/types';
+import type { ExtractionPreset, ExtractionRule } from '../gemini/types';
 
 export const EXTRACTION_PRESETS: ExtractionPreset[] = [
   {
@@ -13,7 +13,9 @@ export const EXTRACTION_PRESETS: ExtractionPreset[] = [
       { id: 'due_date', field: 'due_date', description: 'Payment due date if present.', type: 'date', example: '2026-03-20' },
       { id: 'vendor_name', field: 'vendor_name', description: 'Vendor or supplier name.', type: 'text', required: true, example: 'Northwind Supply Co.' },
       { id: 'customer_name', field: 'customer_name', description: 'Customer or billed company name.', type: 'text', example: 'Acme Logistics' },
-      { id: 'currency', field: 'currency', description: 'Currency code or symbol used in totals.', type: 'currency', example: 'USD' },
+      // audit T-03: currency identifier (USD/EUR/£) is text, not a monetary amount.
+      // The numeric 'currency' type is reserved for subtotal/tax/total below.
+      { id: 'currency', field: 'currency', description: 'Currency code or symbol used in totals.', type: 'text', example: 'USD' },
       { id: 'subtotal', field: 'subtotal', description: 'Subtotal before tax or fees.', type: 'currency', example: '1250.00' },
       { id: 'tax', field: 'tax', description: 'Tax amount.', type: 'currency', example: '112.50' },
       { id: 'total', field: 'total', description: 'Grand total due.', type: 'currency', required: true, example: '1362.50' },
@@ -79,6 +81,21 @@ export function getExtractionPreset(presetId: string): ExtractionPreset {
   return preset;
 }
 
-export function listExtractionPresets(): ExtractionPreset[] {
-  return EXTRACTION_PRESETS;
+/**
+ * Return the shipped extraction presets as a readonly snapshot. We deep-clone
+ * (preset + nested rules/columns) and freeze so callers cannot mutate the live
+ * module-level array or share aliased preset objects. See audit T-07.
+ */
+export function listExtractionPresets(): readonly ExtractionPreset[] {
+  return Object.freeze(
+    EXTRACTION_PRESETS.map((preset) =>
+      Object.freeze({
+        ...preset,
+        rules: Object.freeze(preset.rules.map((rule) => Object.freeze({ ...rule }))) as ExtractionRule[],
+        tableColumns: preset.tableColumns
+          ? (Object.freeze([...preset.tableColumns]) as string[])
+          : undefined,
+      }),
+    ),
+  );
 }

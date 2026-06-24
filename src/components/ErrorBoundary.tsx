@@ -69,7 +69,9 @@ export class ErrorBoundary extends Component<Props, State> {
   };
 
   handleGoHome = (): void => {
-    window.location.href = '/';
+    // Respect the Vite base path (GitHub Pages / sub-path deploys) instead of a
+    // hardcoded '/', which would break navigation under a non-root base (audit U-11).
+    window.location.href = import.meta.env.BASE_URL || '/';
   };
 
   render(): ReactNode {
@@ -96,7 +98,7 @@ export class ErrorBoundary extends Component<Props, State> {
                 Oops! Something went wrong
               </h1>
               <p className="text-center text-stone-600 dark:text-stone-400 amoled:text-stone-500 mb-6">
-                We encountered an unexpected error. Don't worry, your data is safe.
+                We encountered an unexpected error. Any unsaved work on this page may have been lost.
               </p>
 
               {/* Error Details (Development only) */}
@@ -121,6 +123,7 @@ export class ErrorBoundary extends Component<Props, State> {
               {/* Action Buttons */}
               <div className="flex gap-3">
                 <button
+                  type="button"
                   onClick={this.handleReset}
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-stone-200 text-white dark:text-stone-900 rounded-lg transition-colors duration-200"
                   aria-label="Try again"
@@ -129,6 +132,7 @@ export class ErrorBoundary extends Component<Props, State> {
                   Try Again
                 </button>
                 <button
+                  type="button"
                   onClick={this.handleGoHome}
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-stone-200 hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 amoled:bg-stone-800 amoled:hover:bg-stone-700 text-stone-800 dark:text-stone-200 amoled:text-stone-300 rounded-lg transition-colors duration-200"
                   aria-label="Go to homepage"

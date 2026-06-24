@@ -127,4 +127,47 @@ describe('App', () => {
 
     expect(settingsButton).toHaveFocus();
   });
+
+  it('renders a 404 page for an unknown route (audit U-12)', async () => {
+    useSettingsStore.setState({ hasHydrated: true, apiKey: 'configured-key' });
+
+    render(
+      <MemoryRouter initialEntries={['/does-not-exist']}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Page not found')).toBeInTheDocument();
+    });
+    expect(screen.getByText('404')).toBeInTheDocument();
+  });
+
+  it('sets a per-route document title (audit X-07)', async () => {
+    useSettingsStore.setState({ hasHydrated: true, apiKey: 'configured-key' });
+
+    render(
+      <MemoryRouter initialEntries={['/web']}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(document.title).toBe('Web OCR | Gemini OCR');
+    });
+  });
+
+  it('uses the not-found title for an unknown route (audit X-07)', async () => {
+    useSettingsStore.setState({ hasHydrated: true, apiKey: 'configured-key' });
+
+    render(
+      <MemoryRouter initialEntries={['/nope']}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(document.title).toBe('Page Not Found | Gemini OCR');
+    });
+  });
 });

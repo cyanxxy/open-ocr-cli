@@ -1,6 +1,44 @@
 import { describe, expect, it } from 'vitest';
 
-import { createInteractionGenerationConfig } from './interactions';
+import {
+  createInteractionGenerationConfig,
+  extractInteractionFunctionCalls,
+  outputsToModelTurn,
+  type InteractionOutput,
+} from './interactions';
+
+describe('outputsToModelTurn — stateless replay fidelity (C-02 / A-05 / A-06)', () => {
+  it('preserves thought blocks and their signature verbatim', () => {
+    const outputs: InteractionOutput[] = [
+      { type: 'thought', signature: 'sig-abc', summary: [{ text: 'reasoning' }] },
+      { type: 'function_call', id: 'call-1', name: 'analyze_document_structure', arguments: { a: 1 } },
+    ];
+    const turn = outputsToModelTurn(outputs);
+    const thought = turn?.content.find((b) => b.type === 'thought');
+    expect(thought).toEqual({ type: 'thought', signature: 'sig-abc', summary: [{ text: 'reasoning' }] });
+  });
+
+  it('uses the same canonical id for the model turn and the executed call', () => {
+    // Output carries call_id but no id: both paths must resolve to call_id so the
+    // function_result we later send correlates to the right call (A-05).
+    const outputs: InteractionOutput[] = [
+      { type: 'function_call', call_id: 'cid-7', name: 'extract_fields_batch', arguments: {} },
+    ];
+    const turnCall = outputsToModelTurn(outputs)?.content.find((b) => b.type === 'function_call');
+    const executed = extractInteractionFunctionCalls(outputs);
+    expect((turnCall as { id?: string }).id).toBe('cid-7');
+    expect(executed[0].id).toBe('cid-7');
+  });
+
+  it('rejects an array passed as function-call arguments', () => {
+    const outputs: InteractionOutput[] = [
+      { type: 'function_call', id: 'c1', name: 'f', arguments: ['not', 'an', 'object'] as unknown as Record<string, unknown> },
+    ];
+    expect(extractInteractionFunctionCalls(outputs)[0].arguments).toEqual({});
+    const call = outputsToModelTurn(outputs)?.content.find((b) => b.type === 'function_call');
+    expect((call as { arguments?: unknown }).arguments).toEqual({});
+  });
+});
 
 describe('createInteractionGenerationConfig', () => {
   it('maps each thinking level to its model-gated lowercase wire value', () => {

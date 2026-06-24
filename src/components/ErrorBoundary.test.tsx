@@ -41,7 +41,7 @@ describe('ErrorBoundary', () => {
     expect(screen.getByText('Oops! Something went wrong')).toBeInTheDocument();
     expect(
       screen.getByText(
-        "We encountered an unexpected error. Don't worry, your data is safe."
+        'We encountered an unexpected error. Any unsaved work on this page may have been lost.'
       )
     ).toBeInTheDocument();
   });
@@ -100,6 +100,42 @@ describe('ErrorBoundary', () => {
 
     expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /go to homepage/i })).toBeInTheDocument();
+  });
+
+  it('navigates to the Vite base path when Go Home is clicked (audit U-11)', () => {
+    // Capture href assignments without triggering a real navigation.
+    const originalLocation = window.location;
+    const hrefSetter = vi.fn();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        ...originalLocation,
+        set href(value: string) {
+          hrefSetter(value);
+        },
+        get href() {
+          return originalLocation.href;
+        },
+      },
+    });
+
+    try {
+      render(
+        <ErrorBoundary>
+          <ThrowError shouldThrow />
+        </ErrorBoundary>
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /go to homepage/i }));
+
+      const expectedBase = import.meta.env.BASE_URL || '/';
+      expect(hrefSetter).toHaveBeenCalledWith(expectedBase);
+    } finally {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
   });
 
   it('should show error count when multiple errors occur', () => {

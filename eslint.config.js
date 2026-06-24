@@ -9,7 +9,10 @@ export default tseslint.config(
   // Global ignores
   { ignores: ['dist', '**/dist/**', 'coverage', '**/coverage/**', 'node_modules', '.claude/**', '*.config.js', 'src/setupTests.ts'] },
 
-  // Base configuration for all JS/TS files
+  // Base configuration for all JS/TS files. Type-aware linting is enabled via
+  // `projectService` + `recommendedTypeChecked` (audit M-08). Newly-surfaced
+  // type-checked rules are set to 'warn' below as a ratchet so lint stays green
+  // while the noise is paid down incrementally.
   {
     files: ['**/*.{js,mjs,cjs,ts,jsx,tsx}'],
     plugins: {
@@ -17,7 +20,7 @@ export default tseslint.config(
     },
     extends: [
       js.configs.recommended,
-      ...tseslint.configs.recommended,
+      ...tseslint.configs.recommendedTypeChecked,
     ],
     languageOptions: {
       ecmaVersion: 'latest',
@@ -27,6 +30,8 @@ export default tseslint.config(
         ...globals.es2022,
       },
       parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
         ecmaFeatures: {
           jsx: true,
         },
@@ -35,7 +40,8 @@ export default tseslint.config(
     rules: {
       // React Hooks rules for all files that might use hooks
       'react-hooks/rules-of-hooks': 'error',
-      'react-hooks/exhaustive-deps': 'warn',
+      // audit M-09: a missing/extra dep is a real stale-closure bug, not a style nit.
+      'react-hooks/exhaustive-deps': 'error',
       '@typescript-eslint/no-unused-vars': [
         'error',
         {
@@ -43,6 +49,36 @@ export default tseslint.config(
           varsIgnorePattern: '^_',
         },
       ],
+      // audit M-08 ratchet: type-aware rules that are noisy on the current
+      // codebase are downgraded to 'warn' so CI lint stays green. Promote to
+      // 'error' as each is paid down.
+      '@typescript-eslint/no-floating-promises': 'warn',
+      '@typescript-eslint/no-misused-promises': 'warn',
+      '@typescript-eslint/no-unsafe-assignment': 'warn',
+      '@typescript-eslint/no-unsafe-member-access': 'warn',
+      '@typescript-eslint/no-unsafe-call': 'warn',
+      '@typescript-eslint/no-unsafe-argument': 'warn',
+      '@typescript-eslint/no-unsafe-return': 'warn',
+      '@typescript-eslint/no-redundant-type-constituents': 'warn',
+      '@typescript-eslint/restrict-template-expressions': 'warn',
+      '@typescript-eslint/require-await': 'warn',
+      '@typescript-eslint/unbound-method': 'warn',
+      '@typescript-eslint/await-thenable': 'warn',
+      '@typescript-eslint/no-base-to-string': 'warn',
+      '@typescript-eslint/no-unnecessary-type-assertion': 'warn',
+    },
+  },
+
+  // Config / tooling files and the Node-side eval scripts are not part of the
+  // app tsconfig project graph; lint them without type information to avoid
+  // "file not found by the project service" parsing errors (audit M-08).
+  {
+    files: ['*.config.{js,ts}', 'eslint.config.js', 'evals/**/*.{ts,tsx}'],
+    extends: [tseslint.configs.disableTypeChecked],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
     },
   },
 
@@ -87,6 +123,9 @@ export default tseslint.config(
       'react/no-unescaped-entities': 'off', // Allow unescaped entities in JSX (common in text)
       'react/no-unknown-property': 'error',
       'react/require-render-return': 'error',
+      // audit M-09: an explicit type prevents <button> defaulting to type="submit"
+      // and accidentally submitting an enclosing form. 'warn' to ratchet in.
+      'react/button-has-type': 'warn',
 
       // TypeScript-specific React rules - based on Context7 best practices
       '@typescript-eslint/no-unused-vars': [

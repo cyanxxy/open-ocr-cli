@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { extractTextFromFile } from '../lib/gemini/extraction';
 import type { ExtractedContent } from '../lib/gemini/types';
-import { validateFile, readFileAsDataUrl } from '../lib/fileUtils';
+import { validateFile, validateFileMagicBytes, readFileAsDataUrl, BULK_LIMITS, generateUuid } from '../lib/fileUtils';
 import { useSettingsStore } from './useSettingsStore';
 import { logger } from '../lib/logger';
 import { createSelectors } from './createSelectors';
@@ -22,12 +22,23 @@ interface TrackedFile {
 }
 
 /**
+ * Outcome of processing a single bulk file (audit H-09). A discriminated status
+ * lets the UI render failed/cancelled items distinctly instead of treating an
+ * error stub as a 0-section success.
+ */
+type ProcessedResultStatus = 'success' | 'failed' | 'cancelled' | 'partial';
+
+/**
  * Represents a processed result linked to a file by ID
  */
 interface ProcessedResult {
   fileId: string;
   fileName: string;
   content: ExtractedContent;
+  /** Outcome of the extraction for this file. */
+  status: ProcessedResultStatus;
+  /** Human-readable error message when status is 'failed' or 'cancelled'. */
+  error?: string;
 }
 
 interface AdvancedOcrState {
@@ -64,11 +75,12 @@ interface AdvancedOcrState {
 
   /**
    * Adds new files to the list for bulk processing.
-   * Validates each file for size and type. Updates `error` state if validation fails for any file.
-   * There's a limit of 3000 files.
+   * Validates each file for size, type, emptiness, and duplicates, and enforces
+   * batch budgets (max file count and combined byte size). Updates `error` state
+   * if validation fails for any file. Synchronous — no I/O is performed here.
    * @param newFiles - An array of {@link File} objects to add.
    */
-  addFiles: (newFiles: File[]) => Promise<void>;
+  addFiles: (newFiles: File[]) => void;
   /**
    * Removes a file (and its corresponding processed result, if any) from the list by its file ID.
    * @param fileId - The unique ID of the file to remove.
@@ -111,10 +123,20 @@ interface AdvancedOcrState {
  * - UI feedback states for copy operations.
  */
 /**
- * Generates a unique file ID
+ * Generates a globally-unique file ID. Uses crypto.randomUUID() so two files
+ * dropped in the same millisecond cannot collide (audit B-01).
  */
 const generateFileId = (): string => {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  return generateUuid();
+};
+
+/**
+ * Builds a stable fingerprint used to detect the same file being added twice
+ * (audit B-02). name+size+lastModified is sufficient to identify a re-drop of
+ * the identical file the user already queued.
+ */
+const fileFingerprint = (file: File): string => {
+  return `${file.name}\u0000${file.size}\u0000${file.lastModified}`;
 };
 
 const getResultText = (content: ExtractedContent): string => {
@@ -144,40 +166,62 @@ const useAdvancedOcrStoreBase = create<AdvancedOcrState>()(
   resultCopyTimeoutIds: {},
   activeRunId: null,
 
-  addFiles: async (newFiles) => {
+  addFiles: (newFiles) => {
+    // Synchronous: only validation and set() run here (audit B-03). Magic-byte
+    // and other async checks happen at process time.
     const { files } = get();
-    const totalFiles = files.length + newFiles.length;
 
-    if (totalFiles > 3000) {
-      set({ error: 'Maximum limit of 3000 files exceeded' });
-      return;
-    }
+    const validTrackedFiles: TrackedFile[] = [];
+    const errors: string[] = [];
 
-    try {
-      const validTrackedFiles: TrackedFile[] = [];
-      const errors: string[] = [];
+    // Running totals so the budgets account for both already-queued files and
+    // the ones added earlier in this same call (audit H-10).
+    let runningCount = files.length;
+    let runningBytes = files.reduce((sum, tf) => sum + tf.file.size, 0);
 
-      for (const file of newFiles) {
-        const validation = validateFile(file);
-        if (!validation.valid) {
-          errors.push(validation.error || 'Invalid file');
-          continue;
-        }
-        validTrackedFiles.push({
-          id: generateFileId(),
-          file
-        });
+    // Track fingerprints of files already queued (and added in this call) so a
+    // re-drop of the same file is rejected as a duplicate (audit B-02).
+    const seenFingerprints = new Set(files.map((tf) => fileFingerprint(tf.file)));
+
+    for (const file of newFiles) {
+      const validation = validateFile(file);
+      if (!validation.valid) {
+        errors.push(validation.error || 'Invalid file');
+        continue;
       }
 
-      set((state) => ({
-        files: [...state.files, ...validTrackedFiles],
-        error: errors.length > 0 ? errors.join('\n') : null
-      }));
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : 'Failed to process files'
+      const fingerprint = fileFingerprint(file);
+      if (seenFingerprints.has(fingerprint)) {
+        errors.push(`File "${file.name}" was already added.`);
+        continue;
+      }
+
+      // Enforce the batch file-count ceiling (audit H-10).
+      if (runningCount >= BULK_LIMITS.MAX_FILES) {
+        errors.push(`Maximum of ${BULK_LIMITS.MAX_FILES} files per batch exceeded; "${file.name}" was skipped.`);
+        continue;
+      }
+
+      // Enforce the combined byte ceiling so the queue cannot hold an
+      // unbounded amount of data for the sequential read loop (audit H-10).
+      if (runningBytes + file.size > BULK_LIMITS.MAX_TOTAL_BYTES) {
+        errors.push(`Total batch size limit of ${BULK_LIMITS.MAX_TOTAL_BYTES_LABEL} exceeded; "${file.name}" was skipped.`);
+        continue;
+      }
+
+      seenFingerprints.add(fingerprint);
+      runningCount += 1;
+      runningBytes += file.size;
+      validTrackedFiles.push({
+        id: generateFileId(),
+        file
       });
     }
+
+    set((state) => ({
+      files: [...state.files, ...validTrackedFiles],
+      error: errors.length > 0 ? errors.join('\n') : null
+    }));
   },
 
   removeFile: (fileId: string) => {
@@ -221,6 +265,11 @@ const useAdvancedOcrStoreBase = create<AdvancedOcrState>()(
     });
     previousAbortController?.abort();
 
+    // NOTE (audit B-05): `fileData` (a base64 data URL ~33% larger than the raw
+    // bytes) is read inside the loop and is local to each iteration — it is NOT
+    // accumulated, so peak memory is one file's data URL at a time, not the sum
+    // of the whole batch. The combined-byte budget enforced in addFiles bounds
+    // the worst case further (audit H-10).
     const resultsAccumulator: ProcessedResult[] = [];
     let failedCount = 0;
 
@@ -231,6 +280,16 @@ const useAdvancedOcrStoreBase = create<AdvancedOcrState>()(
       }
 
       try {
+        // Verify the bytes match the declared type before spending an API call
+        // (audit B-04). A spoofed file is recorded as a failed result.
+        const magicCheck = await validateFileMagicBytes(trackedFile.file);
+        if (!isCurrentRun() || abortController.signal.aborted) {
+          return;
+        }
+        if (!magicCheck.valid) {
+          throw new Error(magicCheck.error || 'File failed content validation');
+        }
+
         const fileData = await readFileAsDataUrl(trackedFile.file);
         if (!isCurrentRun() || abortController.signal.aborted) {
           return;
@@ -246,22 +305,42 @@ const useAdvancedOcrStoreBase = create<AdvancedOcrState>()(
         resultsAccumulator.push({
           fileId: trackedFile.id,
           fileName: trackedFile.file.name,
-          content
+          content,
+          status: 'success',
         });
       } catch (error: unknown) {
-        logger.error(`Error processing file ${trackedFile.file.name}:`, error);
-        failedCount += 1;
-        resultsAccumulator.push({
-          fileId: trackedFile.id,
-          fileName: trackedFile.file.name,
-          content: {
-            sections: [],
-            content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
-          }
-        });
+        // extractTextFromFile now rejects on error/cancellation (contract
+        // change), so the per-file failure is captured here as a discriminated
+        // result instead of a 0-section "success" stub (audit H-09).
+        const aborted =
+          abortController.signal.aborted ||
+          (error instanceof Error && error.name === 'AbortError');
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-        if (!isCurrentRun() || abortController.signal.aborted) {
-          return;
+        if (aborted) {
+          // Cancellation is not a processing failure — record it distinctly and
+          // stop the run if this is still the active one.
+          logger.info(`Processing cancelled for file ${trackedFile.file.name}`);
+          resultsAccumulator.push({
+            fileId: trackedFile.id,
+            fileName: trackedFile.file.name,
+            content: { sections: [] },
+            status: 'cancelled',
+            error: 'Cancelled',
+          });
+          if (!isCurrentRun() || abortController.signal.aborted) {
+            return;
+          }
+        } else {
+          logger.error(`Error processing file ${trackedFile.file.name}:`, error);
+          failedCount += 1;
+          resultsAccumulator.push({
+            fileId: trackedFile.id,
+            fileName: trackedFile.file.name,
+            content: { sections: [] },
+            status: 'failed',
+            error: errorMessage,
+          });
         }
       }
 
@@ -295,7 +374,10 @@ const useAdvancedOcrStoreBase = create<AdvancedOcrState>()(
       clearTimeout(copyTimeoutId);
     }
 
+    // Only include successfully-extracted files in the combined copy; failed and
+    // cancelled items carry no usable content (audit H-09).
     const text = processedResults
+      .filter(r => r.status === 'success')
       .map(r => `${r.fileName}:\n${getResultText(r.content)}`)
       .join('\n\n');
 

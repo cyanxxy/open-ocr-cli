@@ -190,6 +190,31 @@
   }
 }
 
+/*
+ * audit X-05: Global reduced-motion safety net.
+ * Users who request reduced motion get near-instant, non-animated UI.
+ * Neutralizes the custom animate-* utilities, all keyframe animations,
+ * and transitions/transforms project-wide (a backstop for any component
+ * that forgets the Tailwind `motion-reduce:` variants).
+ */
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-slide-up,
+  .animate-scale-in,
+  .animate-bounce-gentle {
+    animation: none !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 
 /* OCR Content Specific Styles */
 .ocr-content {

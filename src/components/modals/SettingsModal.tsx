@@ -1,5 +1,6 @@
 import type { KeyboardEvent } from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   X,
   Save,
@@ -58,11 +59,16 @@ export function SettingsModal({
   const [thinkingConfig, setThinkingConfig] = useState<ThinkingConfig>(initialThinkingConfig);
   const [isTestingApi, setIsTestingApi] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const apiKeyInputRef = useRef<HTMLInputElement>(null);
   const wasOpen = useRef(false);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const backdropMouseDownRef = useRef(false);
+  // Monotonic id so only the latest API test can publish its result; rapid model
+  // switches must not let an earlier request's response overwrite a newer one (audit U-07).
+  const testRunIdRef = useRef(0);
 
   // Sync local state only when modal transitions from closed to open
   useEffect(() => {
@@ -72,6 +78,8 @@ export function SettingsModal({
       setModel(initialModel);
       setThinkingConfig(initialThinkingConfig);
       setTestResult(null);
+      setSaveError(null);
+      setIsSaving(false);
     }
     wasOpen.current = isOpen;
   }, [isOpen, initialApiKey, initialTheme, initialModel, initialThinkingConfig]);
@@ -84,9 +92,16 @@ export function SettingsModal({
       previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
       const timer = setTimeout(() => apiKeyInputRef.current?.focus(), 50);
       document.body.style.overflow = 'hidden';
+      // The dialog is portaled to <body>; mark the app root inert so background
+      // content is neither focusable nor announced while the modal is open (audit X-04).
+      const appRoot = document.getElementById('root');
+      appRoot?.setAttribute('inert', '');
+      appRoot?.setAttribute('aria-hidden', 'true');
       return () => {
         clearTimeout(timer);
         document.body.style.overflow = '';
+        appRoot?.removeAttribute('inert');
+        appRoot?.removeAttribute('aria-hidden');
         previouslyFocusedRef.current?.focus?.();
       };
     }
@@ -111,31 +126,50 @@ export function SettingsModal({
     }
   }, [onClose]);
 
-  const handleSave = useCallback(
-    () => onSave(tempApiKey, themeMode, model, thinkingConfig),
-    [onSave, tempApiKey, themeMode, model, thinkingConfig]
-  );
+  const handleSave = useCallback(async () => {
+    if (isSaving) return;
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      // Await the save so a failed key persist (audit H-12) surfaces here instead
+      // of the modal closing as if everything succeeded (audit U-09).
+      await onSave(tempApiKey, themeMode, model, thinkingConfig);
+      // The parent closes the modal on success; nothing else to do here.
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Failed to save settings.');
+      setIsSaving(false);
+    }
+  }, [isSaving, onSave, tempApiKey, themeMode, model, thinkingConfig]);
 
   const handleTestApiKey = useCallback(async () => {
     if (!tempApiKey.trim()) {
       setTestResult({ success: false, model, responseTime: 0, error: 'Enter an API key first', errorType: 'auth' });
       return;
     }
+    const runId = ++testRunIdRef.current;
     setIsTestingApi(true);
     setTestResult(null);
     try {
       const result = await testGemini(tempApiKey, model);
+      // Ignore a stale response from an earlier test that resolved after a newer
+      // one was started (e.g. user switched models and retested) (audit U-07).
+      if (runId !== testRunIdRef.current) return;
       setTestResult(result);
     } catch (error) {
+      if (runId !== testRunIdRef.current) return;
       setTestResult({ success: false, model, responseTime: 0, error: error instanceof Error ? error.message : 'Unknown error', errorType: 'unknown' });
     } finally {
-      setIsTestingApi(false);
+      if (runId === testRunIdRef.current) {
+        setIsTestingApi(false);
+      }
     }
   }, [tempApiKey, model]);
 
   if (!isOpen) return null;
 
-  return (
+  // Render in a portal at <body> so the dialog escapes any transformed/clipped
+  // ancestor and reliably overlays the (now inert) app root (audit X-04).
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -179,6 +213,7 @@ export function SettingsModal({
             Settings
           </h2>
           <button
+            type="button"
             onClick={onClose}
             className="p-2 rounded-full text-stone-400 hover:text-stone-600 hover:bg-stone-100 dark:hover:bg-stone-800 dark:hover:text-stone-300 transition-colors"
             aria-label="Close"
@@ -200,6 +235,7 @@ export function SettingsModal({
                 { value: 'amoled' as ThemeMode, label: 'AMOLED', icon: Monitor },
               ]).map(({ value, label, icon: Icon }) => (
                 <button
+                  type="button"
                   key={value}
                   onClick={() => setThemeMode(value)}
                   className={cn(
@@ -226,6 +262,7 @@ export function SettingsModal({
                 { value: 'gemini-3.1-pro-preview' as ModelType, label: 'Gemini 3.1 Pro', badge: 'Best', icon: Sparkles },
               ]).map(({ value, label, badge, icon: Icon }) => (
                 <button
+                  type="button"
                   key={value}
                   onClick={() => setModel(value)}
                   className={cn(
@@ -289,8 +326,9 @@ export function SettingsModal({
                 />
               </div>
               <button
+                type="button"
                 onClick={handleTestApiKey}
-                disabled={isTestingApi || !tempApiKey}
+                disabled={isTestingApi || !tempApiKey.trim()}
                 className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 disabled:opacity-50 transition-colors border border-stone-200 dark:border-stone-700 shadow-sm"
               >
                 {isTestingApi ? (
@@ -331,6 +369,7 @@ export function SettingsModal({
                 { value: 'HIGH' as const, label: 'High', emoji: '🧠' },
               ].map((opt) => (
                 <button
+                  type="button"
                   key={opt.value}
                   onClick={() => setThinkingConfig({ ...thinkingConfig, level: opt.value })}
                   className={cn(
@@ -356,21 +395,41 @@ export function SettingsModal({
         </div>
 
         {/* Footer */}
-        <div className="flex gap-3 px-5 py-3">
-          <button
-            onClick={onClose}
-            className="flex-1 px-4 py-2.5 rounded-2xl text-sm font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-semibold text-white bg-[#E34234] hover:bg-[#C9352A] shadow-lg shadow-[#E34234]/20 hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-4 focus:ring-[#E34234]/20"
-          >
-            <Save className="w-4 h-4" /> Save
-          </button>
+        <div className="flex flex-col gap-2 px-5 py-3">
+          {saveError && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-xl border border-red-200/80 bg-red-50/80 px-3 py-2 text-xs text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300"
+            >
+              <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
+              <span>{saveError}</span>
+            </div>
+          )}
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isSaving}
+              className="flex-1 px-4 py-2.5 rounded-2xl text-sm font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800 disabled:opacity-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={isSaving}
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-semibold text-white bg-[#E34234] hover:bg-[#C9352A] disabled:opacity-60 disabled:hover:translate-y-0 shadow-lg shadow-[#E34234]/20 hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-4 focus:ring-[#E34234]/20"
+            >
+              {isSaving ? (
+                <><div className="w-4 h-4 border-2 border-white/60 border-t-transparent rounded-full animate-spin" /> Saving...</>
+              ) : (
+                <><Save className="w-4 h-4" /> Save</>
+              )}
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

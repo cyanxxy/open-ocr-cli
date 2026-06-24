@@ -223,6 +223,7 @@ export default function WebOCR() {
   const setUrls = useWebOcrStore(state => state.setUrls);
   const setAnalysisMode = useWebOcrStore(state => state.setAnalysisMode);
   const processUrls = useWebOcrStore(state => state.processUrls);
+  const cancelProcessing = useWebOcrStore(state => state.cancelProcessing);
   const copyUrlResults = useWebOcrStore(state => state.copyUrlResults);
   const clearResults = useWebOcrStore(state => state.clearResults);
 
@@ -246,6 +247,11 @@ export default function WebOCR() {
   const handleClear = useCallback(() => {
     clearResults();
   }, [clearResults]);
+
+  // audit W-07: allow the user to abort an in-flight extraction.
+  const handleCancel = useCallback(() => {
+    cancelProcessing();
+  }, [cancelProcessing]);
 
   return (
     <div className={cn(
@@ -577,6 +583,23 @@ export default function WebOCR() {
                           Analyzing and extracting content
                         </p>
                       </div>
+                      {/* audit W-07: visible cancel control while processing */}
+                      <button
+                        type="button"
+                        onClick={handleCancel}
+                        className={cn(
+                          "inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-sm font-medium",
+                          "bg-stone-100 dark:bg-stone-800 amoled:bg-stone-900",
+                          "text-stone-600 dark:text-stone-300",
+                          "border border-stone-200 dark:border-stone-700",
+                          "hover:bg-stone-200 dark:hover:bg-stone-700",
+                          "focus:outline-none focus:ring-4 focus:ring-stone-500/20",
+                          "transition-all duration-200"
+                        )}
+                        style={{ fontFamily: editorial.fonts.body }}
+                      >
+                        Cancel
+                      </button>
                     </div>
                   </div>
                 ) : hasResults ? (

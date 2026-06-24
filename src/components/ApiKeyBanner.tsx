@@ -26,6 +26,7 @@ export function ApiKeyBanner({ onOpenSettings, onClose }: ApiKeyBannerProps) {
           </div>
           <div className="flex items-center gap-3 w-full sm:w-auto">
             <button
+              type="button"
               onClick={onOpenSettings}
               className="flex-1 sm:flex-none px-4 py-2 rounded-xl text-sm font-medium bg-white hover:bg-white/90 transition-colors"
               style={{ color: '#E34234' }}
@@ -33,6 +34,7 @@ export function ApiKeyBanner({ onOpenSettings, onClose }: ApiKeyBannerProps) {
               Add API Key
             </button>
             <button
+              type="button"
               onClick={onClose}
               className="text-white/80 hover:text-white transition-colors"
               aria-label="Dismiss banner"

@@ -149,12 +149,21 @@ export interface PresetStructuredOutput {
   documentType: string;
   /** Short model-generated summary of the extracted document. */
   summary: string;
-  /** Extracted fields keyed by rule id. */
+  /**
+   * Extracted fields keyed by `rule.field` (the stable contract key). Preset
+   * rules enforce `rule.field` uniqueness; `rule.id` is metadata only and is
+   * NOT used for keying. See audit T-01.
+   */
   fields: Record<string, PresetExtractedField>;
   /** Optional tabular rows for CSV export. */
   rows?: Array<Record<string, string>>;
   /** Extraction warnings or caveats. */
   warnings?: string[];
+  /**
+   * Validation report for required/type/pattern rule violations detected during
+   * normalization. Empty/undefined when every rule passed. See audit T-02.
+   */
+  validationErrors?: string[];
 }
 
 /**

@@ -2,9 +2,23 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { encryptData, decryptData } from '../lib/crypto';
 import { logger } from '../lib/logger';
+import { clearGeminiClientCache } from '../lib/gemini/client';
 import type { GeminiModel, ThinkingConfig, ThinkingLevel } from '../lib/gemini/types';
 import { createSelectors } from './createSelectors';
 import { STORAGE_KEYS } from '../constants';
+
+/**
+ * Error thrown by {@link SettingsState.setApiKey} when the key was accepted in
+ * memory for the current session but could NOT be persisted to localStorage
+ * (e.g. encryption failed or storage is full/blocked). Callers can catch this
+ * to warn the user that the key will be lost on refresh (audit H-12).
+ */
+export class ApiKeyPersistError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'ApiKeyPersistError';
+  }
+}
 
 // Re-export shared Gemini config types for convenience
 export type { GeminiModel, ThinkingConfig, ThinkingLevel };
@@ -181,6 +195,7 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setApiKey: async (key: string) => {
         const trimmedKey = key.trim();
+        let persistError: unknown = null;
         try {
           if (!trimmedKey) {
             localStorage.removeItem(STORAGE_KEYS.API_KEY);
@@ -189,9 +204,22 @@ const useSettingsStoreBase = create<SettingsState>()(
             localStorage.setItem(STORAGE_KEYS.API_KEY, obfuscatedKey);
           }
         } catch (error) {
+          // Keep the key usable for this session, but remember the failure so we
+          // can surface it to the caller instead of silently resolving (audit H-12).
+          persistError = error;
           logger.error('Failed to obfuscate API key for browser-local storage:', error);
         }
+        // The key changed (set or cleared): drop any cached GoogleGenAI client so
+        // a rotated/removed credential is never served from a stale client.
+        clearGeminiClientCache();
         set({ apiKey: trimmedKey });
+
+        if (persistError) {
+          throw new ApiKeyPersistError(
+            'Your API key is active for this session but could not be saved. It will be lost when you refresh or close the tab.',
+            { cause: persistError },
+          );
+        }
       },
 
       setModel: (model) => {
@@ -267,12 +295,20 @@ const useSettingsStoreBase = create<SettingsState>()(
             const theme = patch.theme ?? validationTarget.theme;
             applyTheme(theme);
 
-            const obfuscatedKey = localStorage.getItem(STORAGE_KEYS.API_KEY);
-            if (obfuscatedKey) {
-              const restoredKey = await decryptData(obfuscatedKey);
-              if (restoredKey && typeof restoredKey === 'string') {
-                patch.apiKey = restoredKey;
+            // Decrypt the API key inside its own try/catch so a transient/corrupt
+            // ciphertext only blanks the key — it must NOT wipe the already-validated
+            // model/theme/onboarding/thinkingConfig preferences (audit H-13).
+            try {
+              const obfuscatedKey = localStorage.getItem(STORAGE_KEYS.API_KEY);
+              if (obfuscatedKey) {
+                const restoredKey = await decryptData(obfuscatedKey);
+                if (restoredKey && typeof restoredKey === 'string') {
+                  patch.apiKey = restoredKey;
+                }
               }
+            } catch (keyError) {
+              logger.error('Failed to restore API key during rehydration; other settings preserved:', keyError);
+              patch.apiKey = '';
             }
 
             queueSettingsPatch({
@@ -280,6 +316,8 @@ const useSettingsStoreBase = create<SettingsState>()(
               hasHydrated: true,
             });
           } catch (rehydrationError) {
+            // Only reached for a catastrophic failure (e.g. validation/applyTheme
+            // threw), not for a decrypt failure — that is handled above.
             logger.error('Failed to validate settings during rehydration:', rehydrationError);
             applyTheme('light');
             queueSettingsPatch({

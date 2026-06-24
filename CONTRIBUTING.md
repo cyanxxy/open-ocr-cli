@@ -20,14 +20,14 @@ Look for issues labeled:
 ```bash
 git clone https://github.com/cyanxxy/gemini-ocr.git
 cd gemini-ocr
-npm install
+npm ci
 npm run dev
 ```
 
 Before opening a PR, run:
 
 ```bash
-npx tsc --noEmit
+npm run typecheck
 npm run lint
 npm run test:coverage
 npm run build
@@ -58,6 +58,16 @@ If Discussions are enabled, use:
 - `show-and-tell` for sharing presets or workflows
 - `eval-failures` for reporting misses and regressions
 
+## Intentionally Untracked Files
+
+Some files are excluded from the repo on purpose via `.gitignore`, so don't be surprised if you can't find them:
+
+- `AGENTS.md` and `CLAUDE.md` — local AI-agent context, kept per-developer.
+- `ROADMAP.md` and `docs/2026-agentic-ocr-evals-plan.md` — internal planning notes that are not maintained as public docs.
+- `evals/reports/ocrbench-v2-subset/` — local benchmark artifacts.
+
+You can keep your own copies of these locally, but they will never be committed. Use GitHub Issues and Discussions (not a tracked `ROADMAP.md`) for roadmap and planning conversations.
+
 ## Releases
 
 Releases are created from version tags:
@@ -67,4 +77,6 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-This triggers the release workflow and attaches the production build output.
+This triggers the release workflow, which builds the app and attaches the production build output to a GitHub Release.
+
+> **Before tagging:** make sure all CI checks (typecheck, lint, tests + coverage, dependency audit, and build) have passed on `main` at the commit you are tagging. The release workflow only runs `npm ci` + `npm run build`; it does **not** re-run the CI quality and security gates, so a tag pushed on a red commit will still publish a build.

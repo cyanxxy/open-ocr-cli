@@ -1,9 +1,15 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    /* ES2022 so the standard `Error(message, { cause })` form type-checks
+       (used by ApiKeyPersistError); matches Vite/esbuild's esnext target. */
+    "target": "ES2022",
     "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
+    /* audit M-07: tried skipLibCheck:false to surface library type mismatches,
+       but @google/genai and streamdown ship .d.ts that import optional/peer
+       packages (@modelcontextprotocol/sdk, mermaid, shiki) we do not install,
+       producing unfixable TS2307 errors. Kept true; revisit if those are added. */
     "skipLibCheck": true,
 
     /* Bundler mode */

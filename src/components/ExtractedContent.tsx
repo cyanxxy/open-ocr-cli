@@ -214,7 +214,10 @@ function normalizeStructuredContent(
   structured: ExtractedContentType,
 ): Omit<NormalizedData, 'isEmpty'> {
   const mainTitle = structured.title || 'Extracted Text';
-  let fullPlainText = '';
+  // Seed the copyable plain text with the real document title (when one exists)
+  // so the clipboard output matches the title shown in the UI header. The default
+  // 'Extracted Text' placeholder is intentionally excluded (audit U-05).
+  let fullPlainText = hasText(structured.title) ? `${structured.title!.trim()}\n\n` : '';
   const normalizedSections: NormalizedSection[] = [];
 
   // Process sections array (main content structure)
@@ -625,7 +628,10 @@ const ExtractedContent = ({
     document.body.style.overflow = 'hidden';
 
     return () => {
-      document.body.style.overflow = originalOverflow || 'unset';
+      // Restore the exact prior inline value. An empty string correctly removes
+      // the inline override so a CSS-class-applied overflow takes effect again;
+      // coercing '' to 'unset' would clobber that (audit U-06).
+      document.body.style.overflow = originalOverflow;
     };
   }, [isMaximized]);
 

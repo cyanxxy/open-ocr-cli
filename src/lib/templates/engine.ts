@@ -4,6 +4,7 @@ import { getTopKForModel, parseJsonPayload } from '../gemini/structured';
 import { logger } from '../logger';
 import type {
   ExtractionPreset,
+  ExtractionRule,
   GeminiClientConfig,
   PresetExtractedField,
   PresetRunResult,
@@ -29,6 +30,11 @@ interface RawPresetPayload {
   rows?: unknown;
   warnings?: unknown;
 }
+
+// audit T-09: bound output to keep CSV/markdown payloads (and downloads) sane
+// even when a model emits an unbounded statement with hundreds of line items.
+const MAX_ROWS = 500;
+const MAX_FIELD_VALUE_LENGTH = 20000;
 
 const JSON_ONLY_INSTRUCTION = [
   'Return valid JSON only.',
@@ -145,45 +151,124 @@ export function normalizeFieldValue(value: unknown, type: PresetExtractedField['
   return String(value).trim();
 }
 
-function normalizeRows(rows: unknown): Array<Record<string, string>> | undefined {
+function clampFieldLength(value: string): string {
+  // audit T-09: guard against models emitting pathologically large strings.
+  return value.length > MAX_FIELD_VALUE_LENGTH ? value.slice(0, MAX_FIELD_VALUE_LENGTH) : value;
+}
+
+interface NormalizedRows {
+  rows: Array<Record<string, string>> | undefined;
+  /** Number of rows dropped by the MAX_ROWS cap, for the validation report. */
+  truncatedRowCount: number;
+}
+
+function normalizeRows(rows: unknown): NormalizedRows {
   if (!Array.isArray(rows)) {
-    return undefined;
+    return { rows: undefined, truncatedRowCount: 0 };
   }
 
   const normalized = rows
     .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null && !Array.isArray(entry))
     .map((entry) => Object.fromEntries(
-      Object.entries(entry).map(([key, value]) => [key, value == null ? '' : String(value).trim()])
+      Object.entries(entry).map(([key, value]) => [key, value == null ? '' : clampFieldLength(String(value).trim())])
     ))
     .filter((entry) => Object.values(entry).some(Boolean));
 
-  return normalized.length > 0 ? normalized : undefined;
+  // audit T-09: cap row count so downstream CSV/markdown payloads stay bounded.
+  const truncatedRowCount = Math.max(0, normalized.length - MAX_ROWS);
+  const capped = truncatedRowCount > 0 ? normalized.slice(0, MAX_ROWS) : normalized;
+
+  return {
+    rows: capped.length > 0 ? capped : undefined,
+    truncatedRowCount,
+  };
+}
+
+/** True when a normalized field value carries no extracted content. */
+function isEmptyFieldValue(value: PrimitiveFieldValue): boolean {
+  if (value == null) return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === 'string') return value.trim() === '';
+  return false;
+}
+
+/**
+ * Enforce a rule's required/pattern constraints against a normalized value and
+ * push human-readable messages into the validation report. See audit T-02.
+ */
+function validateRule(rule: ExtractionRule, value: PrimitiveFieldValue, errors: string[]): void {
+  const empty = isEmptyFieldValue(value);
+
+  if (rule.required && empty) {
+    errors.push(`Required field "${rule.field}" is missing or empty.`);
+    return;
+  }
+
+  if (empty || !rule.pattern) {
+    return;
+  }
+
+  let matcher: RegExp;
+  try {
+    matcher = new RegExp(rule.pattern);
+  } catch {
+    // A malformed pattern in the preset definition should not crash extraction.
+    errors.push(`Field "${rule.field}" has an invalid validation pattern.`);
+    return;
+  }
+
+  const candidates = Array.isArray(value) ? value : [String(value)];
+  for (const candidate of candidates) {
+    if (!matcher.test(candidate)) {
+      errors.push(`Field "${rule.field}" value "${candidate}" does not match the expected format.`);
+    }
+  }
 }
 
 function normalizePresetPayload(
   rawPayload: RawPresetPayload,
   preset: ExtractionPreset,
 ): PresetStructuredOutput {
-  const fields = Object.fromEntries(
-    preset.rules.map((rule) => {
-      const rawField = rawPayload.fields?.[rule.field];
-      const rawValue = typeof rawField === 'object' && rawField !== null && !Array.isArray(rawField)
-        ? rawField.value
-        : rawField;
-      const rawConfidence = typeof rawField === 'object' && rawField !== null && !Array.isArray(rawField)
-        ? rawField.confidence
-        : undefined;
+  const validationErrors: string[] = [];
 
-      const normalizedField: PresetExtractedField = {
-        type: rule.type,
-        value: normalizeFieldValue(rawValue, rule.type),
-        confidence: clampConfidence(rawConfidence),
-        required: Boolean(rule.required),
-      };
+  // audit T-01: rule.field is the stable contract key for the fields map.
+  // Enforce uniqueness so diverging presets cannot silently overwrite entries.
+  const seenFieldKeys = new Set<string>();
 
-      return [rule.field, normalizedField];
-    }),
-  );
+  const fields: Record<string, PresetExtractedField> = {};
+  for (const rule of preset.rules) {
+    if (seenFieldKeys.has(rule.field)) {
+      validationErrors.push(`Duplicate field key "${rule.field}" in preset "${preset.id}"; later rule ignored.`);
+      continue;
+    }
+    seenFieldKeys.add(rule.field);
+
+    const rawField = rawPayload.fields?.[rule.field];
+    const rawValue = typeof rawField === 'object' && rawField !== null && !Array.isArray(rawField)
+      ? rawField.value
+      : rawField;
+    const rawConfidence = typeof rawField === 'object' && rawField !== null && !Array.isArray(rawField)
+      ? rawField.confidence
+      : undefined;
+
+    // audit T-09: bound string field values just like row cells.
+    const rawNormalized = normalizeFieldValue(rawValue, rule.type);
+    const value = typeof rawNormalized === 'string' ? clampFieldLength(rawNormalized) : rawNormalized;
+    validateRule(rule, value, validationErrors);
+
+    fields[rule.field] = {
+      type: rule.type,
+      value,
+      confidence: clampConfidence(rawConfidence),
+      required: Boolean(rule.required),
+    };
+  }
+
+  const { rows, truncatedRowCount } = normalizeRows(rawPayload.rows);
+  if (truncatedRowCount > 0) {
+    // audit T-09: surface truncation so consumers know the export is partial.
+    validationErrors.push(`Row output truncated to ${MAX_ROWS} rows; ${truncatedRowCount} additional row(s) dropped.`);
+  }
 
   return {
     presetId: preset.id,
@@ -194,15 +279,28 @@ function normalizePresetPayload(
       ? rawPayload.summary.trim()
       : `Structured extraction for ${preset.label.toLowerCase()}.`,
     fields,
-    rows: normalizeRows(rawPayload.rows),
+    rows,
     warnings: Array.isArray(rawPayload.warnings)
       ? rawPayload.warnings.map((warning) => String(warning).trim()).filter(Boolean)
       : undefined,
+    validationErrors: validationErrors.length > 0 ? validationErrors : undefined,
   };
 }
 
 function escapeMarkdown(value: string): string {
-  return value.replace(/\|/g, '\\|');
+  // audit T-05: a GFM table cell must stay on one line and must not let the
+  // model's content open code spans or inject raw HTML. We strip C0/C1
+  // control chars (CR/LF survive), collapse line breaks to a space, then
+  // escape backslashes, backticks, pipes, and angle brackets.
+  return value
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\\/g, '\\\\')
+    .replace(/`/g, '\\`')
+    .replace(/\|/g, '\\|')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function fieldValueToString(value: PrimitiveFieldValue): string {
@@ -249,8 +347,14 @@ export function buildPresetMarkdown(result: PresetStructuredOutput, preset: Extr
     }
   }
 
+  // audit T-02: surface the validation report so required/pattern failures are visible.
+  if (result.validationErrors && result.validationErrors.length > 0) {
+    sections.push('', '## Validation', '', ...result.validationErrors.map((issue) => `- ${escapeMarkdown(issue)}`));
+  }
+
   if (result.warnings && result.warnings.length > 0) {
-    sections.push('', '## Warnings', '', ...result.warnings.map((warning) => `- ${warning}`));
+    // audit T-05: warnings come from model output, so escape them too.
+    sections.push('', '## Warnings', '', ...result.warnings.map((warning) => `- ${escapeMarkdown(warning)}`));
   }
 
   return sections.join('\n');
@@ -266,8 +370,22 @@ export function buildPresetCsv(result: PresetStructuredOutput, preset: Extractio
     : Object.keys(result.rows[0]);
 
   const escapeCsv = (value: string) => {
-    const normalized = value.replace(/"/g, '""');
-    return /[",\n]/.test(normalized) ? `"${normalized}"` : normalized;
+    // audit H-11: neutralize spreadsheet formula injection. Cells beginning with
+    // =, @, TAB, or CR are interpreted as formulas by Excel/Sheets/LibreOffice and
+    // are always prefixed with a single quote so they read as literal text.
+    // A leading +/- is only a formula trigger when the cell is NOT a well-formed
+    // number — prefixing legitimate negative amounts (e.g. a -50.00 refund line)
+    // would corrupt the value for non-Excel consumers (Sheets, pandas, DB imports),
+    // which is the OWASP CSV-injection false positive (review finding).
+    let normalized = value;
+    const isNumericLiteral = /^[+-]?\d[\d.,]*$/.test(normalized);
+    const isFormulaLead = /^[=@\t\r]/.test(normalized)
+      || (/^[+-]/.test(normalized) && !isNumericLiteral);
+    if (isFormulaLead) {
+      normalized = `'${normalized}`;
+    }
+    normalized = normalized.replace(/"/g, '""');
+    return /[",\n\r\t]/.test(normalized) ? `"${normalized}"` : normalized;
   };
 
   return [

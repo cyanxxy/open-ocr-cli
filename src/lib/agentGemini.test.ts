@@ -175,7 +175,11 @@ describe('executeAgentTurn', () => {
     expect(nudgeTurn).toBeDefined();
   });
 
-  it('executes multiple tool calls serially and returns one function result block per call', async () => {
+  it('runs only the first tool per round and returns its result before the next decision', async () => {
+    // The model batches two calls in one response. The runtime must execute only
+    // the FIRST (analyze), send its result back, and let the model decide the
+    // next tool with that result in hand (audit A-02). The replayed model turn
+    // keeps only the first call so the single result correlates 1:1.
     mockRunModelInteraction
       .mockResolvedValueOnce({
         id: 'interaction-1',
@@ -196,21 +200,25 @@ describe('executeAgentTurn', () => {
             id: 'call-2',
             name: 'extract_fields_batch',
             arguments: {
-              fields: [
-                {
-                  field_name: 'invoice_number',
-                  field_value: 'INV-42',
-                  confidence: 0.99,
-                },
-              ],
+              fields: [{ field_name: 'invoice_number', field_value: 'INV-42', confidence: 0.99 }],
             },
           },
         ],
       })
       .mockResolvedValueOnce({
         id: 'interaction-2',
-        outputs: [],
-      });
+        outputs: [
+          {
+            type: 'function_call',
+            id: 'call-3',
+            name: 'extract_fields_batch',
+            arguments: {
+              fields: [{ field_name: 'invoice_number', field_value: 'INV-42', confidence: 0.99 }],
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ id: 'interaction-3', outputs: [] });
 
     mockExecuteAnalyzeDocumentStructure.mockResolvedValue({
       success: true,
@@ -267,15 +275,24 @@ describe('executeAgentTurn', () => {
     expect(memory.documentAnalysis.documentType).toBe('invoice');
     expect(memory.extractedFields.invoice_number?.value).toBe('INV-42');
 
-    const secondCallInput = mockRunModelInteraction.mock.calls[1]?.[0]?.input as Array<{
-      role: 'user' | 'model';
-      content: Array<{ type: string; call_id?: string; name?: string }>;
-    }>;
-    const lastTurn = secondCallInput[secondCallInput.length - 1];
-    expect(lastTurn?.role).toBe('user');
-    expect(lastTurn?.content).toEqual([
-      expect.objectContaining({ type: 'function_result', call_id: 'call-1', name: 'analyze_document_structure' }),
-      expect.objectContaining({ type: 'function_result', call_id: 'call-2', name: 'extract_fields_batch' }),
-    ]);
+    // Inspect the final transcript. Every model turn must carry at most ONE
+    // function_call block (the batched second call was trimmed), and every
+    // function_result turn must answer exactly one call — keeping calls and
+    // results correlated 1:1 (audit A-02 / A-05).
+    const turns = transcript as Array<{ role: 'user' | 'model'; content: Array<{ type: string; call_id?: string; name?: string }> }>;
+    const modelCallCounts = turns
+      .filter((t) => t.role === 'model')
+      .map((t) => t.content.filter((b) => b.type === 'function_call').length);
+    expect(modelCallCounts.every((n) => n <= 1)).toBe(true);
+
+    const resultTurns = turns.filter(
+      (t) => t.role === 'user' && t.content.some((b) => b.type === 'function_result'),
+    );
+    expect(resultTurns.every((t) => t.content.filter((b) => b.type === 'function_result').length === 1)).toBe(true);
+
+    const firstResult = resultTurns[0]?.content.find((b) => b.type === 'function_result');
+    expect(firstResult).toEqual(
+      expect.objectContaining({ call_id: 'call-1', name: 'analyze_document_structure' }),
+    );
   });
 });

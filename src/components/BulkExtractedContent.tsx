@@ -8,10 +8,15 @@ interface TrackedFile {
   file: File;
 }
 
+/** Outcome of processing a single bulk file (audit H-09). */
+type ProcessedResultStatus = 'success' | 'failed' | 'cancelled' | 'partial';
+
 interface ProcessedResult {
   fileId: string;
   fileName: string;
   content: ExtractedContent;
+  status: ProcessedResultStatus;
+  error?: string;
 }
 
 interface BulkExtractedContentProps {
@@ -35,8 +40,15 @@ export function BulkExtractedContent({
   onCopyAll,
   onCopyResult
 }: BulkExtractedContentProps) {
-  // Count total sections across all results
-  const totalSections = results.reduce((acc, result) => acc + result.content.sections.length, 0);
+  // Count total sections across successful results only; failed/cancelled items
+  // carry no sections and must not inflate the success summary (audit H-09).
+  const totalSections = results.reduce(
+    (acc, result) => acc + (result.status === 'success' ? result.content.sections.length : 0),
+    0
+  );
+  const failedCount = results.filter(
+    (result) => result.status === 'failed' || result.status === 'cancelled'
+  ).length;
 
   return (
     <div className="rounded-xl bg-white dark:bg-stone-800 amoled:bg-black border border-stone-100 dark:border-stone-700 amoled:border-stone-800 overflow-hidden shadow-sm hover:shadow-md transition-shadow duration-300">
@@ -52,6 +64,11 @@ export function BulkExtractedContent({
               </h2>
               <p className="text-sm text-stone-500 dark:text-stone-400 amoled:text-stone-500">
                 {results.length} file{results.length !== 1 ? 's' : ''} • {totalSections} section{totalSections !== 1 ? 's' : ''}
+                {failedCount > 0 && (
+                  <span className="text-red-600 dark:text-red-400 amoled:text-red-500">
+                    {' '}• {failedCount} failed
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -98,6 +115,9 @@ export function BulkExtractedContent({
             const trackedFile = files.find(f => f.id === result.fileId);
             const fileName = trackedFile?.file.name || result.fileName;
             const fileId = result.fileId;
+            // Failed/cancelled items render distinctly: no copy button, no
+            // section count, and the error surfaced in an alert (audit H-09).
+            const isFailure = result.status === 'failed' || result.status === 'cancelled';
 
             return (
               <div
@@ -118,16 +138,32 @@ export function BulkExtractedContent({
                     aria-expanded={expandedFiles[fileId]}
                     aria-controls={`content-${fileId}`}
                   >
-                    <div className="w-9 h-9 rounded-lg bg-stone-100 dark:bg-stone-800/50 amoled:bg-stone-800/30 flex items-center justify-center flex-shrink-0">
-                      <FileText className="w-5 h-5 text-stone-600 dark:text-stone-400 amoled:text-stone-500" aria-hidden="true" />
+                    <div
+                      className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                        isFailure
+                          ? 'bg-red-50 dark:bg-red-900/20 amoled:bg-red-900/10'
+                          : 'bg-stone-100 dark:bg-stone-800/50 amoled:bg-stone-800/30'
+                      }`}
+                    >
+                      {isFailure ? (
+                        <AlertTriangle className="w-5 h-5 text-red-500 dark:text-red-400 amoled:text-red-500" aria-hidden="true" />
+                      ) : (
+                        <FileText className="w-5 h-5 text-stone-600 dark:text-stone-400 amoled:text-stone-500" aria-hidden="true" />
+                      )}
                     </div>
                     <div className="min-w-0">
                       <h3 className="text-sm font-medium text-stone-900 dark:text-white amoled:text-stone-200 truncate">
                         {fileName}
                       </h3>
-                      <p className="text-xs text-stone-500 dark:text-stone-400 amoled:text-stone-500">
-                        {result.content.sections.length} section{result.content.sections.length !== 1 ? 's' : ''}
-                      </p>
+                      {isFailure ? (
+                        <p className="text-xs text-red-600 dark:text-red-400 amoled:text-red-500">
+                          {result.status === 'cancelled' ? 'Cancelled' : 'Failed'}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-stone-500 dark:text-stone-400 amoled:text-stone-500">
+                          {result.content.sections.length} section{result.content.sections.length !== 1 ? 's' : ''}
+                        </p>
+                      )}
                     </div>
                     <div className="ml-auto sm:hidden">
                       {expandedFiles[fileId] ? (
@@ -138,30 +174,32 @@ export function BulkExtractedContent({
                     </div>
                   </button>
                   <div className="flex items-center gap-2 pl-0 sm:pl-0">
-                    <button
-                      onClick={() => onCopyResult(fileId)}
-                      className={`
-                        inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium
-                        transition-all duration-200 whitespace-nowrap
-                        ${copiedResults[fileId]
-                          ? 'bg-green-50 dark:bg-green-900/20 amoled:bg-green-900/10 text-green-600 dark:text-green-400 amoled:text-green-500 hover:bg-green-100 dark:hover:bg-green-900/30 amoled:hover:bg-green-900/20'
-                          : 'bg-stone-50 dark:bg-stone-700 amoled:bg-stone-800 text-stone-600 dark:text-stone-300 amoled:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-600 amoled:hover:bg-stone-700'
-                        }
-                      `}
-                      aria-label={copiedResults[fileId] ? "Content copied" : "Copy content"}
-                    >
-                      {copiedResults[fileId] ? (
-                        <>
-                          <Check className="w-4 h-4" aria-hidden="true" />
-                          <span className="sr-only sm:not-sr-only">Copied</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-4 h-4" aria-hidden="true" />
-                          <span className="sr-only sm:not-sr-only">Copy</span>
-                        </>
-                      )}
-                    </button>
+                    {!isFailure && (
+                      <button
+                        onClick={() => onCopyResult(fileId)}
+                        className={`
+                          inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium
+                          transition-all duration-200 whitespace-nowrap
+                          ${copiedResults[fileId]
+                            ? 'bg-green-50 dark:bg-green-900/20 amoled:bg-green-900/10 text-green-600 dark:text-green-400 amoled:text-green-500 hover:bg-green-100 dark:hover:bg-green-900/30 amoled:hover:bg-green-900/20'
+                            : 'bg-stone-50 dark:bg-stone-700 amoled:bg-stone-800 text-stone-600 dark:text-stone-300 amoled:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-600 amoled:hover:bg-stone-700'
+                          }
+                        `}
+                        aria-label={copiedResults[fileId] ? "Content copied" : "Copy content"}
+                      >
+                        {copiedResults[fileId] ? (
+                          <>
+                            <Check className="w-4 h-4" aria-hidden="true" />
+                            <span className="sr-only sm:not-sr-only">Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-4 h-4" aria-hidden="true" />
+                            <span className="sr-only sm:not-sr-only">Copy</span>
+                          </>
+                        )}
+                      </button>
+                    )}
                     <div className="hidden sm:block">
                       {expandedFiles[fileId] ? (
                         <ChevronDown className="w-5 h-5 text-stone-400 dark:text-stone-500 amoled:text-stone-600" aria-hidden="true" />
@@ -178,7 +216,22 @@ export function BulkExtractedContent({
                     className="px-3 sm:px-5 pb-4 sm:pb-6 animate-slide-down"
                   >
                     <div className="pl-0 sm:pl-12 space-y-4 sm:space-y-6 mt-2">
-                      {result.content.sections.map((section, sIndex) => {
+                      {isFailure ? (
+                        <div
+                          role="alert"
+                          className="p-4 rounded-lg bg-red-50 dark:bg-red-900/20 amoled:bg-red-900/10 border border-red-200 dark:border-red-800 amoled:border-red-900"
+                        >
+                          <div className="flex items-start gap-2">
+                            <AlertTriangle className="w-4 h-4 text-red-500 dark:text-red-400 amoled:text-red-500 mt-0.5 flex-shrink-0" aria-hidden="true" />
+                            <p className="text-sm text-red-700 dark:text-red-400 amoled:text-red-500 break-words">
+                              {result.status === 'cancelled'
+                                ? (result.error || 'Cancelled before extraction completed.')
+                                : (result.error || result.content.content || 'Extraction failed.')}
+                            </p>
+                          </div>
+                        </div>
+                      ) : null}
+                      {!isFailure && result.content.sections.map((section, sIndex) => {
                         // Prepare content for MarkdownRenderer, applying table formatting
                         let markdownInputForRenderer = '';
                         const rawSectionLines = Array.isArray(section.content)

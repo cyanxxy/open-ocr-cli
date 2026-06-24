@@ -85,9 +85,10 @@ export default function AdvancedOCR() {
     }));
   }, []);
 
-  const handleFileSelect = useCallback(async (acceptedDropFiles: File[]) => {
+  const handleFileSelect = useCallback((acceptedDropFiles: File[]) => {
     if (!hasApiKey || acceptedDropFiles.length === 0) return;
-    await addFiles(acceptedDropFiles);
+    // addFiles is synchronous (audit B-03) — no await needed.
+    addFiles(acceptedDropFiles);
   }, [hasApiKey, addFiles]);
 
   const handleProcessFiles = useCallback(async () => {

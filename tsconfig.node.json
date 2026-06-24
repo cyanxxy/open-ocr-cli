@@ -3,6 +3,9 @@
     "target": "ES2022",
     "lib": ["ES2023"],
     "module": "ESNext",
+    /* audit M-07: skipLibCheck:false surfaces unfixable TS2307 errors from
+       streamdown/@google/genai .d.ts importing optional peers (mermaid, shiki,
+       @modelcontextprotocol/sdk) we do not install. Kept true. */
     "skipLibCheck": true,
 
     /* Bundler mode */

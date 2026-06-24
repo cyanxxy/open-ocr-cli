@@ -7,7 +7,7 @@ import {
 } from '../lib/gemini/index';
 import { useSettingsStore } from './useSettingsStore';
 import { logger } from '../lib/logger';
-import { validateFile } from '../lib/fileUtils';
+import { validateFile, readFileAsDataUrl } from '../lib/fileUtils';
 import {
   BaseOcrStore,
   createBaseOcrSlice,
@@ -100,13 +100,9 @@ const useOcrStoreBase = create<OcrState>()(
     previousAbortController?.abort();
 
     try {
-      // Read file as data URL
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = () => reject(new Error('Failed to read file'));
-        reader.readAsDataURL(file);
-      });
+      // Read file as data URL via the shared utility, inheriting its onabort/
+      // type-guard handling instead of a hand-rolled FileReader (audit B-07).
+      const dataUrl = await readFileAsDataUrl(file);
 
       if (!isCurrentRun() || abortController.signal.aborted) {
         return;

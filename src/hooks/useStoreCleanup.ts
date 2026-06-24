@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { logger } from '../lib/logger';
 
 /**
@@ -27,13 +27,23 @@ export function useStoreCleanup(
   cleanupFunctions: Record<string, (() => void) | undefined> = {},
   storeName?: string
 ): void {
+  // Callers pass an inline object whose function references can change between
+  // renders (e.g. after a store rebind). Keep the latest set in a ref so the
+  // unmount cleanup fires the current functions, not the mount-time snapshot
+  // captured by an empty-dep effect (audit U-01).
+  const cleanupRef = useRef(cleanupFunctions);
+  const storeNameRef = useRef(storeName);
+  cleanupRef.current = cleanupFunctions;
+  storeNameRef.current = storeName;
+
   useEffect(() => {
     return () => {
-      logger.debug(`Cleaning up ${storeName || 'store'} on component unmount`);
-      
+      const latest = cleanupRef.current;
+      logger.debug(`Cleaning up ${storeNameRef.current || 'store'} on component unmount`);
+
       // Call all cleanup functions (check if cleanupFunctions exists)
-      if (cleanupFunctions && typeof cleanupFunctions === 'object') {
-        Object.entries(cleanupFunctions).forEach(([name, fn]) => {
+      if (latest && typeof latest === 'object') {
+        Object.entries(latest).forEach(([name, fn]) => {
           if (typeof fn === 'function') {
             try {
               fn();
@@ -45,8 +55,9 @@ export function useStoreCleanup(
         });
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Empty dependency array means this runs once on mount and cleanup on unmount
+    // Empty dependency array means this runs once on mount and cleanup on unmount;
+    // the latest functions are read from the ref above (audit U-01).
+  }, []);
 }
 
 /**

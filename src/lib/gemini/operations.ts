@@ -6,10 +6,33 @@ import {
   summarizeUrlContextResults,
 } from './interactions';
 import { logger } from '../logger';
-import type { UrlResult } from '../../store/useWebOcrStore';
 import type { GeminiModel, ThinkingConfig } from './types';
 
-const VERIFIED_ONLY_SUFFIX = 'Web OCR only returns verified URL-context results and will not guess content.';
+/**
+ * A single extracted URL result from grounded URL-context extraction.
+ *
+ * audit W-01: this type lives in the domain/library layer (not the Zustand
+ * store) so that src/lib/** never imports from src/store/**. The store and the
+ * URL-operations wrapper re-import it from here.
+ */
+export interface UrlResult {
+  /** The requested source URL this result corresponds to. */
+  url: string;
+  /** The extracted text content for this URL. */
+  content: string;
+  /** The detected content type of the source. */
+  type: 'webpage' | 'image' | 'pdf' | 'unknown';
+  /** Optional title or heading extracted from the source. */
+  title?: string;
+  /** Per-URL error message when extraction failed for this entry. */
+  error?: string;
+}
+
+// audit H-06: verification here is infrastructure-level only — URL-context
+// retrieval metadata reporting success means each page was fetched, NOT that the
+// returned text is factually faithful to the page. The wording avoids claiming
+// factual non-fabrication.
+const VERIFIED_ONLY_SUFFIX = 'Web OCR only returns content when URL-context retrieval reports success for every URL; it does not guess content.';
 
 function createGroundedUrlError(message: string): Error {
   return new Error(`${message} ${VERIFIED_ONLY_SUFFIX}`);
@@ -28,20 +51,48 @@ function normalizeResultType(value: unknown): UrlResult['type'] {
 }
 
 /**
- * Normalize a URL for matching so trivial differences (scheme casing, `www.`,
- * trailing slash) don't prevent a returned entry from being resolved back to the
- * exact URL the user requested.
+ * Normalize a URL for matching so trivial differences (host casing, trailing
+ * slash) don't prevent a returned entry from being resolved back to the exact
+ * URL the user requested.
+ *
+ * audit H-05: the scheme is kept in the key and `www.` is NOT stripped, so
+ * `http://example.com` vs `https://example.com` and `www.example.com` vs
+ * `example.com` are treated as DISTINCT identities. Collapsing them would let
+ * the model satisfy a request for one origin with content fetched from another.
  */
 function normalizeUrlForMatch(value: string): string {
   const trimmed = value.trim();
   try {
     const parsed = new URL(trimmed);
-    const host = parsed.host.toLowerCase().replace(/^www\./, '');
+    const host = parsed.host.toLowerCase();
     const path = parsed.pathname.replace(/\/+$/, '') || '/';
-    return `${host}${path}${parsed.search}`;
+    return `${parsed.protocol}//${host}${path}${parsed.search}`;
   } catch {
     return trimmed.toLowerCase().replace(/\/+$/, '');
   }
+}
+
+/**
+ * Deduplicate a list of requested URLs by their normalized match key, preserving
+ * the first occurrence's original spelling. Returns the deduped list plus the
+ * number of duplicates that were dropped.
+ *
+ * audit W-06 / H-05: callers must collapse duplicates BEFORE building the match
+ * Map, otherwise the second of two identical inputs silently overwrites the
+ * first and the model's second result for that URL can no longer be matched.
+ */
+export function dedupeRequestedUrls(urls: string[]): { urls: string[]; duplicateCount: number } {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const url of urls) {
+    const key = normalizeUrlForMatch(url);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(url);
+  }
+  return { urls: deduped, duplicateCount: urls.length - deduped.length };
 }
 
 function parseIndividualResults(responseText: string, urls: string[]): UrlResult[] {
@@ -58,12 +109,20 @@ function parseIndividualResults(responseText: string, urls: string[]): UrlResult
   // Resolve each returned entry back to the requested URL by content, never by
   // array position: the model can reorder results, and trusting the index (or a
   // blindly-returned url) silently mislabels which URL produced which text.
+  //
+  // audit H-05: building the Map with `.set()` would let two requested URLs that
+  // normalize to the same key silently overwrite each other (one entry never
+  // consumed). Detect that collision here and fail closed instead.
   const remaining = new Map<string, string>();
   for (const url of urls) {
-    remaining.set(normalizeUrlForMatch(url), url);
+    const key = normalizeUrlForMatch(url);
+    if (remaining.has(key)) {
+      throw createGroundedUrlError('Grounded URL extraction received duplicate URLs that resolve to the same address.');
+    }
+    remaining.set(key, url);
   }
 
-  return parsed.results.map((entry) => {
+  const results = parsed.results.map((entry) => {
     if (!entry || typeof entry !== 'object') {
       throw createGroundedUrlError('Grounded URL extraction returned a malformed result entry.');
     }
@@ -97,6 +156,16 @@ function parseIndividualResults(responseText: string, urls: string[]): UrlResult
       content: result.content.trim(),
     };
   });
+
+  // audit H-05: assert a strict 1:1 mapping — every requested URL must have been
+  // matched exactly once. A non-empty `remaining` means a requested URL was
+  // never accounted for (e.g. the model returned the same URL twice), which the
+  // array-length check alone cannot catch.
+  if (remaining.size !== 0) {
+    throw createGroundedUrlError('Grounded URL extraction did not account for every requested URL.');
+  }
+
+  return results;
 }
 
 function validateUrlContextResults(
@@ -137,15 +206,19 @@ function normalizeUrlExtractionError(error: unknown): Error {
       return error;
     }
 
+    // audit W-04: only map genuine feature-unavailability signals to the
+    // "unavailable for this API key/model/region" message. Transient server
+    // failures (500/internal), permission misconfigurations, and generic tool
+    // errors must keep their original message so the real root cause surfaces
+    // instead of falsely blaming the user's key/region. Categories stay stable:
+    // url-context-specific unavailability vs. everything-else passthrough.
     const loweredError = error.message.toLowerCase();
     if (
       loweredError.includes('url context')
       || loweredError.includes('url_context')
-      || loweredError.includes('internal')
       || loweredError.includes('not supported')
-      || loweredError.includes('tools')
-      || loweredError.includes('500')
-      || loweredError.includes('permission')
+      || loweredError.includes('not available')
+      || loweredError.includes('unsupported')
     ) {
       return createGroundedUrlError('Grounded URL retrieval is unavailable for this API key, model, or region.');
     }
@@ -190,6 +263,10 @@ For each URL, provide:
 3. A title or heading if available
 4. The main text content extracted
 
+Keep each URL's extracted content focused on the primary text so that the
+combined response stays within the output limit; summarize boilerplate rather
+than reproducing it verbatim.
+
 Format the response as JSON:
 {
   "results": [
@@ -225,9 +302,19 @@ Provide:
 Format as a structured comparison analysis.`;
     }
 
+    // audit W-05: a single fixed 8192-token budget truncated multi-URL
+    // individual extractions (each URL needs its own slice of the output), which
+    // surfaced to the user as an opaque "incomplete result" error. Scale the
+    // budget with the URL count for individual mode (~2k tokens/URL), and use a
+    // higher fixed ceiling for combined/comparison synthesis. Capped at 32768 to
+    // stay well within the model's output limit.
+    const maxOutputTokens = analysisMode === 'individual'
+      ? Math.min(32768, Math.max(8192, urls.length * 2048))
+      : 16384;
+
     const generationConfig = createInteractionGenerationConfig({
       temperature: isGemini3Model(model) ? 1.0 : 0.2,
-      maxOutputTokens: 8192,
+      maxOutputTokens,
       topP: 0.95,
     }, model, thinkingConfig);
 

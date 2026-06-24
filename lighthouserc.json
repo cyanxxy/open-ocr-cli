@@ -3,7 +3,8 @@
     "collect": {
       "url": [
         "http://localhost:5173/",
-        "http://localhost:5173/simple",
+        "http://localhost:5173/templates",
+        "http://localhost:5173/web",
         "http://localhost:5173/advanced",
         "http://localhost:5173/agentic"
       ],

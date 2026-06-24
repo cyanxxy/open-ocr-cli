@@ -31,11 +31,25 @@ export type InteractionFunctionResultInput = {
   is_error?: boolean;
 };
 
+/**
+ * A model-generated reasoning block. Gemini 3 multi-turn function calling in
+ * stateless mode (`store: false`) requires every model step — including
+ * `thought` steps and their opaque `signature` — to be echoed back verbatim in
+ * the replayed history. Dropping the signature breaks the reasoning chain on the
+ * next tool round (audit C-02). The wire shape mirrors the SDK `ThoughtContent`.
+ */
+export type InteractionThoughtInput = {
+  type: 'thought';
+  signature?: string;
+  summary?: Array<{ text?: string }>;
+};
+
 export type InteractionInputBlock =
   | InteractionTextInput
   | InteractionFunctionCallInput
   | InteractionBinaryInput
-  | InteractionFunctionResultInput;
+  | InteractionFunctionResultInput
+  | InteractionThoughtInput;
 
 export interface InteractionTurn {
   role: 'user' | 'model';
@@ -180,6 +194,25 @@ export function createInteractionTurn(
   return { role, content };
 }
 
+/**
+ * Canonical correlation id for a model function call. Used by BOTH
+ * outputsToModelTurn (building the replayed model turn) and
+ * extractInteractionFunctionCalls (the calls we execute) so the id on the
+ * model turn always matches the id on the function_result we send back. The
+ * previous code derived these two ids differently (one consulted `call_id`,
+ * the other did not), so a result could correlate to the wrong call (audit A-05).
+ */
+export function interactionCallId(output: InteractionOutput, index: number): string {
+  return output.id || output.call_id || `${output.name}-${index + 1}`;
+}
+
+/** Reject arrays (which are `typeof === 'object'`) as a function-args object. */
+function toArgsObject(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
 export function outputsToModelTurn(outputs?: InteractionOutput[]): InteractionTurn | null {
   if (!outputs || outputs.length === 0) {
     return null;
@@ -196,12 +229,23 @@ export function outputsToModelTurn(outputs?: InteractionOutput[]): InteractionTu
       continue;
     }
 
+    // Preserve thought steps (and their signature) exactly as received. Required
+    // for stateless multi-turn function calling; see InteractionThoughtInput.
+    if (output.type === 'thought' && (output.signature || Array.isArray(output.summary))) {
+      content.push({
+        type: 'thought',
+        ...(output.signature ? { signature: output.signature } : {}),
+        ...(Array.isArray(output.summary) ? { summary: output.summary } : {}),
+      });
+      continue;
+    }
+
     if (output.type === 'function_call' && typeof output.name === 'string' && output.name.length > 0) {
       content.push({
         type: 'function_call',
-        id: output.id || output.call_id || `${output.name}-${index + 1}`,
+        id: interactionCallId(output, index),
         name: output.name,
-        arguments: typeof output.arguments === 'object' && output.arguments !== null ? output.arguments : {},
+        arguments: toArgsObject(output.arguments),
       });
     }
   }
@@ -258,9 +302,9 @@ export function extractInteractionFunctionCalls(outputs?: InteractionOutput[]): 
     }
 
     return [{
-      id: output.id || `${output.name}-${index + 1}`,
+      id: interactionCallId(output, index),
       name: output.name,
-      arguments: typeof output.arguments === 'object' && output.arguments !== null ? output.arguments : {},
+      arguments: toArgsObject(output.arguments),
     }];
   });
 }

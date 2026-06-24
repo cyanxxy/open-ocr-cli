@@ -12,6 +12,7 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Only run on the main repository, not forks
     if: github.repository == 'cyanxxy/gemini-ocr'
 
@@ -22,18 +23,38 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.x'
+          node-version: '22.x'
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
 
+      # Gate the release on the same quality checks CI enforces so a broken tag
+      # never produces a published release (audit O-11).
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Lint code
+        run: npm run lint
+
+      - name: Run tests
+        run: npm run test:run
+
+      - name: Security audit
+        run: npx audit-ci --config audit-ci.json
+
       - name: Build application
         run: npm run build
+
+      # Archive the whole dist tree into a single artifact instead of attaching
+      # every font/worker/css file individually (audit O-11).
+      - name: Archive dist
+        run: |
+          tar -czf "open-gemini-ocr-${GITHUB_REF_NAME}-dist.tar.gz" -C dist .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            dist/**
+            open-gemini-ocr-*-dist.tar.gz

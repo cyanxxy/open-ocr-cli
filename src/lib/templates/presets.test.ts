@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildPresetCsv, buildPresetMarkdown } from './engine';
 import { getExtractionPreset, listExtractionPresets } from './presets';
-import type { PresetStructuredOutput } from '../gemini/types';
+import type { ExtractionPreset, PresetStructuredOutput } from '../gemini/types';
 
 describe('template presets', () => {
   it('lists the shipped extraction presets', () => {
@@ -20,6 +20,46 @@ describe('template presets', () => {
 
     expect(preset.label).toBe('Invoice');
     expect(preset.outputShape).toBe('table');
+  });
+
+  // audit T-07: callers must not be able to mutate the shared module state.
+  it('returns a frozen snapshot that cannot mutate module state', () => {
+    const first = listExtractionPresets();
+    const initialCount = first.length;
+
+    // The returned array and its entries are frozen, so writes are no-ops
+    // (silently in non-strict, throwing in strict mode — assert either way).
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first[0])).toBe(true);
+    expect(() => {
+      (first as ExtractionPreset[]).push({
+        id: 'dummy',
+        label: 'Dummy',
+        description: 'x',
+        outputShape: 'record',
+        rules: [],
+      });
+    }).toThrow();
+
+    const second = listExtractionPresets();
+    expect(second.length).toBe(initialCount);
+    expect(second.map((preset) => preset.id)).not.toContain('dummy');
+  });
+
+  // audit T-01: the fields map contract is keyed by rule.field, which must be
+  // unique within each preset.
+  it('uses unique rule.field keys within every preset', () => {
+    for (const preset of listExtractionPresets()) {
+      const fieldKeys = preset.rules.map((rule) => rule.field);
+      expect(new Set(fieldKeys).size).toBe(fieldKeys.length);
+    }
+  });
+
+  // audit T-03: the invoice currency identifier is text, not a numeric amount.
+  it('captures the invoice currency identifier as a text field', () => {
+    const invoice = getExtractionPreset('invoice');
+    const currencyRule = invoice.rules.find((rule) => rule.field === 'currency');
+    expect(currencyRule?.type).toBe('text');
   });
 
   it('renders markdown and csv artifacts for table presets', () => {

@@ -8,19 +8,16 @@ import {
   handleOcrError,
   formatContentForClipboard
 } from './base/BaseOcrStore';
-import { extractTextFromUrlsProgressive } from '../lib/gemini/urlOperations';
+// audit W-01/W-02: import the engine directly from operations.ts (the no-op
+// urlOperations.ts wrapper was removed) and re-export the shared UrlResult type
+// from the domain layer so the store no longer owns a lib-level type.
+import { dedupeRequestedUrls, extractTextFromUrls, type UrlResult } from '../lib/gemini/operations';
 import { useSettingsStore } from './useSettingsStore';
 import { logger } from '../lib/logger';
 import { getUnsupportedUrls } from '../lib/urlValidation';
 import { createSelectors } from './createSelectors';
 
-export interface UrlResult {
-  url: string;
-  content: string;
-  type: 'webpage' | 'image' | 'pdf' | 'unknown';
-  title?: string;
-  error?: string;
-}
+export type { UrlResult };
 
 interface WebOcrState extends BaseOcrStore {
   urls: string[];
@@ -32,6 +29,7 @@ interface WebOcrState extends BaseOcrStore {
 interface WebOcrActions {
   setUrls: (urls: string[]) => void;
   processUrls: (apiKey: string) => Promise<void>;
+  cancelProcessing: () => void;
   setAnalysisMode: (mode: WebOcrState['analysisMode']) => void;
   clearResults: () => void;
   copyUrlResults: () => Promise<void>;
@@ -55,9 +53,12 @@ const useWebOcrStoreBase = create<WebOcrStore>()(
       ...initialState,
       
       setUrls: (urls: string[]) => {
-        set({ urls });
+        // audit H-07: changing the input invalidates any prior output. Clear
+        // stale results/combinedContent/error so the UI never shows extraction
+        // belonging to a different URL set.
+        set({ urls, results: [], combinedContent: '', error: null });
       },
-      
+
       processUrls: async (apiKey: string) => {
         const { urls, analysisMode } = get();
 
@@ -65,24 +66,36 @@ const useWebOcrStoreBase = create<WebOcrStore>()(
         const { model, thinkingConfig } = useSettingsStore.getState();
 
         // Filter out empty URLs
-        const validUrls = urls.filter(url => url.trim());
+        const trimmedUrls = urls.map(url => url.trim()).filter(Boolean);
 
-        if (validUrls.length === 0) {
+        if (trimmedUrls.length === 0) {
           set({ error: 'Please enter at least one valid URL' });
           return;
         }
 
-        if (validUrls.length > 20) {
-          set({ error: 'Maximum 20 URLs allowed per request' });
+        const invalidUrls = getUnsupportedUrls(trimmedUrls);
+
+        if (invalidUrls.length > 0) {
+          // audit H-08: do not echo the rejected URLs verbatim back into the
+          // error UI (avoids reflecting user-supplied content and possibly
+          // sensitive paths/credentials). Report a count instead.
+          set({
+            error: `Only publicly-accessible http:// and https:// URLs are supported (${invalidUrls.length} URL${invalidUrls.length !== 1 ? 's' : ''} rejected).`
+          });
           return;
         }
 
-        const invalidUrls = getUnsupportedUrls(validUrls);
+        // audit W-06: collapse duplicate URLs before sending. Without this, two
+        // identical inputs collide in the per-URL match Map and trigger a
+        // spurious "unexpected URL" failure (and waste API budget).
+        const { urls: validUrls, duplicateCount } = dedupeRequestedUrls(trimmedUrls);
+        if (duplicateCount > 0) {
+          logger.warn(`Removed ${duplicateCount} duplicate URL${duplicateCount !== 1 ? 's' : ''} before processing`);
+        }
 
-        if (invalidUrls.length > 0) {
-          set({
-            error: `Only http:// and https:// URLs are supported: ${invalidUrls.join(', ')}`
-          });
+        // audit H-08: Gemini URL Context allows at most 20 URLs per request.
+        if (validUrls.length > 20) {
+          set({ error: 'Maximum 20 URLs allowed per request' });
           return;
         }
 
@@ -103,9 +116,9 @@ const useWebOcrStoreBase = create<WebOcrStore>()(
         try {
           logger.info(`Processing ${validUrls.length} URLs in ${analysisMode} mode`);
 
-          // Try URL extraction with automatic fallback
-          // Pass model and thinkingConfig to the progressive extraction
-          const response = await extractTextFromUrlsProgressive(
+          // Grounded URL extraction. Fails closed (throws) when URL-context
+          // retrieval cannot be verified — the caller surfaces the error below.
+          const response = await extractTextFromUrls(
             validUrls,
             apiKey,
             analysisMode,
@@ -167,9 +180,28 @@ const useWebOcrStoreBase = create<WebOcrStore>()(
           });
         }
       },
-      
+
+      // audit W-07: dedicated cancel action that aborts the in-flight request
+      // and clears the processing flags WITHOUT resetting the URL list (the
+      // generic reset() is too heavy). The processUrls run guard (isCurrentRun)
+      // and signal.aborted check honour the abort.
+      cancelProcessing: () => {
+        const { abortController, isProcessing } = get();
+        if (!isProcessing) {
+          return;
+        }
+        abortController?.abort();
+        set({
+          isProcessing: false,
+          abortController: null,
+          activeRunId: null,
+        });
+      },
+
       setAnalysisMode: (mode: WebOcrState['analysisMode']) => {
-        set({ analysisMode: mode });
+        // audit H-07: switching analysis mode invalidates the prior output
+        // (individual vs combined vs comparison produce incompatible shapes).
+        set({ analysisMode: mode, results: [], combinedContent: '', error: null });
       },
       
       clearResults: () => {

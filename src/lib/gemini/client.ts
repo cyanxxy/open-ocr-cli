@@ -90,30 +90,37 @@ export function getGenAIClient(apiKey: string): GoogleGenAI {
     );
   }
 
-  const cacheKey = apiKey;
-
-  // Get or create GoogleGenAI instance
-  let genAI: GoogleGenAI;
-  if (clientCache.has(cacheKey)) {
+  const cached = clientCache.get(apiKey);
+  if (cached) {
     logger.debug(`Using cached GoogleGenAI client`);
-    genAI = clientCache.get(cacheKey)!;
-  } else {
-    try {
-      // Create new Gemini AI instance with the new SDK format
-      genAI = new GoogleGenAI({ apiKey });
-      clientCache.set(cacheKey, genAI);
-      logger.info(`Created new GoogleGenAI client`);
-    } catch (error) {
-      logger.error('Failed to create Gemini client:', error);
-      throw new OcrError(
-        OcrErrorType.API_KEY_MISSING,
-        'Failed to initialize Gemini AI client',
-        error
-      );
-    }
+    return cached;
   }
 
-  return genAI;
+  // Retain only one client at a time. Clearing the cache before adding a new
+  // entry prevents old API-key strings and their client objects from lingering
+  // in memory for the page lifetime after a key rotation (audit H-14).
+  clientCache.clear();
+  try {
+    const genAI = new GoogleGenAI({ apiKey });
+    clientCache.set(apiKey, genAI);
+    logger.info(`Created new GoogleGenAI client`);
+    return genAI;
+  } catch (error) {
+    logger.error('Failed to create Gemini client:', error);
+    throw new OcrError(
+      OcrErrorType.API_KEY_MISSING,
+      'Failed to initialize Gemini AI client',
+      error
+    );
+  }
+}
+
+/**
+ * Drop any cached GoogleGenAI client. Call this on API-key change/logout so a
+ * rotated or removed credential is not retained in memory (audit H-14).
+ */
+export function clearGeminiClientCache(): void {
+  clientCache.clear();
 }
 
 /**
@@ -238,11 +245,35 @@ export function isGemini3Model(modelName: GeminiModel): boolean {
  * - Gemini 3 Flash / Gemini 3.5 Flash support: minimal, low, medium, high
  */
 /**
- * Detect non-retryable Gemini API failures (auth, permission, quota/rate-limit).
- * The agent loop uses this to stop entirely rather than burn iterations against
- * an endpoint that will keep rejecting every request.
+ * Detect terminal Gemini API failures (bad/missing key, permission). These can
+ * never succeed on retry, so the agent loop stops entirely rather than burning
+ * iterations against an endpoint that will keep rejecting every request.
+ *
+ * Note: rate-limit / quota / 5xx are intentionally NOT here — they are transient
+ * and handled by isRetryableGeminiError with backoff (audit H-17).
  */
 export function isFatalGeminiError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    message.includes('api key')
+    || message.includes('api_key_invalid')
+    || message.includes('invalid api key')
+    || message.includes('permission_denied')
+    || message.includes('permission denied')
+    || message.includes('unauthorized')
+    || message.includes('401')
+    || message.includes('403')
+  );
+}
+
+/**
+ * Detect transient Gemini API failures (rate-limit, quota, 5xx, overload,
+ * network/timeout) that may succeed if retried with bounded backoff. The agent
+ * loop retries these a few times before giving up rather than treating the
+ * first 429/5xx as permanently fatal (audit H-17).
+ */
+export function isRetryableGeminiError(error: unknown): boolean {
+  if (isFatalGeminiError(error)) return false;
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
   return (
     message.includes('resource_exhausted')
@@ -250,10 +281,17 @@ export function isFatalGeminiError(error: unknown): boolean {
     || message.includes('rate-limit')
     || message.includes('quota')
     || message.includes('429')
-    || message.includes('api key')
-    || message.includes('api_key_invalid')
-    || message.includes('permission_denied')
-    || message.includes('permission denied')
+    || message.includes('500')
+    || message.includes('502')
+    || message.includes('503')
+    || message.includes('504')
+    || message.includes('unavailable')
+    || message.includes('overloaded')
+    || message.includes('internal error')
+    || message.includes('network')
+    || message.includes('timeout')
+    || message.includes('econnreset')
+    || message.includes('fetch failed')
   );
 }
 

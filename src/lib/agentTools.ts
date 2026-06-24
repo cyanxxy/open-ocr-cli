@@ -1,5 +1,5 @@
 import { AgentFunctionResult, AgentMemory } from './agentTypes';
-import { FunctionDeclaration, GoogleGenAI } from '@google/genai';
+import { FunctionDeclaration } from '@google/genai';
 import type { AgentClientConfig } from './agentTypes';
 import {
   getAgentDocumentSchema,
@@ -7,7 +7,7 @@ import {
   normalizeAgentDocumentType,
   normalizeAgentFieldName,
 } from './agentSchema';
-import { applyThinkingConfig, isFatalGeminiError } from './gemini/client';
+import { applyThinkingConfig, getGenAIClient, isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
 import { getTopKForModel, parseJsonPayload } from './gemini/structured';
 import { assertNormalizedRegion, cropDocumentRegion } from './regionRaster';
 
@@ -241,7 +241,7 @@ export async function executeReOcrRegion(
     if (!base64Data) {
       throw new Error('Failed to generate cropped region image for refinement');
     }
-    const genAI = new GoogleGenAI({ apiKey: clientConfig.apiKey });
+    const genAI = getGenAIClient(clientConfig.apiKey);
 
     let generationConfig: Record<string, unknown> = {
       temperature: 1,
@@ -351,9 +351,9 @@ export async function executeReOcrRegion(
       }
     };
   } catch (error) {
-    // Surface non-retryable API failures so the agent loop stops instead of
-    // continuing to call tools against an exhausted/unauthorized endpoint.
-    if (isFatalGeminiError(error)) {
+    // Surface API-level failures so the agent loop stops (terminal) or backs off
+    // and retries (transient) instead of looping against the endpoint (H-17).
+    if (isFatalGeminiError(error) || isRetryableGeminiError(error)) {
       throw error;
     }
     return {
@@ -475,6 +475,35 @@ export async function executeAnalyzeDocumentStructure(
 // Helper functions
 
 /**
+ * Parse a possibly-formatted numeric/currency string into a number, tolerating
+ * currency symbols, whitespace, and thousands separators in common locales.
+ * Returns null when the value is not a usable number so callers can SKIP a
+ * consistency check rather than treat an unparseable value as 0 — the previous
+ * `parseFloat(value) || 0` silently coerced NaN to 0 and produced false
+ * "inconsistent total" flags (audit A-14).
+ */
+function parseNumeric(value: string): number | null {
+  const cleaned = String(value).replace(/[^\d.,-]/g, '');
+  if (!cleaned || !/\d/.test(cleaned)) return null;
+  const hasDot = cleaned.includes('.');
+  const hasComma = cleaned.includes(',');
+  let normalized: string;
+  if (hasDot && hasComma) {
+    // Whichever separator appears last is the decimal separator.
+    normalized = cleaned.lastIndexOf(',') > cleaned.lastIndexOf('.')
+      ? cleaned.replace(/\./g, '').replace(',', '.')
+      : cleaned.replace(/,/g, '');
+  } else if (hasComma) {
+    // A lone comma is a decimal separator unless it groups exactly 3 digits.
+    normalized = /,\d{3}\b/.test(cleaned) ? cleaned.replace(/,/g, '') : cleaned.replace(',', '.');
+  } else {
+    normalized = cleaned;
+  }
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
  * Validate field value based on validation rule
  */
 function validateFieldValue(value: string, rule: string): { isValid: boolean; message: string } {
@@ -501,17 +530,19 @@ function validateFieldValue(value: string, rule: string): { isValid: boolean; me
       };
     }
     case 'currency': {
-      const currencyRegex = /^\$?\d+(\.\d{2})?$/;
+      // Accept locale-formatted amounts ("$1,234.56", "€10", "1.234,50") via a
+      // tolerant parser rather than a US-only regex (audit A-14).
+      const isValid = parseNumeric(value) !== null;
       return {
-        isValid: currencyRegex.test(value),
-        message: currencyRegex.test(value) ? 'Valid currency format' : 'Invalid currency format',
+        isValid,
+        message: isValid ? 'Valid currency format' : 'Invalid currency format',
       };
     }
     case 'number': {
-      const numberRegex = /^\d+(\.\d+)?$/;
+      const isValid = parseNumeric(value) !== null;
       return {
-        isValid: numberRegex.test(value),
-        message: numberRegex.test(value) ? 'Valid number format' : 'Invalid number format',
+        isValid,
+        message: isValid ? 'Valid number format' : 'Invalid number format',
       };
     }
     default:
@@ -590,24 +621,27 @@ function validateFieldConsistency(value: string, fieldName: string, memory: Read
   // Check consistency with other extracted fields
   const existingFields = memory.extractedFields;
   
-  // Example: Check if total matches sum of line items
+  // Example: Check if total matches sum of line items. Only numeric line-item
+  // fields participate — a textual "line_items" blob parses to null and is
+  // skipped instead of being coerced to 0 (audit A-14).
   if (fieldName.toLowerCase().includes('total')) {
     const lineItems = Object.entries(existingFields)
       .filter(([key]) => key.toLowerCase().includes('item') || key.toLowerCase().includes('line'))
-      .map(([, field]) => parseFloat(field.value) || 0);
-    
-    if (lineItems.length > 0) {
+      .map(([, field]) => parseNumeric(field.value))
+      .filter((amount): amount is number => amount !== null);
+    const extractedTotal = parseNumeric(value);
+
+    if (lineItems.length > 0 && extractedTotal !== null) {
       const calculatedTotal = lineItems.reduce((sum, item) => sum + item, 0);
-      const extractedTotal = parseFloat(value) || 0;
       const isConsistent = Math.abs(calculatedTotal - extractedTotal) < 0.01;
-      
+
       return {
         isValid: isConsistent,
         message: isConsistent ? 'Total matches sum of line items' : 'Total does not match sum of line items',
       };
     }
   }
-  
+
   return { isValid: true, message: 'Consistency validation passed' };
 }
 
@@ -637,29 +671,28 @@ function validateFieldCrossReference(value: string, fieldName: string, memory: R
     }
   }
 
-  // Arithmetic Cross-References (Total vs Subtotal + Tax)
+  // Arithmetic Cross-References (Total vs Subtotal + Tax). Components that do not
+  // parse to a number are ignored rather than coerced to NaN/0, so the check only
+  // fires when there is genuinely comparable data (audit A-14).
   if (lowerFieldName === 'total' || lowerFieldName === 'total_amount' || lowerFieldName === 'grand_total') {
-    let subtotal = 0;
-    let tax = 0;
-    let foundComponents = false;
+    let subtotal: number | null = null;
+    let tax: number | null = null;
 
     for (const [key, field] of Object.entries(existingFields)) {
       const k = key.toLowerCase();
       if (k.includes('subtotal') || k.includes('net_amount')) {
-        subtotal = parseFloat(field.value);
-        foundComponents = true;
+        subtotal = parseNumeric(field.value);
       }
       if (k.includes('tax') || k.includes('vat')) {
-        tax = parseFloat(field.value);
-        foundComponents = true;
+        tax = parseNumeric(field.value);
       }
     }
 
-    if (foundComponents) {
-      const calculatedTotal = subtotal + tax;
-      const extractedTotal = parseFloat(value);
-      if (!isNaN(extractedTotal) && Math.abs(calculatedTotal - extractedTotal) > 0.05) { // 0.05 tolerance for rounding
-         return { isValid: false, message: `Total (${extractedTotal}) does not match Subtotal + Tax (${calculatedTotal.toFixed(2)})` };
+    const extractedTotal = parseNumeric(value);
+    if (extractedTotal !== null && (subtotal !== null || tax !== null)) {
+      const calculatedTotal = (subtotal ?? 0) + (tax ?? 0);
+      if (Math.abs(calculatedTotal - extractedTotal) > 0.05) { // 0.05 tolerance for rounding
+        return { isValid: false, message: `Total (${extractedTotal}) does not match Subtotal + Tax (${calculatedTotal.toFixed(2)})` };
       }
     }
   }

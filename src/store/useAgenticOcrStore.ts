@@ -221,11 +221,12 @@ function toFieldResult(fieldData: AgentMemory['extractedFields'][string], iterat
 }
 
 /**
- * Merge incoming fields into existing ones keeping the higher-confidence value
- * (newer wins on ties), preserving a previously-known region when the newer
- * extraction omits one. Mirrors `applyMemoryUpdate` in agentLoop so the live
- * progress UI shows the same intermediate values as the final result instead of
- * letting a low-confidence re-extraction clobber a better earlier one.
+ * Merge incoming fields into existing ones using the same deterministic ordering
+ * as `mergeField` in agentMemory: validity first (a validated value is never
+ * clobbered by an invalid one), then confidence, then recency. This keeps the
+ * live progress UI in lock-step with the engine's final result and prevents a
+ * high-confidence-but-invalid re-extraction from overwriting a valid value
+ * (audit A-13).
  */
 function mergeFieldByConfidence(
   existing: Record<string, FieldResult>,
@@ -240,19 +241,30 @@ function mergeFieldByConfidence(
       continue;
     }
 
+    const incomingValidity = incomingField.validated ? 1 : 0;
+    const existingValidity = existingField.validated ? 1 : 0;
     const incomingConfidence = incomingField.confidence ?? 0;
     const existingConfidence = existingField.confidence ?? 0;
     const incomingAt = incomingField.extractedAt ?? 0;
     const existingAt = existingField.extractedAt ?? 0;
-    const shouldReplace = incomingConfidence > existingConfidence
-      || (incomingConfidence === existingConfidence && incomingAt >= existingAt);
+
+    let shouldReplace: boolean;
+    if (incomingValidity !== existingValidity) {
+      shouldReplace = incomingValidity > existingValidity;
+    } else if (incomingConfidence !== existingConfidence) {
+      shouldReplace = incomingConfidence > existingConfidence;
+    } else {
+      shouldReplace = incomingAt >= existingAt;
+    }
 
     const winner = shouldReplace
       ? { ...existingField, ...incomingField }
       : { ...incomingField, ...existingField };
 
     if (winner.location == null) {
-      winner.location = incomingField.location ?? existingField.location;
+      winner.location = shouldReplace
+        ? (incomingField.location ?? existingField.location)
+        : (existingField.location ?? incomingField.location);
     }
 
     merged[name] = winner;
@@ -585,11 +597,17 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
         });
       }
 
-      // Final completion
+      // Final completion. The engine sets a typed stopReason; only treat
+      // 'succeeded' as a true completion so a partial / budget / tool-limit run
+      // is not reported as a clean success (audit A-16).
+      const stopReason = finalMemory?.stopReason ?? 'partial';
+      const succeeded = stopReason === 'succeeded';
       if (get().status !== 'error' && get().status !== 'completed' && get().status !== 'stopped') {
         set((state) => ({
           status: 'completed',
-          currentStep: 'Agent processing completed',
+          currentStep: succeeded
+            ? 'Agent processing completed'
+            : `Agent finished with partial results (${stopReason}).`,
           progress: 100,
           isProcessing: false,
           abortController: null,
@@ -597,7 +615,7 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
           documentMemory: state.documentMemory
             ? {
                 ...state.documentMemory,
-                isComplete: true,
+                isComplete: succeeded,
                 lastUpdated: finalMemory?.lastUpdated ?? Date.now(),
               }
             : null,
@@ -605,8 +623,10 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
       }
 
       get().addLog({
-        type: 'info',
-        message: 'Agent processing completed',
+        type: succeeded ? 'info' : 'warning',
+        message: succeeded
+          ? 'Agent processing completed'
+          : `Agent finished with partial results (${stopReason}). Some required fields or the confidence threshold were not met.`,
       });
 
     } catch (error) {

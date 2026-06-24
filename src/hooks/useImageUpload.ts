@@ -29,13 +29,26 @@ export function useImageUpload(options?: UseImageUploadOptions): UseImageUploadR
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
+  // Monotonic request id. Each processFile call captures the current value;
+  // after the async read it bails out unless it is still the latest request.
+  // This prevents a slow read of an earlier file from overwriting state set by
+  // a newer file (last-write-wins race), and lets reset()/unmount invalidate
+  // any in-flight read (audit B-08).
+  const requestIdRef = useRef(0);
+
   const reset = useCallback(() => {
+    // Invalidate any pending read so its resolution is ignored (audit B-08).
+    requestIdRef.current += 1;
     setFile(null);
     setImageData('');
     setError(null);
+    setIsLoading(false);
   }, []);
 
   const processFile = useCallback(async (file: File): Promise<void> => {
+    const requestId = ++requestIdRef.current;
+    const isCurrent = () => requestIdRef.current === requestId;
+
     setIsLoading(true);
     setError(null);
 
@@ -49,6 +62,12 @@ export function useImageUpload(options?: UseImageUploadOptions): UseImageUploadR
       // Read file
       const data = await readFileAsDataUrl(file);
 
+      // A newer request (or a reset) started while this read was in flight —
+      // drop the stale result without touching state (audit B-08).
+      if (!isCurrent()) {
+        return;
+      }
+
       // Set states
       setFile(file);
       setImageData(data);
@@ -58,6 +77,11 @@ export function useImageUpload(options?: UseImageUploadOptions): UseImageUploadR
         optionsRef.current.onSuccess(data, file);
       }
     } catch (err) {
+      // Ignore errors from superseded requests so a stale failure cannot clobber
+      // the state of the current file (audit B-08).
+      if (!isCurrent()) {
+        return;
+      }
       const errorMessage = err instanceof Error ? err.message : 'Failed to process file';
       logger.error('Error processing file:', errorMessage);
       setError(errorMessage);
@@ -67,7 +91,10 @@ export function useImageUpload(options?: UseImageUploadOptions): UseImageUploadR
         optionsRef.current.onError(errorMessage);
       }
     } finally {
-      setIsLoading(false);
+      // Only the latest request controls the loading flag.
+      if (isCurrent()) {
+        setIsLoading(false);
+      }
     }
   }, []);
 

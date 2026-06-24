@@ -3,7 +3,9 @@
   publish = "dist"
 
 [build.environment]
-  NODE_VERSION = "20"
+  # Pin to an exact patch matching engines (>=20.19.0) so Netlify and CI build
+  # on the same Node (audit O-15).
+  NODE_VERSION = "20.19.0"
 
 [[redirects]]
   from = "/*"

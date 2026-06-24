@@ -83,7 +83,31 @@ export interface AgentLoopConfig {
   confidenceThreshold: number;
   temperature: number;
   maxTokens: number;
+  /**
+   * Hard wall-clock budget for the whole run, in milliseconds. Acts as a
+   * safety net so a stuck/looping run cannot consume unbounded time and cost
+   * even if it never converges (audit H-16). Defaults are applied by the loop.
+   */
+  maxDurationMs?: number;
+  /** Base backoff (ms) for transient-error retries. Overridable (e.g. 0 in tests). */
+  retryBaseDelayMs?: number;
+  /** Pause (ms) between iterations. Overridable (e.g. 0 in tests). */
+  iterationPauseMs?: number;
 }
+
+/**
+ * Why an agent run stopped. The runtime — not the model — owns this decision so
+ * that hitting a limit or finishing below the confidence threshold is never
+ * reported as a clean success (audit A-16 / C-03).
+ */
+export type AgentStopReason =
+  | 'succeeded'
+  | 'partial'
+  | 'max_iterations'
+  | 'tool_limit_reached'
+  | 'budget_exhausted'
+  | 'cancelled'
+  | 'failed';
 
 /**
  * Represents the agent's memory/context
@@ -110,6 +134,8 @@ export interface AgentMemory {
   };
   confidence: number;
   lastUpdated: number;
+  /** Terminal reason set by the runtime when the run ends (audit A-16). */
+  stopReason?: AgentStopReason;
 }
 
 /**

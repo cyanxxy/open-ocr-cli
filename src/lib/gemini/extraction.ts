@@ -3,9 +3,8 @@
  * This module contains the main extraction functions moved from the monolithic gemini.ts
  */
 
-import { GoogleGenAI } from '@google/genai';
 import { logger } from '../logger';
-import { applyThinkingConfig } from './client';
+import { applyThinkingConfig, getGenAIClient } from './client';
 import type {
   ExtractedContent,
   StreamingCallbacks,
@@ -99,6 +98,21 @@ function processMarkdownIntoExtractedContent(
 }
 
 /**
+ * Single source of truth for whether a JSON contract was requested. Both the
+ * prompt and the generation config must agree on this — the previous code asked
+ * for Markdown in the prompt while requesting `application/json` in the config
+ * whenever `outputFormat: 'json'` was set without `structuredOutput` (audit H-01).
+ */
+function wantsJsonOutput(options?: ExtractionOptions): boolean {
+  return options?.structuredOutput === true || options?.outputFormat === 'json';
+}
+
+/** Default output-token ceiling. Generous enough for a dense page, but bounded
+ * (the model max of 65536 masked runaway prompts and inflated worst-case cost —
+ * audit G-03). Callers needing more pass `options.maxTokens` explicitly. */
+const DEFAULT_MAX_OUTPUT_TOKENS = 32768;
+
+/**
  * Build generation configuration for Gemini preview API calls
  */
 function buildGenerationConfig(
@@ -110,12 +124,12 @@ function buildGenerationConfig(
   const isFlashModel = modelName === 'gemini-3-flash-preview' || modelName === 'gemini-3.5-flash';
   let config: Record<string, unknown> = {
     temperature: options?.temperature ?? 1.0,
-    maxOutputTokens: options?.maxTokens ?? 65536,
+    maxOutputTokens: options?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
     topP: 0.95,
     topK: isFlashModel ? 64 : 40
   };
 
-  if (options?.structuredOutput || options?.outputFormat === 'json') {
+  if (wantsJsonOutput(options)) {
     config.responseMimeType = 'application/json';
   }
 
@@ -159,6 +173,49 @@ function parseExtractedContentFromJson(text: string): ExtractedContent | null {
 }
 
 /**
+ * Reject responses that did not complete normally (safety block, recitation,
+ * or an empty/malformed candidate) instead of silently treating them as a
+ * successful empty extraction (audit G-02).
+ */
+function assertUsableResponse(response: {
+  candidates?: Array<{ finishReason?: string }>;
+  promptFeedback?: { blockReason?: string };
+}): void {
+  const blockReason = response.promptFeedback?.blockReason;
+  if (blockReason) {
+    throw new Error(`Extraction was blocked by safety filters (${blockReason})`);
+  }
+  const finishReason = response.candidates?.[0]?.finishReason;
+  if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
+    throw new Error(`Extraction did not complete normally (finishReason: ${finishReason})`);
+  }
+  if (finishReason === 'MAX_TOKENS') {
+    logger.warn('Extraction hit the output token limit and may be truncated.');
+  }
+}
+
+/**
+ * Turn raw model output into an ExtractedContent according to the requested
+ * contract. When JSON was explicitly requested, an unparseable response is a
+ * contract violation that throws — it is never silently downgraded to Markdown
+ * (audit H-02). An empty response always throws (audit G-02/H-03).
+ */
+function coerceExtractionResult(text: string, wantsJson: boolean): ExtractedContent {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    throw new Error('Extraction returned an empty response');
+  }
+  if (wantsJson) {
+    const parsed = parseExtractedContentFromJson(trimmed);
+    if (!parsed) {
+      throw new Error('Extraction requested JSON but the model returned invalid JSON');
+    }
+    return parsed;
+  }
+  return processMarkdownIntoExtractedContent(trimmed);
+}
+
+/**
  * Extracts text content from a given file (image or PDF).
  *
  * @param fileData - The base64 encoded string of the file.
@@ -185,35 +242,48 @@ export async function extractTextFromFile(
       throw new Error('Please configure your Gemini API key in settings');
     }
 
-    const genAI = new GoogleGenAI({ apiKey });
-    
+    // Reuse the shared (single-entry) client rather than constructing a new
+    // GoogleGenAI per call, so credential lifecycle/caching stays centralized
+    // (audit H-18).
+    const genAI = getGenAIClient(apiKey);
+    const wantsJson = wantsJsonOutput(options);
+
     // Prepare the file data
     const base64Data = fileData.split(',')[1] || fileData;
-    
-    // Build the prompt
-    let prompt = 'Extract all text content from this document. ';
-    
+
+    // Build the prompt. Explicit user instructions act as the extraction
+    // directive; otherwise we fall back to the default "extract all text"
+    // objective. Feature flags and the format directive are always appended so
+    // they are never lost when custom instructions are supplied (audit G-04).
+    const promptParts: string[] = [];
     if (instructions && instructions.length > 0) {
-      prompt = instructions.map(inst => inst.prompt).join('\n\n') + '\n\n';
+      promptParts.push(...instructions.map((inst) => inst.prompt));
+    } else {
+      promptParts.push('Extract all text content from this document.');
     }
-    
+
     if (options?.handwritingStyle) {
-      prompt += `The document contains ${options.handwritingStyle} handwriting. `;
+      promptParts.push(`The document contains ${options.handwritingStyle} handwriting.`);
     }
-    
     if (options?.detectImages) {
-      prompt += 'Detect and describe any images, charts, or diagrams. ';
+      promptParts.push('Detect and describe any images, charts, or diagrams.');
     }
-    
     if (options?.detectMathEquations) {
-      prompt += 'Detect and format mathematical equations using LaTeX notation. ';
+      promptParts.push('Detect and format mathematical equations using LaTeX notation.');
     }
-    
-    if (options?.outputFormat === 'markdown' || !options?.structuredOutput) {
-      prompt += 'Format the output as clean markdown with proper headings and structure.';
-    } else if (options?.structuredOutput || options?.outputFormat === 'json') {
-      prompt += 'Output the result as structured JSON with title, sections, and content.';
+    if (options?.imageDetailLevel === 'detailed') {
+      promptParts.push('Describe visual (non-text) elements in detail.');
+    } else if (options?.imageDetailLevel === 'minimal') {
+      promptParts.push('Keep descriptions of non-text visual elements brief.');
     }
+
+    if (wantsJson) {
+      promptParts.push('Output the result as structured JSON with title, sections, and content.');
+    } else {
+      promptParts.push('Format the output as clean markdown with proper headings and structure.');
+    }
+
+    const prompt = promptParts.join(' ');
 
     // Prepare contents for the API
     const contents = [{
@@ -234,6 +304,7 @@ export async function extractTextFromFile(
 
     // Handle streaming if callbacks are provided
     if (callbacks) {
+      callbacks.onStart?.();
       const result = await genAI.models.generateContentStream({
         model,
         contents,
@@ -247,9 +318,7 @@ export async function extractTextFromFile(
         callbacks.onProgress?.(chunkText);
       }
 
-      const finalContent = (options?.structuredOutput || options?.outputFormat === 'json')
-        ? (parseExtractedContentFromJson(fullText) || processMarkdownIntoExtractedContent(fullText))
-        : processMarkdownIntoExtractedContent(fullText);
+      const finalContent = coerceExtractionResult(fullText, wantsJson);
       callbacks.onComplete?.(finalContent);
       return finalContent;
 
@@ -261,20 +330,20 @@ export async function extractTextFromFile(
         config: generationConfig
       });
 
-      const responseText = response.text || '';
-      return (options?.structuredOutput || options?.outputFormat === 'json')
-        ? (parseExtractedContentFromJson(responseText) || processMarkdownIntoExtractedContent(responseText))
-        : processMarkdownIntoExtractedContent(responseText);
+      assertUsableResponse(response);
+      return coerceExtractionResult(response.text || '', wantsJson);
     }
 
   } catch (error) {
-    if (callbacks?.onError) {
-      callbacks.onError(error instanceof Error ? error : new Error(String(error)));
-      logger.error('Text extraction failed:', error);
-      // Return a minimal result instead of throwing, since the error is handled by the callback
-      return { sections: [] };
-    }
+    const normalizedError = error instanceof Error ? error : new Error(String(error));
     logger.error('Text extraction failed:', error);
-    throw error instanceof Error ? error : new Error('Failed to extract text from file');
+    // Always surface failures. Previously, when callbacks were supplied, the
+    // function notified onError and then RESOLVED with an empty `{ sections: [] }`,
+    // so callers could not distinguish a real failure (or a cancellation) from a
+    // genuinely empty document (audit H-03 / G-07). The onError callback is still
+    // invoked for UI handling, and the rejection preserves the original error
+    // (including an AbortError's name) so cancellation stays distinguishable.
+    callbacks?.onError?.(normalizedError);
+    throw normalizedError;
   }
 }

@@ -51,7 +51,7 @@ OCR libraries either ship a heavy backend, lock structured extraction behind clo
 ```bash
 git clone https://github.com/cyanxxy/gemini-ocr.git
 cd gemini-ocr
-npm install
+npm ci
 npm run dev
 ```
 
@@ -59,17 +59,20 @@ Open `http://localhost:5173`, add your API key in **Settings**, then pick a mode
 
 ## Models
 
-| Model                     | Reasoning levels             | Notes              |
-| ------------------------- | ---------------------------- | ------------------ |
-| `gemini-3.5-flash`        | MINIMAL · LOW · MEDIUM · HIGH | Default, recommended |
-| `gemini-3-flash-preview`  | MINIMAL · LOW · MEDIUM · HIGH | Fast               |
-| `gemini-3.1-pro-preview`  | LOW · MEDIUM · HIGH           | Highest reasoning  |
+| Model                     | Status   | Reasoning levels             | Notes              |
+| ------------------------- | -------- | ---------------------------- | ------------------ |
+| `gemini-3.5-flash`        | Stable   | MINIMAL · LOW · MEDIUM · HIGH | Default, recommended |
+| `gemini-3-flash-preview`  | Preview¹ | MINIMAL · LOW · MEDIUM · HIGH | Fast               |
+| `gemini-3.1-pro-preview`  | Preview¹ | LOW · MEDIUM · HIGH           | Highest reasoning  |
+
+¹ Preview models may change or be retired without notice; their API behavior is not covered by stability guarantees.
 
 Reasoning depth is configurable in Settings. Gemini 3.1 Pro is clamped to `LOW`/`MEDIUM`/`HIGH` per the Gemini 3 API contract.
 
 ## Web OCR Behavior
 
-- Only `http://` and `https://` URLs are accepted; anything else is rejected before the API call.
+- Only **public** `http(s)` URLs are accepted. URLs with embedded credentials, `localhost`/loopback, private or link-local IP ranges, or tunneling hosts (e.g. `ngrok`) are rejected before the API call — matching Gemini URL Context's public-URL requirement.
+- Duplicate URLs are de-duplicated, and an in-progress run can be cancelled.
 - Web OCR uses Gemini URL context and **verifies retrieval metadata** before treating a response as valid.
 - If any URL fails to retrieve, is unsupported, or cannot be verified, the app surfaces an explicit error instead of inventing extracted content.
 - Up to **20 URLs** per request.
@@ -77,6 +80,7 @@ Reasoning depth is configurable in Settings. Gemini 3.1 Pro is clamped to `LOW`/
 ## Limits
 
 - File size: **20 MB** per file
+- Bulk batch: up to **200 files** and **500 MB** total per job
 - Supported local files: images (`png`, `jpg`, `jpeg`, `webp`, `heic`, `heif`) and `pdf`
 - Web OCR: up to 20 URLs per request
 
@@ -94,7 +98,13 @@ Files:
 
 - [`evals/cases`](evals/cases) — assertions and fixtures
 - [`evals/corpus`](evals/corpus) — input documents
-- [`evals/reports/latest.md`](evals/reports/latest.md) · [`evals/reports/latest.json`](evals/reports/latest.json) — latest run
+- [`evals/reports/latest.md`](evals/reports/latest.md) · [`evals/reports/latest.json`](evals/reports/latest.json) — last committed run
+
+> **Note:** `evals/reports/latest.md` and `latest.json` are a committed snapshot from the last manual eval run (see the `Run at` timestamp in the report), not live results. They may be stale relative to the current model, codebase, or case set — for example, cases added after the snapshot will not be reflected in its totals until evals are re-run. Regenerating requires a Gemini API key:
+>
+> ```bash
+> GEMINI_API_KEY=your_key npm run evals && npm run evals:report
+> ```
 
 ## Scripts
 
