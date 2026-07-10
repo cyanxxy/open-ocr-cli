@@ -16,7 +16,7 @@ import {
 } from './agentGemini';
 import { createInitialMemory } from './agentMemory';
 import { evaluateAgentCompletion } from './agentSchema';
-import type { InteractionTurn } from './gemini/interactions';
+import type { InteractionStep } from './gemini/interactions';
 import { isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
 
 // Re-export the memory reducer from its neutral home so existing importers that
@@ -42,7 +42,7 @@ const DEFAULT_AGENT_CONFIG: AgentLoopConfig = {
   maxIterations: 5,
   confidenceThreshold: 0.8,
   temperature: 1,
-  maxTokens: 4096,
+  maxTokens: 16384,
   maxDurationMs: 120000,
 };
 
@@ -128,7 +128,7 @@ export async function* agentLoop(
         }
       ]
     };
-    const interactionTranscript: InteractionTurn[] = [];
+    const interactionTranscript: InteractionStep[] = [];
 
     while (iteration < agentConfig.maxIterations) {
       if (clientConfig.abortSignal?.aborted) {

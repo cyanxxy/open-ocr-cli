@@ -1,6 +1,5 @@
-import { GoogleGenAI } from '@google/genai';
-import { applyThinkingConfig } from '../gemini/client';
-import { getTopKForModel, parseJsonPayload } from '../gemini/structured';
+import { applyThinkingConfig, generateContentMediaResolution, getGenAIClient } from '../gemini/client';
+import { parseJsonPayload } from '../gemini/structured';
 import { logger } from '../logger';
 import type {
   ExtractionPreset,
@@ -435,15 +434,15 @@ export async function runExtractionPreset(
       throw new Error('Extraction cancelled');
     }
 
-    const genAI = new GoogleGenAI({ apiKey });
+    // Shared client cache so key rotation clears credentials (audit H-18).
+    const genAI = getGenAIClient(apiKey);
     const base64Data = fileData.split(',')[1] || fileData;
 
+    // Gemini 3.x: omit temperature/topP/topK; use media resolution for OCR fidelity.
     let generationConfig: Record<string, unknown> = {
-      temperature: 0.2,
-      maxOutputTokens: 8192,
-      topP: 0.9,
-      topK: getTopKForModel(model),
+      maxOutputTokens: 16384,
       responseMimeType: 'application/json',
+      mediaResolution: generateContentMediaResolution(mimeType),
     };
 
     if (options?.abortSignal) {

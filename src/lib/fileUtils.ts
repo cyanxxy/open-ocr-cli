@@ -4,10 +4,7 @@
  */
 
 import { logger } from './logger';
-import { FILE_CONSTRAINTS } from '../constants';
-
-/** Maximum allowed file size in bytes */
-const MAX_FILE_SIZE = FILE_CONSTRAINTS.MAX_SIZE;
+import { FILE_CONSTRAINTS, maxFileSizeForMime } from '../constants';
 
 /**
  * Batch ingestion budgets for bulk processing (audit H-10).
@@ -72,7 +69,7 @@ export function isNonPreviewableImage(file: File): boolean {
 /**
  * Validates a file based on its size and MIME type.
  * Allowed types are images (e.g., `image/png`, `image/jpeg`) and PDFs (`application/pdf`).
- * The maximum file size is 20MB.
+ * Size limits are MIME-specific: images up to 100MB, PDFs up to 50MB (Gemini doc limits).
  *
  * @param file - The {@link File} object to validate.
  * @returns An object containing a `valid` boolean and an optional `error` message string if validation fails.
@@ -95,15 +92,7 @@ export function validateFile(file: File | null | undefined): { valid: boolean; e
     };
   }
 
-  // Check file size
-  if (file.size > MAX_FILE_SIZE) {
-    return {
-      valid: false,
-      error: `File "${file.name}" exceeds the maximum size of ${FILE_CONSTRAINTS.MAX_SIZE_LABEL}.`
-    };
-  }
-
-  // Check file type
+  // Check file type before size so we can apply the correct MIME-specific limit.
   const supportedMimeTypes: readonly string[] = [
     ...FILE_CONSTRAINTS.SUPPORTED_IMAGE_MIME_TYPES,
     ...FILE_CONSTRAINTS.SUPPORTED_DOCUMENT_MIME_TYPES,
@@ -113,6 +102,14 @@ export function validateFile(file: File | null | undefined): { valid: boolean; e
     return {
       valid: false,
       error: `File "${file.name}" is of an unsupported type (${file.type || 'unknown'}). Supported formats: PNG, JPEG, WEBP, HEIC, HEIF, and PDF.`
+    };
+  }
+
+  const { bytes: maxBytes, label: maxLabel } = maxFileSizeForMime(file.type);
+  if (file.size > maxBytes) {
+    return {
+      valid: false,
+      error: `File "${file.name}" exceeds the maximum size of ${maxLabel} for ${file.type === 'application/pdf' ? 'PDFs' : 'images'}.`
     };
   }
 

@@ -83,5 +83,5 @@ export async function writeEvalSummary(summary: EvalRunSummary, markdown: string
 }
 
 export function resolveModelName(): string {
-  return process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
+  return process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 }

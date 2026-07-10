@@ -2,15 +2,16 @@ import { type Content, type FunctionDeclaration } from '@google/genai';
 import { logger } from './logger';
 import {
   contentToInteractionInput,
-  createInteractionTurn,
+  createUserInputStep,
   createInteractionFunctionTools,
   createInteractionGenerationConfig,
   extractInteractionFunctionCalls,
   extractInteractionText,
   extractInteractionThoughtSummaries,
-  outputsToModelTurn,
+  getInteractionSteps,
+  selectModelStepsForReplay,
   runModelInteraction,
-  type InteractionTurn,
+  type InteractionStep,
 } from './gemini/interactions';
 import {
   AgentClientConfig,
@@ -43,11 +44,14 @@ const MAX_INNER_ROUNDS = 10;
  * This is the core of the agentic protocol: Gemini calls tools, we execute them
  * and send results back, allowing the model to chain tools intelligently rather
  * than firing all tools at once.
+ *
+ * Transcript is a flat Interactions `steps` array (post–May 2026 schema) so
+ * thought signatures and function calls replay correctly in stateless mode.
  */
 export async function executeAgentTurn(
   systemPrompt: string,
   inputContent: Content,
-  transcript: InteractionTurn[],
+  transcript: InteractionStep[],
   functions: FunctionDeclaration[],
   fileData: string,
   mimeType: string,
@@ -62,8 +66,7 @@ export async function executeAgentTurn(
 
   const generationConfig = createInteractionGenerationConfig({
     temperature: config.temperature,
-    topP: 0.95,
-    maxOutputTokens: config.maxTokens || 4096,
+    maxOutputTokens: config.maxTokens || 16384,
     toolChoice: 'validated',
   }, clientConfig.model, clientConfig.thinkingConfig);
   const tools = createInteractionFunctionTools(functions);
@@ -73,11 +76,10 @@ export async function executeAgentTurn(
 
   // Snapshot the transcript length before appending this iteration's input.
   // If a model call throws partway through, we roll back to here so the shared
-  // transcript never ends on a dangling user turn that would collide with the
-  // next iteration's follow-up turn and produce two consecutive user turns
-  // (audit A-04). Extracted fields already live in `memory`, so nothing is lost.
+  // transcript never ends on a dangling user step that would collide with the
+  // next iteration's follow-up (audit A-04).
   const baseLength = transcript.length;
-  transcript.push(createInteractionTurn('user', contentToInteractionInput(inputContent)));
+  transcript.push(createUserInputStep(contentToInteractionInput(inputContent)));
 
   try {
     for (let round = 0; round < MAX_INNER_ROUNDS; round++) {
@@ -95,26 +97,20 @@ export async function executeAgentTurn(
         abortSignal: clientConfig.abortSignal,
         store: false,
       });
-      const outputs = interaction.outputs || [];
-      // outputsToModelTurn preserves thought blocks + signatures verbatim, which
-      // stateless multi-turn function calling requires (audit C-02).
-      const modelTurn = outputsToModelTurn(outputs);
-      if (modelTurn) {
-        // We answer only the first tool call this round (audit A-02). Keep only
-        // the first function_call block in the replayed model turn so the single
-        // function_result we send back correlates 1:1 — a model turn declaring
-        // two calls with only one result would leave the second unanswered.
-        let keptCall = false;
-        modelTurn.content = modelTurn.content.filter((block) => {
-          if (block.type !== 'function_call') return true;
-          if (keptCall) return false;
-          keptCall = true;
-          return true;
-        });
-        transcript.push(modelTurn);
+
+      if (interaction.status === 'failed' || interaction.status === 'cancelled') {
+        throw new Error(`Agent interaction ended with status "${interaction.status}"`);
       }
 
-      for (const thoughtSummary of extractInteractionThoughtSummaries(outputs)) {
+      const steps = getInteractionSteps(interaction);
+      // Stateless mode requires replaying ALL model steps exactly (thoughts +
+      // every parallel function_call). Never drop calls from history (C-02).
+      const replaySteps = selectModelStepsForReplay(steps);
+      if (replaySteps.length > 0) {
+        transcript.push(...replaySteps);
+      }
+
+      for (const thoughtSummary of extractInteractionThoughtSummaries(steps)) {
         const thinkingStep: AgentStep = {
           type: 'thinking',
           content: thoughtSummary,
@@ -124,12 +120,11 @@ export async function executeAgentTurn(
         allSteps.push(thinkingStep);
       }
 
-      const functionCalls: AgentFunctionCall[] = extractInteractionFunctionCalls(outputs);
+      const functionCalls: AgentFunctionCall[] = extractInteractionFunctionCalls(steps);
       if (functionCalls.length === 0) {
         // Closing prose (no tool call) is surfaced here as activity; prose that
-        // merely precedes a tool call is not (it would read as misleading
-        // "reasoning" — audit A-09).
-        const responseText = extractInteractionText(outputs);
+        // merely precedes a tool call is not (audit A-09).
+        const responseText = extractInteractionText(steps, interaction.output_text);
         if (responseText) {
           const responseStep: AgentStep = {
             type: 'thinking',
@@ -141,9 +136,7 @@ export async function executeAgentTurn(
         }
 
         // A turn with no tool calls is only a genuine completion if the agent has already
-        // done work. Models (especially with thinking enabled) sometimes open with a prose
-        // preamble and no tool call; treating that as "done" would end the run with zero
-        // extracted fields. Nudge the model toward the tool workflow once before giving up.
+        // done work. Nudge once before giving up on an empty opener.
         const hasExtraction = Object.keys(memory.extractedFields).length > 0;
         if (!hasCalledTools && !hasExtraction && !nudgedToUseTools && round < MAX_INNER_ROUNDS - 1) {
           nudgedToUseTools = true;
@@ -154,7 +147,7 @@ export async function executeAgentTurn(
           };
           onStep(nudgeStep);
           allSteps.push(nudgeStep);
-          transcript.push(createInteractionTurn('user', [{
+          transcript.push(createUserInputStep([{
             type: 'text',
             text: 'You have not called any tools yet and no fields have been extracted. '
               + 'Begin now by calling analyze_document_structure, then extract_fields_batch. '
@@ -170,63 +163,95 @@ export async function executeAgentTurn(
 
       hasCalledTools = true;
 
-      // Enforce sequential DECISION-making, not just sequential execution: run
-      // only the FIRST requested call, send its result back, and let the model
-      // pick the next tool with that result in hand. Executing a whole batch
-      // before the model sees any result deprives it of the chance to react
-      // (audit A-02) and contradicts the "one tool at a time" system prompt.
+      // Prefer sequential decision-making: execute the first call for real.
+      // Any additional parallel calls stay in the replayed history and receive
+      // explicit error function_results so call/result counts match (Gemini
+      // strict matching). The model can re-issue them after seeing the first result.
       if (functionCalls.length > 1) {
         const sequencingStep: AgentStep = {
           type: 'thinking',
-          content: `Model requested ${functionCalls.length} tool calls at once; executing only the first and returning its result before the next decision.`,
+          content: `Model requested ${functionCalls.length} tool calls at once; executing the first and returning explicit skip results for the rest so history stays valid.`,
           timestamp: Date.now(),
         };
         onStep(sequencingStep);
         allSteps.push(sequencingStep);
       }
 
-      const fc = functionCalls[0];
-
-      // Re-check abort immediately before the (potentially expensive) tool call
-      // so a cancellation between rounds is honored without running more work
-      // (audit A-03).
       if (clientConfig.abortSignal?.aborted) {
         throw new Error('Agent processing cancelled');
       }
 
-      const callStep: AgentStep = {
-        type: 'function_call',
-        content: `Executing: ${fc.name}`,
-        functionCall: fc,
-        timestamp: Date.now(),
-      };
-      onStep(callStep);
-      allSteps.push(callStep);
+      for (let callIndex = 0; callIndex < functionCalls.length; callIndex++) {
+        const fc = functionCalls[callIndex];
+        // extractInteractionFunctionCalls always assigns a stable id that matches
+        // the id written into the replayed function_call step.
+        const callId = fc.id;
 
-      const result = await executeFunctionCall(fc, fileData, mimeType, memory, clientConfig);
-      applyMemoryUpdate(memory, result.memoryUpdate);
+        if (callIndex === 0) {
+          const callStep: AgentStep = {
+            type: 'function_call',
+            content: `Executing: ${fc.name}`,
+            functionCall: fc,
+            timestamp: Date.now(),
+          };
+          onStep(callStep);
+          allSteps.push(callStep);
 
-      const resultStep: AgentStep = {
-        type: 'result',
-        content: result.success ? `${fc.name} completed` : `${fc.name} returned an error`,
-        functionCall: fc,
-        functionResult: result,
-        timestamp: Date.now(),
-      };
-      onStep(resultStep);
-      allSteps.push(resultStep);
+          const result = await executeFunctionCall(fc, fileData, mimeType, memory, clientConfig);
+          applyMemoryUpdate(memory, result.memoryUpdate);
 
-      transcript.push(createInteractionTurn('user', [{
-        type: 'function_result' as const,
-        call_id: fc.id || `${fc.name}-${round + 1}`,
-        name: fc.name,
-        is_error: !result.success,
-        result: {
-          success: result.success,
-          error: result.error ?? null,
-          data: result.data ?? null,
-        },
-      }]));
+          const resultStep: AgentStep = {
+            type: 'result',
+            content: result.success ? `${fc.name} completed` : `${fc.name} returned an error`,
+            functionCall: fc,
+            functionResult: result,
+            timestamp: Date.now(),
+          };
+          onStep(resultStep);
+          allSteps.push(resultStep);
+
+          transcript.push({
+            type: 'function_result',
+            call_id: callId,
+            name: fc.name,
+            is_error: !result.success,
+            result: {
+              success: result.success,
+              error: result.error ?? null,
+              data: result.data ?? null,
+            },
+          });
+        } else {
+          // Declined parallel call: still answer it so history validation succeeds.
+          const skipMessage = 'Skipped: this agent executes one tool at a time. '
+            + 'Re-issue this call after reviewing the prior tool result.';
+          const skipResult: AgentFunctionResult = {
+            success: false,
+            error: skipMessage,
+          };
+          const resultStep: AgentStep = {
+            type: 'result',
+            content: `${fc.name} skipped (parallel batch)`,
+            functionCall: fc,
+            functionResult: skipResult,
+            timestamp: Date.now(),
+          };
+          onStep(resultStep);
+          allSteps.push(resultStep);
+
+          transcript.push({
+            type: 'function_result',
+            call_id: callId,
+            name: fc.name,
+            is_error: true,
+            result: {
+              success: false,
+              error: skipMessage,
+              data: null,
+            },
+          });
+        }
+      }
     }
 
     return {

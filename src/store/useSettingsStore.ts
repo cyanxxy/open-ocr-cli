@@ -33,12 +33,18 @@ export type ModelType = GeminiModel;
  */
 export type ThemeMode = 'light' | 'dark' | 'amoled';
 
-const VALID_MODELS: ModelType[] = ['gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-3.5-flash'];
+const VALID_MODELS: ModelType[] = [
+  'gemini-3.1-pro-preview',
+  'gemini-3-flash-preview',
+  'gemini-3.5-flash',
+  'gemini-3.1-flash-lite',
+];
 const VALID_THEMES: ThemeMode[] = ['light', 'dark', 'amoled'];
 const VALID_LEVELS: ThinkingLevel[] = ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'];
 
+/** Day-to-day default: medium matches Gemini 3.5 Flash API default and balances OCR quality vs cost. */
 const DEFAULT_THINKING_CONFIG: ThinkingConfig = {
-  level: 'HIGH',
+  level: 'MEDIUM',
   includeThoughts: false,
 };
 
@@ -76,11 +82,20 @@ function migrateThinkingLevel(raw: string | undefined): ThinkingLevel {
 }
 
 function clampThinkingLevel(model: ModelType, level: ThinkingLevel): ThinkingLevel {
-  const allowed = (model === 'gemini-3-flash-preview' || model === 'gemini-3.5-flash')
+  const isFlashFamily = model === 'gemini-3-flash-preview'
+    || model === 'gemini-3.5-flash'
+    || model === 'gemini-3.1-flash-lite';
+  const allowed = isFlashFamily
     ? (['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'] as const)
     : (['LOW', 'MEDIUM', 'HIGH'] as const);
+  // Model-aware fallbacks match API defaults (Flash-Lite → MINIMAL, Flash → MEDIUM, Pro → HIGH).
+  const fallback: ThinkingLevel = model === 'gemini-3.1-flash-lite'
+    ? 'MINIMAL'
+    : isFlashFamily
+      ? 'MEDIUM'
+      : 'HIGH';
 
-  return (allowed as readonly string[]).includes(level) ? level : 'HIGH';
+  return (allowed as readonly string[]).includes(level) ? level : fallback;
 }
 
 function validateRehydratedState(state: SettingsState): Partial<SettingsState> {

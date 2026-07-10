@@ -35,6 +35,7 @@ vi.mock('./agentTools', async () => {
 
 import { executeAgentTurn } from './agentGemini';
 import type { AgentMemory } from './agentTypes';
+import type { InteractionStep } from './gemini/interactions';
 
 function createMemory(): AgentMemory {
   return {
@@ -89,23 +90,23 @@ describe('executeAgentTurn', () => {
   it('treats a response with no tool calls as natural completion once fields exist', async () => {
     mockRunModelInteraction.mockResolvedValue({
       id: 'interaction-1',
-      outputs: [{
-        type: 'text',
-        text: 'No further tool use is needed.',
+      status: 'completed',
+      steps: [{
+        type: 'model_output',
+        content: [{ type: 'text', text: 'No further tool use is needed.' }],
       }],
     });
 
-    // Seed memory so a tool-call-free turn is a genuine completion, not an early bailout.
     const memory = createMemory();
     memory.extractedFields.invoice_number = { value: 'INV-1', confidence: 0.95 };
 
-    const transcript: Array<{ role: 'user' | 'model'; content: unknown[] }> = [];
+    const transcript: InteractionStep[] = [];
     const result = await executeAgentTurn(
       'system prompt',
       createInputContent(),
-      transcript as never,
+      transcript,
       functions,
-      'data:application/pdf;base64,ZmFrZQ==',
+      '[PDF attachment removed — 0 KB]',
       'application/pdf',
       memory,
       {
@@ -128,27 +129,29 @@ describe('executeAgentTurn', () => {
       input: transcript,
     }));
     expect(mockRunModelInteraction.mock.calls[0]?.[0]).not.toHaveProperty('previousInteractionId');
+    // user_input + model_output
     expect(transcript).toHaveLength(2);
+    expect(transcript[0]?.type).toBe('user_input');
+    expect(transcript[1]?.type).toBe('model_output');
   });
 
   it('nudges the model to use its tools instead of finishing empty on a prose-only opener', async () => {
-    // Model opens with prose and never calls a tool; with no extracted fields yet this
-    // must NOT be treated as completion (regression guard for the empty-result bug).
     mockRunModelInteraction.mockResolvedValue({
       id: 'interaction-1',
-      outputs: [{
-        type: 'text',
-        text: 'Let me analyze this document first.',
+      status: 'completed',
+      steps: [{
+        type: 'model_output',
+        content: [{ type: 'text', text: 'Let me analyze this document first.' }],
       }],
     });
 
-    const transcript: Array<{ role: 'user' | 'model'; content: Array<{ type: string; text?: string }> }> = [];
+    const transcript: InteractionStep[] = [];
     const result = await executeAgentTurn(
       'system prompt',
       createInputContent(),
-      transcript as never,
+      transcript,
       functions,
-      'data:application/pdf;base64,ZmFrZQ==',
+      '[PDF attachment removed — 0 KB]',
       'application/pdf',
       createMemory(),
       {
@@ -164,26 +167,30 @@ describe('executeAgentTurn', () => {
       vi.fn(),
     );
 
-    // It nudges once (a second model interaction) before giving up.
     expect(mockRunModelInteraction).toHaveBeenCalledTimes(2);
     expect(result.finished).toBe(true);
 
-    const nudgeTurn = transcript.find((turn) =>
-      turn.role === 'user'
-      && turn.content.some((block) => block.type === 'text' && /call.*tools/i.test(block.text ?? '')),
+    const nudge = transcript.find((step) =>
+      step.type === 'user_input'
+      && Array.isArray((step as { content?: Array<{ text?: string }> }).content)
+      && (step as { content: Array<{ text?: string }> }).content.some(
+        (block) => /call.*tools|Begin now by calling/i.test(block.text ?? ''),
+      ),
     );
-    expect(nudgeTurn).toBeDefined();
+    expect(nudge).toBeDefined();
   });
 
   it('runs only the first tool per round and returns its result before the next decision', async () => {
-    // The model batches two calls in one response. The runtime must execute only
-    // the FIRST (analyze), send its result back, and let the model decide the
-    // next tool with that result in hand (audit A-02). The replayed model turn
-    // keeps only the first call so the single result correlates 1:1.
     mockRunModelInteraction
       .mockResolvedValueOnce({
         id: 'interaction-1',
-        outputs: [
+        status: 'requires_action',
+        steps: [
+          {
+            type: 'thought',
+            signature: 'sig-1',
+            summary: [{ text: 'analyzing' }],
+          },
           {
             type: 'function_call',
             id: 'call-1',
@@ -207,7 +214,8 @@ describe('executeAgentTurn', () => {
       })
       .mockResolvedValueOnce({
         id: 'interaction-2',
-        outputs: [
+        status: 'requires_action',
+        steps: [
           {
             type: 'function_call',
             id: 'call-3',
@@ -218,7 +226,7 @@ describe('executeAgentTurn', () => {
           },
         ],
       })
-      .mockResolvedValueOnce({ id: 'interaction-3', outputs: [] });
+      .mockResolvedValueOnce({ id: 'interaction-3', status: 'completed', steps: [] });
 
     mockExecuteAnalyzeDocumentStructure.mockResolvedValue({
       success: true,
@@ -247,11 +255,11 @@ describe('executeAgentTurn', () => {
     });
 
     const memory = createMemory();
-    const transcript: Array<{ role: 'user' | 'model'; content: unknown[] }> = [];
+    const transcript: InteractionStep[] = [];
     const result = await executeAgentTurn(
       'system prompt',
       createInputContent(),
-      transcript as never,
+      transcript,
       functions,
       'data:image/png;base64,ZmFrZQ==',
       'image/png',
@@ -271,28 +279,30 @@ describe('executeAgentTurn', () => {
 
     expect(result.finished).toBe(true);
     expect(mockExecuteAnalyzeDocumentStructure).toHaveBeenCalledTimes(1);
+    // Parallel second call is declined with an error result, not executed.
     expect(mockExecuteExtractFieldsBatch).toHaveBeenCalledTimes(1);
     expect(memory.documentAnalysis.documentType).toBe('invoice');
     expect(memory.extractedFields.invoice_number?.value).toBe('INV-42');
 
-    // Inspect the final transcript. Every model turn must carry at most ONE
-    // function_call block (the batched second call was trimmed), and every
-    // function_result turn must answer exactly one call — keeping calls and
-    // results correlated 1:1 (audit A-02 / A-05).
-    const turns = transcript as Array<{ role: 'user' | 'model'; content: Array<{ type: string; call_id?: string; name?: string }> }>;
-    const modelCallCounts = turns
-      .filter((t) => t.role === 'model')
-      .map((t) => t.content.filter((b) => b.type === 'function_call').length);
-    expect(modelCallCounts.every((n) => n <= 1)).toBe(true);
-
-    const resultTurns = turns.filter(
-      (t) => t.role === 'user' && t.content.some((b) => b.type === 'function_result'),
+    // Stateless history: every function_call must remain in the transcript and
+    // have exactly one matching function_result (including declined parallels).
+    const functionCalls = transcript.filter((s) => s.type === 'function_call');
+    const functionResults = transcript.filter((s) => s.type === 'function_result');
+    expect(functionCalls.map((c) => (c as { id: string }).id)).toEqual(
+      expect.arrayContaining(['call-1', 'call-2']),
     );
-    expect(resultTurns.every((t) => t.content.filter((b) => b.type === 'function_result').length === 1)).toBe(true);
-
-    const firstResult = resultTurns[0]?.content.find((b) => b.type === 'function_result');
-    expect(firstResult).toEqual(
-      expect.objectContaining({ call_id: 'call-1', name: 'analyze_document_structure' }),
+    expect(functionResults).toHaveLength(functionCalls.length);
+    expect(functionResults[0]).toEqual(
+      expect.objectContaining({ call_id: 'call-1', name: 'analyze_document_structure', is_error: false }),
     );
+    expect(functionResults.find((r) => (r as { call_id?: string }).call_id === 'call-2')).toEqual(
+      expect.objectContaining({
+        call_id: 'call-2',
+        name: 'extract_fields_batch',
+        is_error: true,
+      }),
+    );
+    // Thought signature was preserved in the transcript
+    expect(transcript.some((s) => s.type === 'thought' && (s as { signature?: string }).signature === 'sig-1')).toBe(true);
   });
 });

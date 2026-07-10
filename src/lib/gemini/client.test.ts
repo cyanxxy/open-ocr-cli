@@ -125,13 +125,21 @@ describe('isGemini3Model', () => {
     expect(isGemini3Model('gemini-3.1-pro-preview')).toBe(true);
     expect(isGemini3Model('gemini-3-flash-preview')).toBe(true);
     expect(isGemini3Model('gemini-3.5-flash')).toBe(true);
+    expect(isGemini3Model('gemini-3.1-flash-lite')).toBe(true);
   });
 });
 
 describe('applyThinkingConfig', () => {
-  it('defaults to high thinking when no config is provided', () => {
-    const result = applyThinkingConfig({}, 'gemini-3.1-pro-preview');
-    expect(result.thinkingConfig).toEqual({ thinkingLevel: 'high' });
+  it('defaults thinking by model family when no config is provided', () => {
+    expect(applyThinkingConfig({}, 'gemini-3.1-pro-preview').thinkingConfig).toEqual({
+      thinkingLevel: 'high',
+    });
+    expect(applyThinkingConfig({}, 'gemini-3.5-flash').thinkingConfig).toEqual({
+      thinkingLevel: 'medium',
+    });
+    expect(applyThinkingConfig({}, 'gemini-3.1-flash-lite').thinkingConfig).toEqual({
+      thinkingLevel: 'minimal',
+    });
   });
 
   it('lowercases the configured level and preserves the base config', () => {
@@ -149,6 +157,9 @@ describe('applyThinkingConfig', () => {
   it('allows minimal on Flash models but falls back to high on Pro', () => {
     const flash = applyThinkingConfig({}, 'gemini-3.5-flash', { level: 'MINIMAL' });
     expect(flash.thinkingConfig.thinkingLevel).toBe('minimal');
+
+    const lite = applyThinkingConfig({}, 'gemini-3.1-flash-lite', { level: 'MINIMAL' });
+    expect(lite.thinkingConfig.thinkingLevel).toBe('minimal');
 
     const pro = applyThinkingConfig({}, 'gemini-3.1-pro-preview', { level: 'MINIMAL' });
     expect(pro.thinkingConfig.thinkingLevel).toBe('high');

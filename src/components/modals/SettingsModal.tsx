@@ -257,8 +257,9 @@ export function SettingsModal({
             <label className="text-[11px] font-bold text-stone-400 dark:text-stone-500 uppercase tracking-wider mb-2 block px-1">Model</label>
             <div className="flex flex-col p-1.5 bg-stone-100/80 dark:bg-stone-900/80 rounded-2xl ring-1 ring-inset ring-stone-200/50 dark:ring-white/5 gap-1">
               {([
-                { value: 'gemini-3.5-flash' as ModelType, label: 'Gemini 3.5 Flash', badge: 'New', icon: Zap },
-                { value: 'gemini-3-flash-preview' as ModelType, label: 'Gemini 3 Flash', badge: 'Fast', icon: Zap },
+                { value: 'gemini-3.5-flash' as ModelType, label: 'Gemini 3.5 Flash', badge: 'Default', icon: Zap },
+                { value: 'gemini-3.1-flash-lite' as ModelType, label: 'Gemini 3.1 Flash-Lite', badge: 'Cheap', icon: Zap },
+                { value: 'gemini-3-flash-preview' as ModelType, label: 'Gemini 3 Flash', badge: 'Preview', icon: Zap },
                 { value: 'gemini-3.1-pro-preview' as ModelType, label: 'Gemini 3.1 Pro', badge: 'Best', icon: Sparkles },
               ]).map(({ value, label, badge, icon: Icon }) => (
                 <button
@@ -361,9 +362,16 @@ export function SettingsModal({
           {/* Reasoning Level */}
           <section>
             <label className="text-[11px] font-bold text-stone-400 dark:text-stone-500 uppercase tracking-wider mb-2 block px-1">Reasoning</label>
-            <div className={cn("grid p-1 bg-stone-100/80 dark:bg-stone-900/80 rounded-2xl ring-1 ring-inset ring-stone-200/50 dark:ring-white/5", (model === 'gemini-3-flash-preview' || model === 'gemini-3.5-flash') ? "grid-cols-4" : "grid-cols-3")}>
+            <div className={cn(
+              "grid p-1 bg-stone-100/80 dark:bg-stone-900/80 rounded-2xl ring-1 ring-inset ring-stone-200/50 dark:ring-white/5",
+              (model === 'gemini-3-flash-preview' || model === 'gemini-3.5-flash' || model === 'gemini-3.1-flash-lite')
+                ? "grid-cols-4"
+                : "grid-cols-3",
+            )}>
               {[
-                ...((model === 'gemini-3-flash-preview' || model === 'gemini-3.5-flash') ? [{ value: 'MINIMAL' as const, label: 'Min', emoji: '🌱' }] : []),
+                ...((model === 'gemini-3-flash-preview' || model === 'gemini-3.5-flash' || model === 'gemini-3.1-flash-lite')
+                  ? [{ value: 'MINIMAL' as const, label: 'Min', emoji: '🌱' }]
+                  : []),
                 { value: 'LOW' as const, label: 'Low', emoji: '⚡' },
                 { value: 'MEDIUM' as const, label: 'Med', emoji: '⚖️' },
                 { value: 'HIGH' as const, label: 'High', emoji: '🧠' },

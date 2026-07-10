@@ -4,7 +4,9 @@ import { STORAGE_KEYS, FILE_CONSTRAINTS, UI_TIMING } from './index';
 
 describe('constants', () => {
   it('keeps the constants still consumed by the app', () => {
-    expect(FILE_CONSTRAINTS.MAX_SIZE).toBe(20 * 1024 * 1024);
+    expect(FILE_CONSTRAINTS.MAX_SIZE).toBe(100 * 1024 * 1024);
+    expect(FILE_CONSTRAINTS.MAX_IMAGE_SIZE).toBe(100 * 1024 * 1024);
+    expect(FILE_CONSTRAINTS.MAX_PDF_SIZE).toBe(50 * 1024 * 1024);
     expect(UI_TIMING.COPY_NOTIFICATION_DURATION).toBe(2000);
   });
 

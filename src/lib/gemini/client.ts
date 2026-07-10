@@ -225,12 +225,33 @@ export function getModelClient(
 
 
 /**
- * Check if a model is a Gemini 3 model
+ * Check if a model is a Gemini 3.x model
  */
 export function isGemini3Model(modelName: GeminiModel): boolean {
   return modelName === 'gemini-3.1-pro-preview'
     || modelName === 'gemini-3-flash-preview'
-    || modelName === 'gemini-3.5-flash';
+    || modelName === 'gemini-3.5-flash'
+    || modelName === 'gemini-3.1-flash-lite';
+}
+
+/** Flash-family models that support MINIMAL thinking. */
+export function isFlashFamilyModel(modelName: GeminiModel): boolean {
+  return modelName === 'gemini-3-flash-preview'
+    || modelName === 'gemini-3.5-flash'
+    || modelName === 'gemini-3.1-flash-lite';
+}
+
+/**
+ * Global generateContent media resolution for OCR.
+ * Images: HIGH (fine text). PDFs: MEDIUM (docs: quality saturates at medium).
+ */
+export function generateContentMediaResolution(
+  mimeType: string,
+): 'MEDIA_RESOLUTION_HIGH' | 'MEDIA_RESOLUTION_MEDIUM' {
+  if (mimeType === 'application/pdf' || mimeType.startsWith('application/')) {
+    return 'MEDIA_RESOLUTION_MEDIUM';
+  }
+  return 'MEDIA_RESOLUTION_HIGH';
 }
 
 /**
@@ -306,17 +327,29 @@ export function isRetryableGeminiError(error: unknown): boolean {
  * - Gemini 3 Flash / Gemini 3.5 Flash support: minimal, low, medium, high
  * - Unsupported/unknown levels fall back to `high`.
  */
+/**
+ * Model-aware default thinking level when the UI has not set one.
+ * - 3.1 Flash-Lite: minimal (API default; cheap/high-volume)
+ * - 3.5 Flash / 3 Flash: medium (3.5 Flash API default)
+ * - 3.1 Pro: high
+ */
+export function defaultThinkingLevelForModel(modelName: GeminiModel): ThinkingLevel {
+  if (modelName === 'gemini-3.1-flash-lite') return 'MINIMAL';
+  if (modelName === 'gemini-3.5-flash' || modelName === 'gemini-3-flash-preview') return 'MEDIUM';
+  return 'HIGH';
+}
+
 export function normalizeThinkingLevel(
   level: ThinkingLevel | undefined,
   modelName: GeminiModel,
 ): 'minimal' | 'low' | 'medium' | 'high' {
-  const rawLevel = level ?? 'HIGH';
+  const rawLevel = level ?? defaultThinkingLevelForModel(modelName);
   const normalized = typeof rawLevel === 'string' ? rawLevel.toUpperCase() : rawLevel;
-  const isFlash = modelName === 'gemini-3-flash-preview' || modelName === 'gemini-3.5-flash';
-  const allowed = isFlash
+  const allowed = isFlashFamilyModel(modelName)
     ? (['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'] as const)
     : (['LOW', 'MEDIUM', 'HIGH'] as const);
-  const resolved = (allowed as readonly string[]).includes(normalized) ? normalized : 'HIGH';
+  const fallback = defaultThinkingLevelForModel(modelName);
+  const resolved = (allowed as readonly string[]).includes(normalized) ? normalized : fallback;
   return resolved.toLowerCase() as 'minimal' | 'low' | 'medium' | 'high';
 }
 

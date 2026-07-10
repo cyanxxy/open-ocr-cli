@@ -1,9 +1,10 @@
-import { isGemini3Model } from './client';
 import {
   createInteractionGenerationConfig,
   extractInteractionText,
+  getInteractionSteps,
   runModelInteraction,
   summarizeUrlContextResults,
+  type InteractionStep,
 } from './interactions';
 import { logger } from '../logger';
 import type { GeminiModel, ThinkingConfig } from './types';
@@ -170,13 +171,9 @@ function parseIndividualResults(responseText: string, urls: string[]): UrlResult
 
 function validateUrlContextResults(
   urls: string[],
-  outputs?: Array<{
-    type?: string;
-    is_error?: boolean;
-    result?: unknown;
-  }>,
+  steps?: InteractionStep[],
 ): void {
-  const { hasToolError, results } = summarizeUrlContextResults(outputs);
+  const { hasToolError, results } = summarizeUrlContextResults(steps);
 
   if (hasToolError) {
     throw createGroundedUrlError('Grounded URL retrieval failed before the model produced a verified answer.');
@@ -312,13 +309,12 @@ Format as a structured comparison analysis.`;
       ? Math.min(32768, Math.max(8192, urls.length * 2048))
       : 16384;
 
+    // Omit temperature/top_p — Gemini 3.x is optimized for defaults.
     const generationConfig = createInteractionGenerationConfig({
-      temperature: isGemini3Model(model) ? 1.0 : 0.2,
       maxOutputTokens,
-      topP: 0.95,
     }, model, thinkingConfig);
 
-    const responseFormat = analysisMode === 'individual'
+    const responseSchema = analysisMode === 'individual'
       ? {
           type: 'object',
           additionalProperties: false,
@@ -348,19 +344,24 @@ Format as a structured comparison analysis.`;
       input: prompt,
       tools: [{ type: 'url_context' }],
       generationConfig,
-      responseFormat,
+      responseSchema,
       responseMimeType: analysisMode === 'individual' ? 'application/json' : undefined,
       abortSignal,
       store: false,
     });
 
-    if (interaction.status && interaction.status !== 'completed') {
+    if (
+      interaction.status
+      && interaction.status !== 'completed'
+      && interaction.status !== 'requires_action'
+    ) {
       throw createGroundedUrlError(`URL-context interaction ended with status "${interaction.status}".`);
     }
 
-    validateUrlContextResults(urls, interaction.outputs);
+    const steps = getInteractionSteps(interaction);
+    validateUrlContextResults(urls, steps);
 
-    const responseText = extractInteractionText(interaction.outputs);
+    const responseText = extractInteractionText(steps, interaction.output_text);
     if (!responseText) {
       throw createGroundedUrlError('Grounded URL retrieval succeeded, but the model returned no text output.');
     }

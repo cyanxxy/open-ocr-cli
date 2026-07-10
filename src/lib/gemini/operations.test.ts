@@ -34,7 +34,7 @@ describe('extractTextFromUrls', () => {
     mockRunModelInteraction.mockResolvedValueOnce({
       id: 'interaction-1',
       status: 'completed',
-      outputs: [
+      steps: [
         {
           type: 'url_context_result',
           result: [
@@ -42,10 +42,7 @@ describe('extractTextFromUrls', () => {
             { status: 'success', url: 'https://example.org' },
           ],
         },
-        {
-          type: 'text',
-          text: 'Verified comparison output',
-        },
+        { type: 'model_output', content: [{ type: 'text', text: 'Verified comparison output' }] },
       ],
     });
 
@@ -65,11 +62,8 @@ describe('extractTextFromUrls', () => {
     mockRunModelInteraction.mockResolvedValueOnce({
       id: 'interaction-2',
       status: 'completed',
-      outputs: [
-        {
-          type: 'text',
-          text: 'This should not be trusted',
-        },
+      steps: [
+        { type: 'model_output', content: [{ type: 'text', text: 'This should not be trusted' }] },
       ],
     });
 
@@ -89,7 +83,7 @@ describe('extractTextFromUrls', () => {
     mockRunModelInteraction.mockResolvedValueOnce({
       id: 'interaction-3',
       status: 'completed',
-      outputs: [
+      steps: [
         {
           type: 'url_context_result',
           result: [
@@ -97,10 +91,7 @@ describe('extractTextFromUrls', () => {
             { status: 'error', url: 'https://example.org' },
           ],
         },
-        {
-          type: 'text',
-          text: 'Model guessed anyway',
-        },
+        { type: 'model_output', content: [{ type: 'text', text: 'Model guessed anyway' }] },
       ],
     });
 
@@ -120,7 +111,7 @@ describe('extractTextFromUrls', () => {
     mockRunModelInteraction.mockResolvedValueOnce({
       id: 'interaction-4',
       status: 'completed',
-      outputs: [
+      steps: [
         {
           type: 'url_context_result',
           result: [
@@ -159,7 +150,7 @@ describe('extractTextFromUrls', () => {
     mockRunModelInteraction.mockResolvedValueOnce({
       id: 'interaction-5',
       status: 'completed',
-      outputs: [
+      steps: [
         {
           type: 'url_context_result',
           result: [
@@ -199,7 +190,7 @@ describe('extractTextFromUrls', () => {
     mockRunModelInteraction.mockResolvedValueOnce({
       id: 'interaction-6',
       status: 'completed',
-      outputs: [
+      steps: [
         {
           type: 'url_context_result',
           result: [
@@ -236,7 +227,7 @@ describe('extractTextFromUrls', () => {
     mockRunModelInteraction.mockResolvedValueOnce({
       id: 'interaction-7',
       status: 'completed',
-      outputs: [
+      steps: [
         urlContextResult(['http://example.com', 'https://example.com']),
         {
           type: 'text',
@@ -268,7 +259,7 @@ describe('extractTextFromUrls', () => {
     mockRunModelInteraction.mockResolvedValueOnce({
       id: 'interaction-8',
       status: 'completed',
-      outputs: [
+      steps: [
         urlContextResult(['https://example.com']),
         {
           type: 'text',
@@ -300,7 +291,7 @@ describe('extractTextFromUrls', () => {
     mockRunModelInteraction.mockResolvedValueOnce({
       id: 'interaction-9',
       status: 'completed',
-      outputs: [
+      steps: [
         urlContextResult(['https://example.com', 'https://example.org']),
         {
           type: 'text',
@@ -332,13 +323,16 @@ describe('extractTextFromUrls', () => {
     mockRunModelInteraction.mockResolvedValueOnce({
       id: 'interaction-10',
       status: 'completed',
-      outputs: [
+      steps: [
         urlContextResult(urls),
         {
-          type: 'text',
-          text: JSON.stringify({
-            results: urls.map((url) => ({ url, type: 'webpage', content: `Content for ${url}` })),
-          }),
+          type: 'model_output',
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              results: urls.map((url) => ({ url, type: 'webpage', content: `Content for ${url}` })),
+            }),
+          }],
         },
       ],
     });

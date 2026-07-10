@@ -7,8 +7,8 @@ import {
   normalizeAgentDocumentType,
   normalizeAgentFieldName,
 } from './agentSchema';
-import { applyThinkingConfig, getGenAIClient, isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
-import { getTopKForModel, parseJsonPayload } from './gemini/structured';
+import { applyThinkingConfig, generateContentMediaResolution, getGenAIClient, isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
+import { parseJsonPayload } from './gemini/structured';
 import { assertNormalizedRegion, cropDocumentRegion } from './regionRaster';
 
 // Runtime validation helpers for Gemini function call args
@@ -244,11 +244,9 @@ export async function executeReOcrRegion(
     const genAI = getGenAIClient(clientConfig.apiKey);
 
     let generationConfig: Record<string, unknown> = {
-      temperature: 1,
-      maxOutputTokens: 4096,
-      topP: 0.95,
-      topK: getTopKForModel(clientConfig.model),
+      maxOutputTokens: 8192,
       responseMimeType: 'application/json',
+      mediaResolution: generateContentMediaResolution(croppedRegion.mimeType),
     };
 
     if (clientConfig.abortSignal) {

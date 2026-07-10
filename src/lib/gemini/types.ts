@@ -193,34 +193,32 @@ export interface PresetStreamingCallbacks {
 }
 
 /**
- * Available Gemini preview models
+ * Available Gemini models used by this app.
  */
 export type GeminiModel =
   | 'gemini-3.1-pro-preview'
   | 'gemini-3-flash-preview'
-  | 'gemini-3.5-flash';
+  | 'gemini-3.5-flash'
+  | 'gemini-3.1-flash-lite';
 
 /**
- * Thinking levels for Gemini preview models (use the SDK enum or uppercase strings)
- * - MINIMAL: Lightest reasoning (Gemini 3 Flash only)
+ * Thinking levels for Gemini 3 models (uppercase for UI/storage; lowercased at wire).
+ * - MINIMAL: Lightest reasoning (Flash / Flash-Lite)
  * - LOW: Light reasoning, faster response
- * - MEDIUM: Balanced reasoning
- * - HIGH: Full reasoning capabilities (default)
+ * - MEDIUM: Balanced reasoning (3.5 Flash API default)
+ * - HIGH: Full reasoning (3.1 Pro default; best for hard agent tasks)
  *
- * Note: According to official Gemini API docs:
- * - Gemini 3.1 Pro supports: 'LOW', 'MEDIUM', 'HIGH'
- * - Gemini 3 Flash / Gemini 3.5 Flash support: 'MINIMAL', 'LOW', 'MEDIUM', 'HIGH'
- * - Thinking isn't fully disabled for Gemini preview models; MINIMAL is the lightest setting
+ * Official support:
+ * - Gemini 3.1 Pro: LOW, MEDIUM, HIGH
+ * - Gemini 3 Flash / 3.5 Flash / 3.1 Flash-Lite: MINIMAL, LOW, MEDIUM, HIGH
  */
 export type ThinkingLevel = 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH';
 
 /**
- * Configuration for thinking mode (Gemini preview models only)
- * Uses `thinkingLevel` to control reasoning depth
- * Note: Thinking isn't fully disabled for Gemini preview models; MINIMAL is the lightest setting
+ * Configuration for thinking mode (Gemini 3 models)
  */
 export interface ThinkingConfig {
-  /** Thinking level - 'MINIMAL'/'LOW'/'MEDIUM'/'HIGH' (availability depends on model) */
+  /** Thinking level - availability depends on model */
   level: ThinkingLevel;
   /** Whether to include thinking content in the response */
   includeThoughts?: boolean;

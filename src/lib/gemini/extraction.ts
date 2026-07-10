@@ -4,7 +4,7 @@
  */
 
 import { logger } from '../logger';
-import { applyThinkingConfig, getGenAIClient } from './client';
+import { applyThinkingConfig, generateContentMediaResolution, getGenAIClient } from './client';
 import type {
   ExtractedContent,
   StreamingCallbacks,
@@ -118,15 +118,13 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 32768;
 function buildGenerationConfig(
   modelName: GeminiModel,
   options?: ExtractionOptions,
-  thinkingConfig?: ThinkingConfig
+  thinkingConfig?: ThinkingConfig,
+  mimeType?: string,
 ): Record<string, unknown> {
-  // Gemini preview models default to temperature 1.0; keep unless you have a reason to tune
-  const isFlashModel = modelName === 'gemini-3-flash-preview' || modelName === 'gemini-3.5-flash';
+  // Gemini 3.x: omit temperature/topP/topK unless the caller overrides temperature.
   let config: Record<string, unknown> = {
-    temperature: options?.temperature ?? 1.0,
+    ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
     maxOutputTokens: options?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-    topP: 0.95,
-    topK: isFlashModel ? 64 : 40
   };
 
   if (wantsJsonOutput(options)) {
@@ -137,7 +135,10 @@ function buildGenerationConfig(
     config.abortSignal = options.abortSignal;
   }
 
-  // Apply thinking configuration for Gemini preview models
+  if (mimeType) {
+    config.mediaResolution = generateContentMediaResolution(mimeType);
+  }
+
   config = applyThinkingConfig(config, modelName, thinkingConfig);
 
   return config;
@@ -299,8 +300,7 @@ export async function extractTextFromFile(
       ]
     }];
 
-    // Build generation config
-    const generationConfig = buildGenerationConfig(model, options, thinkingConfig);
+    const generationConfig = buildGenerationConfig(model, options, thinkingConfig, mimeType);
 
     // Handle streaming if callbacks are provided
     if (callbacks) {
@@ -312,18 +312,30 @@ export async function extractTextFromFile(
       });
 
       let fullText = '';
+      let lastChunk: {
+        candidates?: Array<{ finishReason?: string }>;
+        promptFeedback?: { blockReason?: string };
+      } | null = null;
       for await (const chunk of result) {
+        lastChunk = chunk as unknown as {
+          candidates?: Array<{ finishReason?: string }>;
+          promptFeedback?: { blockReason?: string };
+        };
         const chunkText = chunk.text || '';
         fullText += chunkText;
         callbacks.onProgress?.(chunkText);
       }
 
+      // Streaming does not always attach finish metadata on the final chunk;
+      // still reject obvious safety blocks when present.
+      if (lastChunk) {
+        assertUsableResponse(lastChunk);
+      }
       const finalContent = coerceExtractionResult(fullText, wantsJson);
       callbacks.onComplete?.(finalContent);
       return finalContent;
 
     } else {
-      // Non-streaming implementation
       const response = await genAI.models.generateContent({
         model,
         contents,

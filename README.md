@@ -22,7 +22,7 @@ OCR libraries either ship a heavy backend, lock structured extraction behind clo
 ## Highlights
 
 - **Five purpose-built modes** — plain OCR, structured templates, bulk batches, grounded URL extraction, and an iterative agent for harder documents.
-- **Frontier models, your choice** — Gemini 3.5 Flash (default), Gemini 3 Flash, and Gemini 3.1 Pro, with selectable reasoning depth.
+- **Frontier models, your choice** — Gemini 3.5 Flash (default), 3.1 Flash-Lite, 3 Flash Preview, and 3.1 Pro, with selectable reasoning depth.
 - **Grounded Web OCR** — Gemini URL context with per-URL verification. If retrieval fails or can't be verified, you see an explicit error instead of guessed content.
 - **Multiple artifacts per run** — Markdown, JSON, and CSV from a single template extraction.
 - **Polished UI** — light / dark / AMOLED themes, KaTeX-aware Markdown rendering via `streamdown`.
@@ -62,12 +62,13 @@ Open `http://localhost:5173`, add your API key in **Settings**, then pick a mode
 | Model                     | Status   | Reasoning levels             | Notes              |
 | ------------------------- | -------- | ---------------------------- | ------------------ |
 | `gemini-3.5-flash`        | Stable   | MINIMAL · LOW · MEDIUM · HIGH | Default, recommended |
-| `gemini-3-flash-preview`  | Preview¹ | MINIMAL · LOW · MEDIUM · HIGH | Fast               |
+| `gemini-3.1-flash-lite`   | Stable   | MINIMAL · LOW · MEDIUM · HIGH | Cheapest / high volume |
+| `gemini-3-flash-preview`  | Preview¹ | MINIMAL · LOW · MEDIUM · HIGH | Fast preview       |
 | `gemini-3.1-pro-preview`  | Preview¹ | LOW · MEDIUM · HIGH           | Highest reasoning  |
 
 ¹ Preview models may change or be retired without notice; their API behavior is not covered by stability guarantees.
 
-Reasoning depth is configurable in Settings. Gemini 3.1 Pro is clamped to `LOW`/`MEDIUM`/`HIGH` per the Gemini 3 API contract.
+Reasoning depth is configurable in Settings (default **MEDIUM**). Gemini 3.1 Pro is clamped to `LOW`/`MEDIUM`/`HIGH` per the Gemini 3 API contract. Agentic mode bumps `MINIMAL` up to `MEDIUM` for extraction quality.
 
 ## Web OCR Behavior
 
@@ -79,7 +80,7 @@ Reasoning depth is configurable in Settings. Gemini 3.1 Pro is clamped to `LOW`/
 
 ## Limits
 
-- File size: **20 MB** per file
+- File size: **100 MB** for images, **50 MB** for PDFs (Gemini document limits)
 - Bulk batch: up to **200 files** and **500 MB** total per job
 - Supported local files: images (`png`, `jpg`, `jpeg`, `webp`, `heic`, `heif`) and `pdf`
 - Web OCR: up to 20 URLs per request
@@ -114,8 +115,8 @@ npm run build            # production build
 npm run preview          # preview the production build
 npm run lint             # ESLint
 npm run typecheck        # tsc --noEmit for the app + node project configs
-npm run test             # Vitest (interactive)
-npm run test:run         # Vitest (single run)
+npm run test             # Vitest (single run)
+npm run test:run         # Vitest (single run, same as test)
 npm run test:watch       # Vitest watch mode
 npm run test:coverage    # Vitest coverage
 npm run evals            # run AI evals against Gemini

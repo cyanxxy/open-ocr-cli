@@ -30,16 +30,37 @@ describe('fileUtils', () => {
       expect(result.error).toBeUndefined();
     });
 
-    it('should reject files that are too large', () => {
-      // Mock a file object with a size larger than MAX_FILE_SIZE (20MB)
+    it('should reject images larger than 100MB', () => {
       const file = new File(['dummy content'], 'large.jpg', {
         type: 'image/jpeg',
       });
-      Object.defineProperty(file, 'size', { value: 21 * 1024 * 1024 });
+      Object.defineProperty(file, 'size', { value: 101 * 1024 * 1024 });
 
       const result = validateFile(file);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('exceeds the maximum size');
+      expect(result.error).toMatch(/100MB|images/i);
+    });
+
+    it('should reject PDFs larger than 50MB', () => {
+      const file = new File(['dummy content'], 'large.pdf', {
+        type: 'application/pdf',
+      });
+      Object.defineProperty(file, 'size', { value: 51 * 1024 * 1024 });
+
+      const result = validateFile(file);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('exceeds the maximum size');
+      expect(result.error).toMatch(/50MB|PDFs/i);
+    });
+
+    it('should accept PDFs at or under 50MB', () => {
+      const file = new File(['dummy content'], 'ok.pdf', {
+        type: 'application/pdf',
+      });
+      Object.defineProperty(file, 'size', { value: 50 * 1024 * 1024 });
+
+      expect(validateFile(file).valid).toBe(true);
     });
 
     it('should reject files of invalid type', () => {

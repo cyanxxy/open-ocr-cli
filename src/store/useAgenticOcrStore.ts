@@ -411,14 +411,18 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
         {
           apiKey,
           model: userModel,
-          thinkingConfig,
+          // Agentic extraction benefits from deeper reasoning; never use MINIMAL.
+          thinkingConfig: {
+            level: thinkingConfig.level === 'MINIMAL' ? 'MEDIUM' : thinkingConfig.level,
+            includeThoughts: thinkingConfig.includeThoughts,
+          },
           abortSignal: abortController.signal,
         },
         {
           maxIterations: config.maxIterations,
           confidenceThreshold: config.confidenceThreshold,
           temperature: 1,
-          maxTokens: 4096,
+          maxTokens: 16384,
           // Thinking is controlled by global settings, not per-agent config
         },
         (progress: number, message: string) => {

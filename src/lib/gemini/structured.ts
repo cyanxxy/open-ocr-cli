@@ -1,9 +1,14 @@
 import type { GeminiModel } from './types';
 
+/**
+ * @deprecated Gemini 3.x docs recommend leaving topK at the API default.
+ * Kept for any remaining call sites; prefer omitting topK entirely.
+ */
 export function getTopKForModel(model: GeminiModel): number {
   switch (model) {
     case 'gemini-3-flash-preview':
     case 'gemini-3.5-flash':
+    case 'gemini-3.1-flash-lite':
       return 64;
     case 'gemini-3.1-pro-preview':
       return 40;

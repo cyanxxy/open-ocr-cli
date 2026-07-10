@@ -175,7 +175,10 @@ async function runEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig) 
 }
 
 function resolveThinkingLevel(model: GeminiModel): ThinkingLevel {
-  const allowedLevels: ThinkingLevel[] = model === 'gemini-3-flash-preview'
+  const isFlashFamily = model === 'gemini-3-flash-preview'
+    || model === 'gemini-3.5-flash'
+    || model === 'gemini-3.1-flash-lite';
+  const allowedLevels: ThinkingLevel[] = isFlashFamily
     ? ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH']
     : ['LOW', 'MEDIUM', 'HIGH'];
   const envLevel = process.env.GEMINI_THINKING_LEVEL?.toUpperCase();
@@ -184,7 +187,8 @@ function resolveThinkingLevel(model: GeminiModel): ThinkingLevel {
     return envLevel as ThinkingLevel;
   }
 
-  return model === 'gemini-3-flash-preview' ? 'MINIMAL' : 'LOW';
+  // Prefer medium for 3.5 Flash (API default); low for Pro eval speed.
+  return isFlashFamily ? 'MEDIUM' : 'LOW';
 }
 
 async function main() {
