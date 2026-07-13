@@ -1,0 +1,17 @@
+{
+  "fields": {
+    "invoice_number": "INV-2026-0142",
+    "invoice_date": "2026-02-18",
+    "due_date": "2026-03-20",
+    "vendor_name": "Northwind Supply Co.",
+    "customer_name": "Acme Logistics",
+    "currency": "USD",
+    "subtotal": "1350.00",
+    "tax": "121.50",
+    "total": "1471.50"
+  },
+  "rows": [
+    { "description": "Monthly retainer", "quantity": "1", "unit_price": "1200.00", "line_total": "1200.00" },
+    { "description": "Support hours", "quantity": "3", "unit_price": "50.00", "line_total": "150.00" }
+  ]
+}

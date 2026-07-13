@@ -3,7 +3,12 @@ import process from 'node:process';
 import { loadEvalCases, loadEvalSuiteConfig, assertEvalInputsExist } from './shared';
 
 async function main() {
-  const evalCases = await loadEvalCases();
+  const allCases = [
+    ...await loadEvalCases('canary'),
+    ...await loadEvalCases('full'),
+    ...await loadEvalCases('benchmark'),
+  ];
+  const evalCases = [...new Map(allCases.map((evalCase) => [evalCase.id, evalCase])).values()];
   const suiteConfig = await loadEvalSuiteConfig();
 
   await assertEvalInputsExist(evalCases);

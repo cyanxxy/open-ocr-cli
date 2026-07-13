@@ -1,0 +1,12 @@
+{
+  "id": "simple-degraded-receipt",
+  "mode": "simple",
+  "inputPath": "evals/corpus/degraded/receipt.jpg",
+  "reference": { "textPath": "evals/references/receipt.txt" },
+  "expectedAssertions": [
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.55 },
+    { "type": "metric_max", "metric": "unsupported_text_rate", "value": 0.4 }
+  ],
+  "tags": ["receipt", "simple", "degraded", "real-ocr"],
+  "suites": ["full"]
+}

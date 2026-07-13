@@ -1,0 +1,11 @@
+Market Street Grocer
+Receipt R-44219
+2026-01-12 14:22
+Paid with Visa
+Item Qty Price
+Apples 2 4.00
+Milk 1 3.50
+Granola 1 7.25
+Subtotal: 14.75
+Tax: 1.25
+Total: 16.00

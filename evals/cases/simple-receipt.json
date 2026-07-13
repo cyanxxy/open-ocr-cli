@@ -2,10 +2,13 @@
   "id": "simple-receipt",
   "mode": "simple",
   "inputPath": "evals/corpus/receipt.pdf",
+  "reference": { "textPath": "evals/references/receipt.txt" },
   "expectedAssertions": [
     { "type": "contains", "target": "markdown", "value": "Market Street Grocer" },
     { "type": "contains", "target": "markdown", "value": "Receipt" },
     { "type": "contains", "target": "markdown", "value": "16.00" },
+    { "type": "metric_min", "metric": "normalized_edit_similarity", "value": 0.8 },
+    { "type": "metric_max", "metric": "unsupported_text_rate", "value": 0.25 },
     { "type": "pass_rate_weight", "value": 1 }
   ],
   "tags": ["receipt", "simple", "markdown"]

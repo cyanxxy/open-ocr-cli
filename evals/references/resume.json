@@ -1,0 +1,15 @@
+{
+  "fields": {
+    "full_name": "Jordan Lee",
+    "email": "jordan@example.com",
+    "phone": "+31 6 12345678",
+    "location": "Amsterdam, NL",
+    "headline": "Senior Product Designer",
+    "skills": ["Figma", "Design Systems", "Research", "Product Strategy"],
+    "experience_highlights": [
+      "Led a redesign that increased activation by 18 percent.",
+      "Built a shared design system across 4 products."
+    ],
+    "education": "BSc Industrial Design"
+  }
+}

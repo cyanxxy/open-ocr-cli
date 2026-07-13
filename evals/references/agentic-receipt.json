@@ -1,0 +1,11 @@
+{
+  "fields": {
+    "merchant_name": "Market Street Grocer",
+    "transaction_date": "2026-01-12",
+    "receipt_number": "R-44219",
+    "payment_method": "Visa",
+    "subtotal_amount": "14.75",
+    "tax_amount": "1.25",
+    "total_amount": "16.00"
+  }
+}

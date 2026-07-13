@@ -14,6 +14,7 @@ import type {
   GeminiClientConfig,
   ThinkingConfig
 } from './types';
+import { recordGeminiUsage } from './usage';
 
 /**
  * Helper function to process markdown text into ExtractedContent structure
@@ -342,6 +343,7 @@ export async function extractTextFromFile(
         config: generationConfig
       });
 
+      recordGeminiUsage(response);
       assertUsableResponse(response);
       return coerceExtractionResult(response.text || '', wantsJson);
     }

@@ -1,6 +1,7 @@
 import type { Content, FunctionDeclaration } from '@google/genai';
 import { getGenAIClient, normalizeThinkingLevel } from './client';
 import type { GeminiModel, ThinkingConfig } from './types';
+import { recordGeminiUsage } from './usage';
 
 type InteractionToolChoice = 'auto' | 'any' | 'none' | 'validated';
 
@@ -496,5 +497,7 @@ export async function runModelInteraction({
     ) => Promise<InteractionResult>;
   };
 
-  return interactionsClient.create(params, options);
+  const interaction = await interactionsClient.create(params, options);
+  recordGeminiUsage(interaction);
+  return interaction;
 }

@@ -1,7 +1,7 @@
 {
   "name": "open-gemini-ocr",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Open-source OCR web app for structured extraction from images, PDFs, and URLs using Google Gemini.",
   "license": "MIT",
   "type": "module",
@@ -38,7 +38,12 @@
     "test:watch": "vitest --watch",
     "test:coverage": "vitest run --coverage --maxWorkers=4",
     "test:ui": "vitest --ui",
-    "evals": "tsx evals/run.ts",
+    "evals": "tsx evals/run.ts --suite full",
+    "evals:canary": "tsx evals/run.ts --suite canary",
+    "evals:benchmark": "tsx evals/run.ts --suite benchmark",
+    "evals:stability": "tsx evals/run.ts --suite benchmark --repeat 3",
+    "evals:setup": "tsx evals/setup-datasets.ts",
+    "evals:fixtures": "python3 evals/generate_corpus.py && python3 evals/build_fixtures.py",
     "evals:report": "tsx evals/render-report.ts",
     "evals:validate": "tsx evals/validate.ts"
   },

@@ -1,0 +1,12 @@
+{
+  "id": "simple-raster-receipt",
+  "mode": "simple",
+  "inputPath": "evals/corpus/raster/receipt.png",
+  "reference": { "textPath": "evals/references/receipt.txt" },
+  "expectedAssertions": [
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.75 },
+    { "type": "metric_max", "metric": "unsupported_text_rate", "value": 0.3 }
+  ],
+  "tags": ["receipt", "simple", "raster", "real-ocr"],
+  "suites": ["canary", "full"]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "simple-degraded-operations-note",
+  "mode": "simple",
+  "inputPath": "evals/corpus/degraded/operations-note.jpg",
+  "reference": { "textPath": "evals/references/operations-note.txt" },
+  "expectedAssertions": [
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.6 },
+    { "type": "metric_max", "metric": "normalized_cer", "value": 0.4 }
+  ],
+  "tags": ["note", "simple", "degraded", "real-ocr"],
+  "suites": ["full"]
+}

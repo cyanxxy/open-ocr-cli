@@ -17,3 +17,6 @@ export * from './operations';
 
 // Export interaction helpers for newer tooling flows
 export * from './interactions';
+
+// Export opt-in usage telemetry helpers used by the eval runner.
+export * from './usage';

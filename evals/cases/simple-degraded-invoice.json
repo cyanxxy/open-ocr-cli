@@ -1,0 +1,12 @@
+{
+  "id": "simple-degraded-invoice",
+  "mode": "simple",
+  "inputPath": "evals/corpus/degraded/invoice.jpg",
+  "reference": { "textPath": "evals/references/invoice.txt" },
+  "expectedAssertions": [
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.55 },
+    { "type": "metric_max", "metric": "normalized_cer", "value": 0.45 }
+  ],
+  "tags": ["invoice", "simple", "degraded", "real-ocr"],
+  "suites": ["full"]
+}

@@ -1,0 +1,17 @@
+{
+  "fields": {
+    "merchant_name": "Market Street Grocer",
+    "transaction_date": "2026-01-12",
+    "transaction_time": "14:22",
+    "receipt_number": "R-44219",
+    "payment_method": "Visa",
+    "subtotal": "14.75",
+    "tax": "1.25",
+    "total": "16.00"
+  },
+  "rows": [
+    { "item": "Apples", "quantity": "2", "price": "4.00" },
+    { "item": "Milk", "quantity": "1", "price": "3.50" },
+    { "item": "Granola", "quantity": "1", "price": "7.25" }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "simple-raster-business-card",
+  "mode": "simple",
+  "inputPath": "evals/corpus/raster/business-card.png",
+  "reference": { "textPath": "evals/references/business-card.txt" },
+  "expectedAssertions": [
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.75 },
+    { "type": "metric_max", "metric": "unsupported_text_rate", "value": 0.3 }
+  ],
+  "tags": ["business-card", "simple", "raster", "real-ocr"],
+  "suites": ["canary", "full"]
+}

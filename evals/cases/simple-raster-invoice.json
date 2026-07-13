@@ -1,0 +1,12 @@
+{
+  "id": "simple-raster-invoice",
+  "mode": "simple",
+  "inputPath": "evals/corpus/raster/invoice.png",
+  "reference": { "textPath": "evals/references/invoice.txt" },
+  "expectedAssertions": [
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.75 },
+    { "type": "metric_max", "metric": "normalized_cer", "value": 0.25 }
+  ],
+  "tags": ["invoice", "simple", "raster", "real-ocr"],
+  "suites": ["canary", "full"]
+}

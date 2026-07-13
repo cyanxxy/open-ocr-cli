@@ -9,18 +9,25 @@ import {
   evaluateEvalCase,
   renderEvalSummaryMarkdown,
   type EvalCase,
-  type EvalCaseResult,
+  type EvalExecutionMetadata,
+  type EvalRunOutput,
   toEvalRunOutput,
 } from '../src/lib/evals';
 import type { AgentClientConfig, AgentMemory } from '../src/lib/agentTypes';
+import { getGeminiUsage, resetGeminiUsage, type GeminiUsageSnapshot } from '../src/lib/gemini/usage';
 import { getExtractionPreset, runExtractionPreset } from '../src/lib/templates';
 import {
   assertEvalInputsExist,
   fileToDataUrl,
   loadEvalCases,
+  loadEvalGroundTruth,
   loadEvalSuiteConfig,
   resolveModelName,
+  resolveRepeatCount,
+  resolveSuiteName,
+  writeEvalArtifacts,
   writeEvalSummary,
+  type EvalArtifact,
 } from './shared';
 
 function extractedContentToMarkdown(result: ExtractedContent): string {
@@ -95,17 +102,7 @@ function agentMemoryToEvalOutput(memory: AgentMemory) {
   };
 }
 
-function runtimeFailure(evalCase: EvalCase, error: unknown): EvalCaseResult {
-  const message = error instanceof Error ? error.message : String(error);
-  return {
-    id: evalCase.id,
-    passed: false,
-    weight: evalCase.expectedAssertions.find((assertion) => assertion.type === 'pass_rate_weight')?.value ?? 1,
-    failedAssertions: [`Eval runner error: ${message}`],
-  };
-}
-
-async function runSimpleEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig) {
+async function runSimpleEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig): Promise<EvalRunOutput> {
   const { dataUrl, mimeType } = await fileToDataUrl(evalCase.inputPath);
   const result = await extractTextFromFile(
     dataUrl,
@@ -117,13 +114,13 @@ async function runSimpleEvalCase(evalCase: EvalCase, clientConfig: AgentClientCo
     },
   );
 
-  return evaluateEvalCase(evalCase, {
+  return {
     markdown: extractedContentToMarkdown(result),
     json: result,
-  });
+  };
 }
 
-async function runTemplateEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig) {
+async function runTemplateEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig): Promise<EvalRunOutput> {
   const { dataUrl, mimeType } = await fileToDataUrl(evalCase.inputPath);
   const result = await runExtractionPreset(
     dataUrl,
@@ -132,10 +129,16 @@ async function runTemplateEvalCase(evalCase: EvalCase, clientConfig: AgentClient
     getExtractionPreset(evalCase.presetId || ''),
   );
 
-  return evaluateEvalCase(evalCase, toEvalRunOutput(result));
+  return toEvalRunOutput(result);
 }
 
-async function runAgenticEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig) {
+interface AgenticEvalOutput {
+  output: EvalRunOutput;
+  iterations: number;
+  toolCalls: number;
+}
+
+async function runAgenticEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig): Promise<AgenticEvalOutput> {
   const { dataUrl, mimeType } = await fileToDataUrl(evalCase.inputPath);
   const file = new File(['eval fixture'], path.basename(evalCase.inputPath), { type: mimeType });
   const generator = agentLoop(
@@ -155,22 +158,84 @@ async function runAgenticEvalCase(evalCase: EvalCase, clientConfig: AgentClientC
     current = await generator.next();
   }
 
-  return evaluateEvalCase(evalCase, agentMemoryToEvalOutput(current.value as AgentMemory));
+  const memory = current.value as AgentMemory;
+  return {
+    output: agentMemoryToEvalOutput(memory),
+    iterations: memory.currentIteration,
+    toolCalls: memory.processingHistory.length,
+  };
 }
 
-async function runEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig) {
+interface CompletedEvalCase {
+  result: ReturnType<typeof evaluateEvalCase>;
+  artifact: EvalArtifact;
+}
+
+function estimateCost(usage: GeminiUsageSnapshot): number | undefined {
+  const inputRate = Number(process.env.EVAL_INPUT_USD_PER_MILLION);
+  const outputRate = Number(process.env.EVAL_OUTPUT_USD_PER_MILLION);
+  if (!Number.isFinite(inputRate) || !Number.isFinite(outputRate) || inputRate < 0 || outputRate < 0) return undefined;
+  const billableInput = usage.inputTokens + usage.toolTokens;
+  const billableOutput = usage.outputTokens + usage.thoughtTokens;
+  return ((billableInput * inputRate) + (billableOutput * outputRate)) / 1_000_000;
+}
+
+function executionMetadata(
+  startedAt: number,
+  extras: Pick<EvalExecutionMetadata, 'iterations' | 'toolCalls'>,
+  runtimeError?: string,
+  repeatIndex?: number,
+): EvalExecutionMetadata {
+  const usage = getGeminiUsage();
+  return {
+    durationMs: performance.now() - startedAt,
+    repeatIndex,
+    ...extras,
+    apiRequests: usage.requests,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    thoughtTokens: usage.thoughtTokens,
+    totalTokens: usage.totalTokens,
+    estimatedCostUsd: estimateCost(usage),
+    runtimeError,
+  };
+}
+
+async function runEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig, repeatIndex: number): Promise<CompletedEvalCase> {
+  resetGeminiUsage();
+  const startedAt = performance.now();
+  let output: EvalRunOutput = { markdown: '' };
+  let executionExtras: Pick<EvalExecutionMetadata, 'iterations' | 'toolCalls'> = {};
   try {
     if (evalCase.mode === 'template') {
-      return await runTemplateEvalCase(evalCase, clientConfig);
+      output = await runTemplateEvalCase(evalCase, clientConfig);
+    } else if (evalCase.mode === 'agentic') {
+      const agenticResult = await runAgenticEvalCase(evalCase, clientConfig);
+      output = agenticResult.output;
+      executionExtras = { iterations: agenticResult.iterations, toolCalls: agenticResult.toolCalls };
+    } else {
+      output = await runSimpleEvalCase(evalCase, clientConfig);
     }
-
-    if (evalCase.mode === 'agentic') {
-      return await runAgenticEvalCase(evalCase, clientConfig);
-    }
-
-    return await runSimpleEvalCase(evalCase, clientConfig);
+    const groundTruth = await loadEvalGroundTruth(evalCase);
+    const execution = executionMetadata(startedAt, executionExtras, undefined, repeatIndex);
+    return {
+      result: evaluateEvalCase(evalCase, output, groundTruth, execution),
+      artifact: { evalCase, output, repeatIndex },
+    };
   } catch (error) {
-    return runtimeFailure(evalCase, error);
+    const message = error instanceof Error ? error.message : String(error);
+    const execution = executionMetadata(startedAt, executionExtras, message, repeatIndex);
+    let groundTruth;
+    try {
+      groundTruth = await loadEvalGroundTruth(evalCase);
+    } catch {
+      // The runtime error below remains the actionable failure if loading the
+      // reference also fails.
+    }
+    return {
+      result: evaluateEvalCase(evalCase, output, groundTruth, execution),
+      artifact: { evalCase, output, repeatIndex },
+    };
   }
 }
 
@@ -198,8 +263,14 @@ async function main() {
   }
 
   const model = resolveModelName() as GeminiModel;
+  const suite = resolveSuiteName();
+  const repeatCount = resolveRepeatCount();
   const thinkingLevel = resolveThinkingLevel(model);
-  const evalCases = await loadEvalCases();
+  const evalCases = await loadEvalCases(suite);
+  if (evalCases.length === 0) {
+    const setupHint = suite === 'benchmark' ? ' Run `npm run evals:setup` first.' : '';
+    throw new Error(`No eval cases are installed for the "${suite}" suite.${setupHint}`);
+  }
   const suiteConfig = await loadEvalSuiteConfig();
   const clientConfig: AgentClientConfig = {
     apiKey,
@@ -213,15 +284,25 @@ async function main() {
   await assertEvalInputsExist(evalCases);
 
   const caseResults = [];
+  const artifacts: EvalArtifact[] = [];
 
-  for (const evalCase of evalCases) {
-    caseResults.push(await runEvalCase(evalCase, clientConfig));
+  for (let repeatIndex = 0; repeatIndex < repeatCount; repeatIndex += 1) {
+    for (const evalCase of evalCases) {
+      const completed = await runEvalCase(evalCase, clientConfig, repeatIndex);
+      caseResults.push(completed.result);
+      artifacts.push(completed.artifact);
+    }
   }
 
-  const summary = buildEvalSummary(model, caseResults, suiteConfig);
+  const summary = buildEvalSummary(model, caseResults, suiteConfig, suite);
+  if (repeatCount > 1) {
+    summary.notes = [...(summary.notes ?? []), `Each case was run ${repeatCount} times; aggregate metrics include all repetitions.`];
+  }
   const markdown = renderEvalSummaryMarkdown(summary);
 
   await writeEvalSummary(summary, markdown);
+  const artifactDirectory = await writeEvalArtifacts(summary, artifacts);
+  console.log(`Wrote eval artifacts to ${path.relative(process.cwd(), artifactDirectory)}`);
 
   if (summary.status === 'failed') {
     process.exitCode = 1;

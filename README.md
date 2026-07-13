@@ -129,7 +129,12 @@ Open `http://localhost:5173`, set your API key under **Settings**, then choose a
 | `npm run test:watch` | Vitest watch mode |
 | `npm run test:coverage` | Coverage report |
 | `npm run evals:validate` | Static checks on eval cases/corpus |
-| `npm run evals` | Live evals against Gemini (`GEMINI_API_KEY` required) |
+| `npm run evals:fixtures` | Rebuild local PDFs plus deterministic raster/degraded fixtures |
+| `npm run evals:setup` | Download pinned CORD and OmniDocBench subsets into the ignored cache |
+| `npm run evals:canary` | Small live Gemini eval (`GEMINI_API_KEY` required) |
+| `npm run evals` | Full local and public-dataset live eval (`GEMINI_API_KEY` required) |
+| `npm run evals:benchmark` | Public benchmark subset only (`GEMINI_API_KEY` required) |
+| `npm run evals:stability` | Public benchmark subset repeated three times |
 | `npm run evals:report` | Render latest eval report as Markdown |
 
 ### Quality gates
@@ -163,15 +168,25 @@ evals/            Assertion-based AI eval suite
 ### AI evals
 
 ```bash
+npm run evals:fixtures
+npm run evals:setup
 npm run evals:validate
+GEMINI_API_KEY=your_key npm run evals:canary
 GEMINI_API_KEY=your_key npm run evals
 npm run evals:report
 ```
+
+The evaluator reports CER, normalized CER, WER, edit similarity, text coverage,
+unsupported-text rate, field precision/recall/F1, critical-field exact match,
+table-cell F1, latency, and mode/tag breakdowns. Public dataset files and
+timestamped raw outputs remain local and untracked. See [`evals/README.md`](evals/README.md)
+for dataset terms, scoring details, and suite composition.
 
 | Path | Contents |
 | --- | --- |
 | [`evals/cases`](evals/cases) | Assertions and fixtures |
 | [`evals/corpus`](evals/corpus) | Input documents |
+| [`evals/references`](evals/references) | Versioned text and structured ground truth |
 | [`evals/reports/latest.md`](evals/reports/latest.md) | Last committed Markdown report |
 | [`evals/reports/latest.json`](evals/reports/latest.json) | Last committed JSON summary |
 
@@ -196,6 +211,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 Contributions are welcome.
 
 - Setup and PR checklist: [CONTRIBUTING.md](CONTRIBUTING.md)
+- User-facing release history: [CHANGELOG.md](CHANGELOG.md)
 - Community standards: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
 ---

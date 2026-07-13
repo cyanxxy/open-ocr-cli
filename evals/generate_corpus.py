@@ -11,6 +11,7 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+from reportlab.pdfgen.canvas import Canvas
 
 
 ROOT = Path(__file__).resolve().parent
@@ -46,7 +47,7 @@ body_style = ParagraphStyle(
 
 def build_invoice():
     path = CORPUS_DIR / "invoice.pdf"
-    doc = SimpleDocTemplate(path.as_posix(), pagesize=A4, leftMargin=54, rightMargin=54, topMargin=54, bottomMargin=54)
+    doc = SimpleDocTemplate(path.as_posix(), pagesize=A4, leftMargin=54, rightMargin=54, topMargin=54, bottomMargin=54, invariant=1)
     rows = [
         ["Description", "Qty", "Unit Price", "Line Total"],
         ["Monthly retainer", "1", "1200.00", "1200.00"],
@@ -84,7 +85,7 @@ def build_invoice():
 
 def build_receipt():
     path = CORPUS_DIR / "receipt.pdf"
-    doc = SimpleDocTemplate(path.as_posix(), pagesize=letter, leftMargin=60, rightMargin=60, topMargin=60, bottomMargin=60)
+    doc = SimpleDocTemplate(path.as_posix(), pagesize=letter, leftMargin=60, rightMargin=60, topMargin=60, bottomMargin=60, invariant=1)
     rows = [
         ["Item", "Qty", "Price"],
         ["Apples", "2", "4.00"],
@@ -120,7 +121,7 @@ def build_receipt():
 
 def build_resume():
     path = CORPUS_DIR / "resume.pdf"
-    doc = SimpleDocTemplate(path.as_posix(), pagesize=A4, leftMargin=56, rightMargin=56, topMargin=56, bottomMargin=56)
+    doc = SimpleDocTemplate(path.as_posix(), pagesize=A4, leftMargin=56, rightMargin=56, topMargin=56, bottomMargin=56, invariant=1)
     story = [
         Paragraph("Jordan Lee", title_style),
         Paragraph("Senior Product Designer", meta_style),
@@ -146,23 +147,33 @@ def build_resume():
 
 def build_business_card():
     path = CORPUS_DIR / "business-card.pdf"
-    doc = SimpleDocTemplate(path.as_posix(), pagesize=(3.5 * inch, 2 * inch), leftMargin=20, rightMargin=20, topMargin=18, bottomMargin=18)
-    story = [
-        Paragraph("Nina Patel", title_style),
-        Paragraph("Account Executive", meta_style),
-        Paragraph("Orbit Partners", meta_style),
-        Spacer(1, 0.08 * inch),
-        Paragraph("nina@orbitpartners.com", body_style),
-        Paragraph("+1 555 123 9876", body_style),
-        Paragraph("https://orbitpartners.com", body_style),
-        Paragraph("12 Harbor Ave, Boston, MA", body_style),
+    width, height = 3.5 * inch, 2 * inch
+    canvas = Canvas(path.as_posix(), pagesize=(width, height), invariant=1)
+    canvas.setFillColor(colors.HexColor("#1C1917"))
+    canvas.setFont("Helvetica-Bold", 15)
+    canvas.drawString(18, height - 27, "Nina Patel")
+    canvas.setFont("Helvetica", 8.5)
+    canvas.setFillColor(colors.HexColor("#44403C"))
+    canvas.drawString(18, height - 42, "Account Executive | Orbit Partners")
+    canvas.setStrokeColor(colors.HexColor("#D6D3D1"))
+    canvas.line(18, height - 50, width - 18, height - 50)
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColor(colors.HexColor("#292524"))
+    details = [
+        "nina@orbitpartners.com",
+        "+1 555 123 9876",
+        "https://orbitpartners.com",
+        "12 Harbor Ave, Boston, MA",
     ]
-    doc.build(story)
+    for index, detail in enumerate(details):
+        canvas.drawString(18, height - 66 - (index * 13), detail)
+    canvas.showPage()
+    canvas.save()
 
 
 def build_operations_note():
     path = CORPUS_DIR / "operations-note.pdf"
-    doc = SimpleDocTemplate(path.as_posix(), pagesize=A4, leftMargin=54, rightMargin=54, topMargin=54, bottomMargin=54)
+    doc = SimpleDocTemplate(path.as_posix(), pagesize=A4, leftMargin=54, rightMargin=54, topMargin=54, bottomMargin=54, invariant=1)
     story = [
         Paragraph("Operations Update", title_style),
         Paragraph("March 11, 2026", meta_style),

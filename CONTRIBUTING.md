@@ -48,7 +48,9 @@ Use [Conventional Commits](https://www.conventionalcommits.org/) when practical.
 
 - New presets should reuse the shared `ExtractionRule` schema.
 - New eval cases should use assertion-based checks instead of prose-only expectations.
+- OCR quality cases should include a ground-truth reference and objective metric thresholds.
 - Do not commit private or sensitive documents to `evals/corpus/`.
+- Do not commit `evals/cache/`; use `npm run evals:setup` to reproduce public subsets.
 - Keep checked-in reports under `evals/reports/` readable and deterministic.
 
 ## Discussions

@@ -2,10 +2,13 @@
   "id": "simple-operations-note",
   "mode": "simple",
   "inputPath": "evals/corpus/operations-note.pdf",
+  "reference": { "textPath": "evals/references/operations-note.txt" },
   "expectedAssertions": [
     { "type": "contains", "target": "markdown", "value": "Operations Update" },
     { "type": "contains", "target": "markdown", "value": "Dock audit moved to Friday at 14:00." },
     { "type": "contains", "target": "markdown", "value": "Archive Q1 invoices after reconciliation." },
+    { "type": "metric_min", "metric": "normalized_edit_similarity", "value": 0.8 },
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.85 },
     { "type": "pass_rate_weight", "value": 1 }
   ],
   "tags": ["note", "simple", "markdown"]

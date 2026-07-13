@@ -1,0 +1,12 @@
+{
+  "id": "simple-degraded-business-card",
+  "mode": "simple",
+  "inputPath": "evals/corpus/degraded/business-card.jpg",
+  "reference": { "textPath": "evals/references/business-card.txt" },
+  "expectedAssertions": [
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.55 },
+    { "type": "metric_max", "metric": "unsupported_text_rate", "value": 0.4 }
+  ],
+  "tags": ["business-card", "simple", "degraded", "real-ocr"],
+  "suites": ["full"]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "simple-raster-operations-note",
+  "mode": "simple",
+  "inputPath": "evals/corpus/raster/operations-note.png",
+  "reference": { "textPath": "evals/references/operations-note.txt" },
+  "expectedAssertions": [
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.8 },
+    { "type": "metric_max", "metric": "normalized_cer", "value": 0.2 }
+  ],
+  "tags": ["note", "simple", "raster", "real-ocr"],
+  "suites": ["full"]
+}

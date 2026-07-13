@@ -1,0 +1,13 @@
+{
+  "fields": {
+    "invoice_number": "INV-2026-0142",
+    "invoice_date": "2026-02-18",
+    "due_date": "2026-03-20",
+    "vendor_name": "Northwind Supply Co.",
+    "customer_name": "Acme Logistics",
+    "currency": "USD",
+    "subtotal_amount": "1350.00",
+    "tax_amount": "121.50",
+    "total_amount": "1471.50"
+  }
+}

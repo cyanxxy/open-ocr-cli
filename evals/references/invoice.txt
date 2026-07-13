@@ -1,0 +1,12 @@
+Northwind Supply Co.
+Invoice INV-2026-0142
+Invoice Date: 2026-02-18
+Due Date: 2026-03-20
+Bill To: Acme Logistics
+Description Qty Unit Price Line Total
+Monthly retainer 1 1200.00 1200.00
+Support hours 3 50.00 150.00
+Currency: USD
+Subtotal: 1350.00
+Tax: 121.50
+Total: 1471.50

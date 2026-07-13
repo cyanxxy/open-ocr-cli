@@ -1,0 +1,12 @@
+{
+  "id": "simple-raster-resume",
+  "mode": "simple",
+  "inputPath": "evals/corpus/raster/resume.png",
+  "reference": { "textPath": "evals/references/resume.txt" },
+  "expectedAssertions": [
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.75 },
+    { "type": "metric_max", "metric": "normalized_cer", "value": 0.25 }
+  ],
+  "tags": ["resume", "simple", "raster", "real-ocr"],
+  "suites": ["full"]
+}

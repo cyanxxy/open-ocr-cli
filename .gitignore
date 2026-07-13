@@ -34,6 +34,8 @@ AGENTS.md
 ROADMAP.md
 docs/2026-agentic-ocr-evals-plan.md
 evals/reports/ocrbench-v2-subset/
+evals/reports/runs/
+evals/cache/
 
 # Editor directories and files
 .vscode/*

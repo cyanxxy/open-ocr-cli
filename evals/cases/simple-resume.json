@@ -2,10 +2,13 @@
   "id": "simple-resume",
   "mode": "simple",
   "inputPath": "evals/corpus/resume.pdf",
+  "reference": { "textPath": "evals/references/resume.txt" },
   "expectedAssertions": [
     { "type": "contains", "target": "markdown", "value": "Jordan Lee" },
     { "type": "contains", "target": "markdown", "value": "Senior Product Designer" },
     { "type": "contains", "target": "markdown", "value": "BSc Industrial Design" },
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.8 },
+    { "type": "metric_max", "metric": "normalized_cer", "value": 0.2 },
     { "type": "pass_rate_weight", "value": 1 }
   ],
   "tags": ["resume", "simple", "markdown"]

@@ -3,11 +3,18 @@
   "mode": "template",
   "inputPath": "evals/corpus/invoice.pdf",
   "presetId": "invoice",
+  "reference": {
+    "jsonPath": "evals/references/invoice.json",
+    "criticalFields": ["invoice_number", "vendor_name", "total"]
+  },
   "expectedAssertions": [
     { "type": "contains", "target": "markdown", "value": "Northwind Supply Co." },
     { "type": "json_field_equals", "path": "fields.invoice_number.value", "expected": "INV-2026-0142" },
     { "type": "json_field_equals", "path": "fields.total.value", "expected": "1471.50" },
     { "type": "table_min_rows", "minRows": 2 },
+    { "type": "metric_min", "metric": "field_f1", "value": 0.75 },
+    { "type": "metric_min", "metric": "critical_field_exact_match", "value": 1 },
+    { "type": "metric_min", "metric": "table_cell_f1", "value": 0.75 },
     { "type": "pass_rate_weight", "value": 2 }
   ],
   "tags": ["invoice", "template", "table"]

@@ -1,6 +1,7 @@
 import { applyThinkingConfig, generateContentMediaResolution, getGenAIClient } from '../gemini/client';
 import { parseJsonPayload } from '../gemini/structured';
 import { logger } from '../logger';
+import { recordGeminiUsage } from '../gemini/usage';
 import type {
   ExtractionPreset,
   ExtractionRule,
@@ -484,6 +485,7 @@ export async function runExtractionPreset(
         contents,
         config: generationConfig,
       });
+      recordGeminiUsage(response);
       rawText = response.text || '';
     }
 

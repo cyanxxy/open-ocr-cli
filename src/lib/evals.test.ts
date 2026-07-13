@@ -115,6 +115,31 @@ describe('eval utilities', () => {
     expect(result.weight).toBe(1);
   });
 
+  it('evaluates objective metric thresholds from ground truth', () => {
+    const evalCase = validateEvalCase({
+      id: 'simple-ground-truth',
+      mode: 'simple',
+      inputPath: 'evals/corpus/invoice.pdf',
+      reference: { textPath: 'evals/references/invoice.txt' },
+      expectedAssertions: [
+        { type: 'metric_min', metric: 'text_coverage', value: 0.9 },
+        { type: 'metric_max', metric: 'unsupported_text_rate', value: 0.1 },
+      ],
+      tags: ['simple'],
+    });
+
+    const result = evaluateEvalCase(
+      evalCase,
+      { markdown: '# Invoice\n\nTotal 16.00' },
+      { text: 'Invoice\nTotal 16.00' },
+      { durationMs: 25 },
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.metrics?.normalized_cer).toBe(0);
+    expect(result.execution?.durationMs).toBe(25);
+  });
+
   it('treats missing JSON paths and undefined values differently', () => {
     const evalCase = validateEvalCase({
       id: 'agentic-output',

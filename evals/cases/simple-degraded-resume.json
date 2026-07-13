@@ -1,0 +1,12 @@
+{
+  "id": "simple-degraded-resume",
+  "mode": "simple",
+  "inputPath": "evals/corpus/degraded/resume.jpg",
+  "reference": { "textPath": "evals/references/resume.txt" },
+  "expectedAssertions": [
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.6 },
+    { "type": "metric_max", "metric": "normalized_cer", "value": 0.4 }
+  ],
+  "tags": ["resume", "simple", "degraded", "real-ocr"],
+  "suites": ["full"]
+}

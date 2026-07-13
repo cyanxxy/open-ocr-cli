@@ -1,0 +1,19 @@
+{
+  "cord": {
+    "dataset": "naver-clova-ix/cord-v2",
+    "revision": "7f0115a4b758a71d6473b8d085751692da2fef98",
+    "split": "test",
+    "indices": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95],
+    "license": "CC-BY-4.0",
+    "source": "https://huggingface.co/datasets/naver-clova-ix/cord-v2"
+  },
+  "omnidocbench": {
+    "dataset": "opendatalab/OmniDocBench",
+    "revision": "aa1ee96d106dbe53d0ae59474d75c6e6d9b53fec",
+    "annotationSha256": "a45cd84b04ad8b793e775089640e6b681209abea33ead54c1828ddca35fae496",
+    "seed": "open-gemini-ocr-v1",
+    "samplesPerDocumentType": 2,
+    "source": "https://huggingface.co/datasets/opendatalab/OmniDocBench",
+    "termsNote": "Upstream does not declare a machine-readable dataset license. Review its terms before redistributing data. This setup keeps files local and untracked."
+  }
+}

@@ -3,12 +3,18 @@
   "mode": "template",
   "inputPath": "evals/corpus/resume.pdf",
   "presetId": "resume",
+  "reference": {
+    "jsonPath": "evals/references/resume.json",
+    "criticalFields": ["full_name", "email"]
+  },
   "expectedAssertions": [
     { "type": "contains", "target": "markdown", "value": "Senior Product Designer" },
     { "type": "json_field_equals", "path": "fields.full_name.value", "expected": "Jordan Lee" },
     { "type": "json_field_equals", "path": "fields.email.value", "expected": "jordan@example.com" },
     { "type": "json_field_exists", "path": "fields.skills.value" },
     { "type": "not_contains", "target": "markdown", "value": "undefined" },
+    { "type": "metric_min", "metric": "field_f1", "value": 0.7 },
+    { "type": "metric_min", "metric": "critical_field_exact_match", "value": 1 },
     { "type": "pass_rate_weight", "value": 1.5 }
   ],
   "tags": ["resume", "template", "record"]

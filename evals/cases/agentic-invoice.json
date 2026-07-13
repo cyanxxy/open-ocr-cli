@@ -6,11 +6,18 @@
     "maxIterations": 4,
     "confidenceThreshold": 0.65
   },
+  "reference": {
+    "jsonPath": "evals/references/agentic-invoice.json",
+    "predictedFieldsPath": "normalizedFields",
+    "criticalFields": ["invoice_number", "vendor_name", "total_amount"]
+  },
   "expectedAssertions": [
     { "type": "json_field_equals", "path": "documentType", "expected": "invoice" },
     { "type": "json_field_exists", "path": "normalizedFields.invoice_number.value" },
     { "type": "json_field_exists", "path": "normalizedFields.total_amount.value" },
     { "type": "contains", "target": "markdown", "value": "Northwind Supply Co." },
+    { "type": "metric_min", "metric": "field_f1", "value": 0.6 },
+    { "type": "metric_min", "metric": "critical_field_exact_match", "value": 0.66 },
     { "type": "pass_rate_weight", "value": 1 }
   ],
   "tags": ["invoice", "agentic", "table"]

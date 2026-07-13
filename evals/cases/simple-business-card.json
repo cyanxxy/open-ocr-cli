@@ -2,11 +2,14 @@
   "id": "simple-business-card",
   "mode": "simple",
   "inputPath": "evals/corpus/business-card.pdf",
+  "reference": { "textPath": "evals/references/business-card.txt" },
   "expectedAssertions": [
     { "type": "contains", "target": "markdown", "value": "Nina Patel" },
     { "type": "contains", "target": "markdown", "value": "Orbit Partners" },
     { "type": "contains", "target": "markdown", "value": "nina@orbitpartners.com" },
     { "type": "not_contains", "target": "markdown", "value": "undefined" },
+    { "type": "metric_min", "metric": "text_coverage", "value": 0.8 },
+    { "type": "metric_max", "metric": "unsupported_text_rate", "value": 0.25 },
     { "type": "pass_rate_weight", "value": 1 }
   ],
   "tags": ["business-card", "simple", "markdown"]
