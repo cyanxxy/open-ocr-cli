@@ -1,5 +1,5 @@
 {
-  "name": "open-gemini-ocr",
+  "name": "open-ocr-cli",
   "version": "1.4.0",
   "description": "Batch OCR CLI for images and PDFs using Google Gemini.",
   "license": "MIT",

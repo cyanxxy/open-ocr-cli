@@ -10,7 +10,7 @@ pipeline output.
 Node.js 20.19+, 22.13+, or 24+ is required.
 
 ```bash
-npm install --global open-gemini-ocr
+npm install --global open-ocr-cli
 export GEMINI_API_KEY="your-key"
 gemini-ocr extract ./documents --output ./results --concurrency 4
 ```

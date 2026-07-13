@@ -100,7 +100,7 @@ node packages/cli/dist/index.js extract invoice.pdf
 After installing the package globally, the executable is `gemini-ocr`:
 
 ```bash
-npm install --global open-gemini-ocr
+npm install --global open-ocr-cli
 gemini-ocr extract invoice.pdf
 ```
 
