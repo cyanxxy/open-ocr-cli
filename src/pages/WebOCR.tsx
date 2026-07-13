@@ -286,7 +286,7 @@ export default function WebOCR() {
             className="text-3xl sm:text-4xl lg:text-5xl font-semibold text-stone-900 dark:text-stone-100 mb-4 tracking-tight"
             style={{ fontFamily: editorial.fonts.heading }}
           >
-            Wire <em className="font-normal">Service</em>
+            Web <em className="font-normal">OCR</em>
           </h1>
 
           {/* Subtitle */}

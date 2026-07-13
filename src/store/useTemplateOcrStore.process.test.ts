@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../lib/fileUtils', () => ({
   readFileAsDataUrl: vi.fn(),
-  validateFile: vi.fn(),
+  validateFileForProcessing: vi.fn(),
 }));
 
 vi.mock('../lib/templates', () => ({
@@ -18,7 +18,7 @@ import { useSettingsStore } from './useSettingsStore';
 import { useTemplateOcrStore } from './useTemplateOcrStore';
 
 const mockReadFileAsDataUrl = vi.mocked(fileUtilsModule.readFileAsDataUrl);
-const mockValidateFile = vi.mocked(fileUtilsModule.validateFile);
+const mockValidateFile = vi.mocked(fileUtilsModule.validateFileForProcessing);
 const mockGetExtractionPreset = vi.mocked(templatesModule.getExtractionPreset);
 const mockRunExtractionPreset = vi.mocked(templatesModule.runExtractionPreset);
 
@@ -71,7 +71,7 @@ describe('useTemplateOcrStore process flow', () => {
       theme: 'light',
     });
 
-    mockValidateFile.mockReturnValue({ valid: true });
+    mockValidateFile.mockResolvedValue({ valid: true });
     mockReadFileAsDataUrl.mockResolvedValue('data:application/pdf;base64,ZmFrZQ==');
     mockGetExtractionPreset.mockReturnValue(mockPreset);
     mockRunExtractionPreset.mockImplementation(async (_dataUrl, _mimeType, _config, _preset, _options, callbacks) => {
@@ -81,7 +81,7 @@ describe('useTemplateOcrStore process flow', () => {
     });
 
     vi.clearAllMocks();
-    mockValidateFile.mockReturnValue({ valid: true });
+    mockValidateFile.mockResolvedValue({ valid: true });
     mockReadFileAsDataUrl.mockResolvedValue('data:application/pdf;base64,ZmFrZQ==');
     mockGetExtractionPreset.mockReturnValue(mockPreset);
     mockRunExtractionPreset.mockImplementation(async (_dataUrl, _mimeType, _config, _preset, _options, callbacks) => {
@@ -126,7 +126,7 @@ describe('useTemplateOcrStore process flow', () => {
   });
 
   it('surfaces validation failures without calling the extraction engine', async () => {
-    mockValidateFile.mockReturnValue({ valid: false, error: 'File is too large' });
+    mockValidateFile.mockResolvedValue({ valid: false, error: 'File is too large' });
 
     await useTemplateOcrStore.getState().processFile(mockFile, 'test-api-key');
 
@@ -147,6 +147,6 @@ describe('useTemplateOcrStore process flow', () => {
 
     await useTemplateOcrStore.getState().copyArtifact('csv');
 
-    expect(useTemplateOcrStore.getState().error).toBe('No CSV artifact available for this preset run.');
+    expect(useTemplateOcrStore.getState().error).toBe('CSV is not available for this template.');
   });
 });

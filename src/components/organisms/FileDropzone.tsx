@@ -220,9 +220,9 @@ export const FileDropzone: FC<FileDropzoneProps> = ({
     fileRejections.forEach(({ file, errors }) => {
       errors.forEach((err) => {
         if (err.code === 'file-too-large') {
-          errorMessages.add(`${file.name}: File size must be less than ${formatFileSize(maxSize)}`);
+          errorMessages.add(`${file.name}: File must be under ${formatFileSize(maxSize)}`);
         } else if (err.code === 'file-invalid-type') {
-          errorMessages.add(`${file.name}: File type not supported`);
+          errorMessages.add(`${file.name}: Unsupported file type`);
         } else {
           errorMessages.add(`${file.name}: ${err.message || 'File rejected'}`);
         }
@@ -232,7 +232,7 @@ export const FileDropzone: FC<FileDropzoneProps> = ({
     // Return first 3 errors to avoid overwhelming the user
     const errorArray = Array.from(errorMessages).slice(0, 3);
     if (fileRejections.length > 3) {
-      errorArray.push(`...and ${fileRejections.length - 3} more`);
+      errorArray.push(`${fileRejections.length - 3} more files`);
     }
     return errorArray.join('. ');
   }, [error, fileRejections, maxSize]);
@@ -315,10 +315,10 @@ export const FileDropzone: FC<FileDropzoneProps> = ({
             style={isEditorial ? { fontFamily: "'Playfair Display', Georgia, serif" } : undefined}
           >
             {isDragActive && !isDragReject
-              ? (isBulkMode ? 'Drop your files here' : 'Release to Upload')
+              ? (isBulkMode ? 'Drop files to upload' : 'Drop to upload')
               : isDragReject
               ? 'File type not supported'
-              : message || (isBulkMode ? 'Upload Multiple Documents' : 'Upload your file')}
+              : message || (isBulkMode ? 'Upload documents' : 'Upload your file')}
           </h3>
 
           {/* Sub Text */}
@@ -326,7 +326,7 @@ export const FileDropzone: FC<FileDropzoneProps> = ({
             className={cn(styles.subTextSize, 'text-stone-500 dark:text-stone-400 max-w-xs mx-auto mb-4 sm:mb-6 md:mb-8')}
             style={isEditorial ? { fontFamily: "'Source Sans 3', sans-serif" } : undefined}
           >
-            {isDragActive ? 'Release to upload' : 'or click anywhere to browse files'}
+            {isDragActive ? 'Release to add your file' : 'or click to choose a file'}
           </p>
 
           {/* File Type Badges - Enhanced for editorial */}
@@ -359,12 +359,12 @@ export const FileDropzone: FC<FileDropzoneProps> = ({
 
           {/* Feature Badges */}
           {variant === 'default' && !isDragActive && !isEditorial && (
-            <FeatureBadge icon={Sparkles} label="AI-Powered Processing" color="stone" />
+            <FeatureBadge icon={Sparkles} label="Powered by Gemini" color="stone" />
           )}
 
           {variant === 'bulk' && !isDragActive && (
             <div className="mt-6">
-              <FeatureBadge icon={Layers} label="Batch Processing Supported" color="stone" />
+              <FeatureBadge icon={Layers} label="Batch processing" color="stone" />
             </div>
           )}
         </div>

@@ -4,7 +4,7 @@ export const EXTRACTION_PRESETS: ExtractionPreset[] = [
   {
     id: 'invoice',
     label: 'Invoice',
-    description: 'Capture billing fields and line items from invoices and vendor statements.',
+    description: 'Extract billing details and line items.',
     outputShape: 'table',
     tableColumns: ['description', 'quantity', 'unit_price', 'line_total'],
     rules: [
@@ -24,7 +24,7 @@ export const EXTRACTION_PRESETS: ExtractionPreset[] = [
   {
     id: 'receipt',
     label: 'Receipt',
-    description: 'Pull merchant details, totals, and purchased items from receipts.',
+    description: 'Extract merchant details, totals, and purchased items.',
     outputShape: 'table',
     tableColumns: ['item', 'quantity', 'price'],
     rules: [
@@ -41,7 +41,7 @@ export const EXTRACTION_PRESETS: ExtractionPreset[] = [
   {
     id: 'resume',
     label: 'Resume',
-    description: 'Structure candidate identity, contact info, and core experience from resumes.',
+    description: 'Extract contact details, skills, experience, and education.',
     outputShape: 'record',
     rules: [
       { id: 'full_name', field: 'full_name', description: 'Candidate full name.', type: 'text', required: true, example: 'Jordan Lee' },
@@ -57,7 +57,7 @@ export const EXTRACTION_PRESETS: ExtractionPreset[] = [
   {
     id: 'business-card',
     label: 'Business Card',
-    description: 'Extract business contact fields from cards and contact snapshots.',
+    description: 'Extract names, roles, companies, and contact details.',
     outputShape: 'record',
     rules: [
       { id: 'full_name', field: 'full_name', description: 'Contact full name.', type: 'text', required: true, example: 'Nina Patel' },

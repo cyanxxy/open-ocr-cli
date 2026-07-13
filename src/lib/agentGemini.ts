@@ -20,6 +20,7 @@ import {
   AgentMemory,
   AgentStep,
   AgentFunctionResult,
+  AgentInteractionState,
   StepCallback,
   AgentTurnResult
 } from './agentTypes';
@@ -38,6 +39,31 @@ import {
  */
 const MAX_INNER_ROUNDS = 10;
 
+interface FunctionResultPayload {
+  success: boolean;
+  error: string | null;
+  data: unknown;
+}
+
+/** Build the documented Interactions function-result content-block shape. */
+function createFunctionResultInput(
+  callId: string,
+  name: string,
+  payload: FunctionResultPayload,
+  isError: boolean,
+): InteractionStep {
+  return {
+    type: 'function_result',
+    call_id: callId,
+    name,
+    is_error: isError,
+    result: [{
+      type: 'text',
+      text: JSON.stringify(payload),
+    }],
+  };
+}
+
 /**
  * Execute a full agent turn with multi-turn function calling.
  *
@@ -45,13 +71,16 @@ const MAX_INNER_ROUNDS = 10;
  * and send results back, allowing the model to chain tools intelligently rather
  * than firing all tools at once.
  *
- * Transcript is a flat Interactions `steps` array (post–May 2026 schema) so
- * thought signatures and function calls replay correctly in stateless mode.
+ * The API conversation is stateful: the first request contains the document,
+ * then each request chains from `previous_interaction_id` with incremental
+ * function results or follow-up text. `transcript` is a faithful local audit
+ * log; it is not resent to the API.
  */
 export async function executeAgentTurn(
   systemPrompt: string,
   inputContent: Content,
   transcript: InteractionStep[],
+  interactionState: AgentInteractionState,
   functions: FunctionDeclaration[],
   fileData: string,
   mimeType: string,
@@ -65,7 +94,6 @@ export async function executeAgentTurn(
   }
 
   const generationConfig = createInteractionGenerationConfig({
-    temperature: config.temperature,
     maxOutputTokens: config.maxTokens || 16384,
     toolChoice: 'validated',
   }, clientConfig.model, clientConfig.thinkingConfig);
@@ -74,37 +102,48 @@ export async function executeAgentTurn(
   let hasCalledTools = false;
   let nudgedToUseTools = false;
 
-  // Snapshot the transcript length before appending this iteration's input.
-  // If a model call throws partway through, we roll back to here so the shared
-  // transcript never ends on a dangling user step that would collide with the
-  // next iteration's follow-up (audit A-04).
-  const baseLength = transcript.length;
-  transcript.push(createUserInputStep(contentToInteractionInput(inputContent)));
+  // A transient failure can resume the exact uncommitted input without
+  // duplicating the user turn or re-running an already completed local tool.
+  if (!interactionState.pendingInput?.length) {
+    const userInput = createUserInputStep(contentToInteractionInput(inputContent));
+    transcript.push(userInput);
+    interactionState.pendingInput = [userInput];
+  }
 
-  try {
-    for (let round = 0; round < MAX_INNER_ROUNDS; round++) {
-      if (clientConfig.abortSignal?.aborted) {
-        throw new Error('Agent processing cancelled');
-      }
+  for (let round = 0; round < MAX_INNER_ROUNDS; round++) {
+    if (clientConfig.abortSignal?.aborted) {
+      throw new Error('Agent processing cancelled');
+    }
 
-      const interaction = await runModelInteraction({
-        apiKey: clientConfig.apiKey,
-        model: clientConfig.model,
-        input: transcript,
-        systemInstruction: systemPrompt,
-        tools,
-        generationConfig,
-        abortSignal: clientConfig.abortSignal,
-        store: false,
-      });
+    const previousInteractionId = interactionState.previousInteractionId;
+    const interaction = await runModelInteraction({
+      apiKey: clientConfig.apiKey,
+      model: clientConfig.model,
+      input: interactionState.pendingInput,
+      // previous_interaction_id preserves conversation history only. Tools,
+      // system instructions, and generation settings are interaction-scoped,
+      // so Gemini requires them on every continuation request. Input remains
+      // incremental, which avoids retransmitting the document image.
+      systemInstruction: systemPrompt,
+      tools,
+      generationConfig,
+      ...(previousInteractionId ? { previousInteractionId } : {}),
+      abortSignal: clientConfig.abortSignal,
+      store: true,
+    });
 
-      if (interaction.status === 'failed' || interaction.status === 'cancelled') {
-        throw new Error(`Agent interaction ended with status "${interaction.status}"`);
-      }
+    if (interaction.status === 'failed' || interaction.status === 'cancelled') {
+      throw new Error(`Agent interaction ended with status "${interaction.status}"`);
+    }
+    if (!interaction.id) {
+      throw new Error('Agent interaction returned no interaction ID');
+    }
+
+    interactionState.previousInteractionId = interaction.id;
+    interactionState.pendingInput = undefined;
 
       const steps = getInteractionSteps(interaction);
-      // Stateless mode requires replaying ALL model steps exactly (thoughts +
-      // every parallel function_call). Never drop calls from history (C-02).
+      // Keep every returned step object untouched in the local transcript.
       const replaySteps = selectModelStepsForReplay(steps);
       if (replaySteps.length > 0) {
         transcript.push(...replaySteps);
@@ -120,7 +159,7 @@ export async function executeAgentTurn(
         allSteps.push(thinkingStep);
       }
 
-      const functionCalls: AgentFunctionCall[] = extractInteractionFunctionCalls(steps);
+      const functionCalls = extractInteractionFunctionCalls(steps);
       if (functionCalls.length === 0) {
         // Closing prose (no tool call) is surfaced here as activity; prose that
         // merely precedes a tool call is not (audit A-09).
@@ -147,12 +186,14 @@ export async function executeAgentTurn(
           };
           onStep(nudgeStep);
           allSteps.push(nudgeStep);
-          transcript.push(createUserInputStep([{
+          const nudgeInput = createUserInputStep([{
             type: 'text',
             text: 'You have not called any tools yet and no fields have been extracted. '
               + 'Begin now by calling analyze_document_structure, then extract_fields_batch. '
               + 'Respond with a tool call, not prose.',
-          }]));
+          }]);
+          transcript.push(nudgeInput);
+          interactionState.pendingInput = [nudgeInput];
           continue;
         }
         return {
@@ -164,7 +205,7 @@ export async function executeAgentTurn(
       hasCalledTools = true;
 
       // Prefer sequential decision-making: execute the first call for real.
-      // Any additional parallel calls stay in the replayed history and receive
+      // Any additional parallel calls stay in the local history and receive
       // explicit error function_results so call/result counts match (Gemini
       // strict matching). The model can re-issue them after seeing the first result.
       if (functionCalls.length > 1) {
@@ -181,10 +222,11 @@ export async function executeAgentTurn(
         throw new Error('Agent processing cancelled');
       }
 
+      const functionResultInputs: InteractionStep[] = [];
       for (let callIndex = 0; callIndex < functionCalls.length; callIndex++) {
         const fc = functionCalls[callIndex];
         // extractInteractionFunctionCalls always assigns a stable id that matches
-        // the id written into the replayed function_call step.
+        // the ID from the unchanged function_call step.
         const callId = fc.id;
 
         if (callIndex === 0) {
@@ -197,7 +239,47 @@ export async function executeAgentTurn(
           onStep(callStep);
           allSteps.push(callStep);
 
-          const result = await executeFunctionCall(fc, fileData, mimeType, memory, clientConfig);
+          let result: AgentFunctionResult;
+          try {
+            result = await executeFunctionCall(fc, fileData, mimeType, memory, clientConfig);
+          } catch (error) {
+            if (isRetryableGeminiError(error)) {
+              // The model turn has already been committed and is waiting for a
+              // matching function_result. Queue an explicit transient failure
+              // before bubbling to the outer backoff loop; the retry will send
+              // this incremental result instead of creating a new user turn.
+              const transientResult = createFunctionResultInput(
+                callId,
+                fc.name,
+                {
+                  success: false,
+                  error: `Temporary Gemini API failure while executing ${fc.name}; retry this tool.`,
+                  data: null,
+                },
+                true,
+              );
+              transcript.push(transientResult);
+              functionResultInputs.push(transientResult);
+
+              // Gemini requires one result for every parallel function call.
+              for (const skippedCall of functionCalls.slice(callIndex + 1)) {
+                const skippedResult = createFunctionResultInput(
+                  skippedCall.id,
+                  skippedCall.name,
+                  {
+                    success: false,
+                    error: 'Skipped because an earlier parallel tool call failed transiently; re-issue this call.',
+                    data: null,
+                  },
+                  true,
+                );
+                transcript.push(skippedResult);
+                functionResultInputs.push(skippedResult);
+              }
+              interactionState.pendingInput = functionResultInputs;
+            }
+            throw error;
+          }
           applyMemoryUpdate(memory, result.memoryUpdate);
 
           const resultStep: AgentStep = {
@@ -210,17 +292,18 @@ export async function executeAgentTurn(
           onStep(resultStep);
           allSteps.push(resultStep);
 
-          transcript.push({
-            type: 'function_result',
-            call_id: callId,
-            name: fc.name,
-            is_error: !result.success,
-            result: {
+          const functionResultInput = createFunctionResultInput(
+            callId,
+            fc.name,
+            {
               success: result.success,
               error: result.error ?? null,
               data: result.data ?? null,
             },
-          });
+            !result.success,
+          );
+          transcript.push(functionResultInput);
+          functionResultInputs.push(functionResultInput);
         } else {
           // Declined parallel call: still answer it so history validation succeeds.
           const skipMessage = 'Skipped: this agent executes one tool at a time. '
@@ -239,29 +322,27 @@ export async function executeAgentTurn(
           onStep(resultStep);
           allSteps.push(resultStep);
 
-          transcript.push({
-            type: 'function_result',
-            call_id: callId,
-            name: fc.name,
-            is_error: true,
-            result: {
+          const functionResultInput = createFunctionResultInput(
+            callId,
+            fc.name,
+            {
               success: false,
               error: skipMessage,
               data: null,
             },
-          });
+            true,
+          );
+          transcript.push(functionResultInput);
+          functionResultInputs.push(functionResultInput);
         }
       }
-    }
-
-    return {
-      finished: false,
-      steps: allSteps,
-    };
-  } catch (error) {
-    transcript.length = baseLength;
-    throw error;
+      interactionState.pendingInput = functionResultInputs;
   }
+
+  return {
+    finished: false,
+    steps: allSteps,
+  };
 }
 
 /**

@@ -239,6 +239,15 @@ describe('agentTools', () => {
       'application/pdf',
       totalRegion,
     );
+    expect(mockGenerateContent).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({
+        responseMimeType: 'application/json',
+        responseJsonSchema: expect.objectContaining({
+          type: 'object',
+          required: ['fields'],
+        }),
+      }),
+    }));
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({
       fieldCount: 1,

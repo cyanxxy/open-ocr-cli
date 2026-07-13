@@ -1,8 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const { mockPdfGetDocument, mockPdfDocumentDestroy } = vi.hoisted(() => ({
+  mockPdfGetDocument: vi.fn(),
+  mockPdfDocumentDestroy: vi.fn(),
+}));
+
+vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
+  GlobalWorkerOptions: { workerSrc: '' },
+  getDocument: mockPdfGetDocument,
+}));
+
+vi.mock('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url', () => ({
+  default: 'mock-pdf-worker.js',
+}));
 import {
   validateFile,
   readFileAsDataUrl,
   validateFileMagicBytes,
+  validatePdfPageCount,
   generateUuid,
   isNonPreviewableImage,
 } from './fileUtils';
@@ -13,6 +28,15 @@ const fileFromBytes = (bytes: number[], name: string, type: string): File => {
 };
 
 describe('fileUtils', () => {
+  beforeEach(() => {
+    mockPdfDocumentDestroy.mockReset();
+    mockPdfGetDocument.mockReset();
+    mockPdfGetDocument.mockReturnValue({
+      promise: Promise.resolve({ numPages: 1, destroy: mockPdfDocumentDestroy }),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    });
+  });
+
   describe('validateFile', () => {
     it('should accept valid image files', () => {
       const file = new File(['dummy content'], 'test.jpg', { type: 'image/jpeg' });
@@ -30,16 +54,23 @@ describe('fileUtils', () => {
       expect(result.error).toBeUndefined();
     });
 
-    it('should reject images larger than 100MB', () => {
+    it('should reject images larger than the safe 70MB raw inline limit', () => {
       const file = new File(['dummy content'], 'large.jpg', {
         type: 'image/jpeg',
       });
-      Object.defineProperty(file, 'size', { value: 101 * 1024 * 1024 });
+      Object.defineProperty(file, 'size', { value: 71 * 1024 * 1024 });
 
       const result = validateFile(file);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('exceeds the maximum size');
-      expect(result.error).toMatch(/100MB|images/i);
+      expect(result.error).toMatch(/70MB|images/i);
+    });
+
+    it('should accept images at the safe 70MB raw inline limit', () => {
+      const file = new File(['dummy content'], 'maximum.jpg', { type: 'image/jpeg' });
+      Object.defineProperty(file, 'size', { value: 70 * 1024 * 1024 });
+
+      expect(validateFile(file).valid).toBe(true);
     });
 
     it('should reject PDFs larger than 50MB', () => {
@@ -103,7 +134,7 @@ describe('fileUtils', () => {
       const file = new File(['dummy content'], 'exact.jpg', {
         type: 'image/jpeg',
       });
-      Object.defineProperty(file, 'size', { value: 20 * 1024 * 1024 });
+      Object.defineProperty(file, 'size', { value: 14 * 1024 * 1024 });
 
       const result = validateFile(file);
       expect(result.valid).toBe(true);
@@ -154,6 +185,42 @@ describe('fileUtils', () => {
       const pdf = fileFromBytes([0x25, 0x50, 0x44, 0x46, 0x2d], 'doc.pdf', 'application/pdf');
       const result = await validateFileMagicBytes(pdf);
       expect(result.valid).toBe(true);
+    });
+  });
+
+  describe('validatePdfPageCount', () => {
+    it('accepts PDFs at the 1,000-page limit', async () => {
+      mockPdfGetDocument.mockReturnValue({
+        promise: Promise.resolve({ numPages: 1000, destroy: mockPdfDocumentDestroy }),
+        destroy: vi.fn().mockResolvedValue(undefined),
+      });
+      const pdf = fileFromBytes([0x25, 0x50, 0x44, 0x46, 0x2d], 'limit.pdf', 'application/pdf');
+
+      await expect(validatePdfPageCount(pdf)).resolves.toEqual({ valid: true });
+      expect(mockPdfDocumentDestroy).toHaveBeenCalledOnce();
+    });
+
+    it('rejects PDFs over 1,000 pages before upload', async () => {
+      mockPdfGetDocument.mockReturnValue({
+        promise: Promise.resolve({ numPages: 1001, destroy: mockPdfDocumentDestroy }),
+        destroy: vi.fn().mockResolvedValue(undefined),
+      });
+      const pdf = fileFromBytes([0x25, 0x50, 0x44, 0x46, 0x2d], 'too-many.pdf', 'application/pdf');
+
+      const result = await validatePdfPageCount(pdf);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('1001 pages');
+      expect(result.error).toContain('maximum is 1000');
+    });
+
+    it('allows Gemini to validate the PDF when local page-count decoding fails', async () => {
+      mockPdfGetDocument.mockReturnValue({
+        promise: Promise.reject(new Error('unsupported local PDF feature')),
+        destroy: vi.fn().mockResolvedValue(undefined),
+      });
+      const pdf = fileFromBytes([0x25, 0x50, 0x44, 0x46, 0x2d], 'valid-for-gemini.pdf', 'application/pdf');
+
+      await expect(validatePdfPageCount(pdf)).resolves.toEqual({ valid: true });
     });
   });
 

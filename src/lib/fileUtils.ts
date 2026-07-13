@@ -69,7 +69,8 @@ export function isNonPreviewableImage(file: File): boolean {
 /**
  * Validates a file based on its size and MIME type.
  * Allowed types are images (e.g., `image/png`, `image/jpeg`) and PDFs (`application/pdf`).
- * Size limits are MIME-specific: images up to 100MB, PDFs up to 50MB (Gemini doc limits).
+ * Size limits are MIME-specific: images up to 70MB raw (safe for the 100MB
+ * inline payload after base64 and request overhead), PDFs up to 50MB.
  *
  * @param file - The {@link File} object to validate.
  * @returns An object containing a `valid` boolean and an optional `error` message string if validation fails.
@@ -191,6 +192,70 @@ export async function validateFileMagicBytes(
       error: `File "${file.name}" could not be read for validation.`
     };
   }
+}
+
+/** Best-effort PDF decoding to enforce Gemini's 1,000-page document limit. */
+export async function validatePdfPageCount(
+  file: File,
+): Promise<{ valid: boolean; error?: string }> {
+  if (file.type !== 'application/pdf') {
+    return { valid: true };
+  }
+
+  let loadingTask: { promise: Promise<{ numPages: number; destroy: () => Promise<void> | void }>; destroy: () => Promise<void> } | undefined;
+  let document: { numPages: number; destroy: () => Promise<void> | void } | undefined;
+
+  try {
+    const [pdfjs, workerModule] = await Promise.all([
+      import('pdfjs-dist/legacy/build/pdf.mjs'),
+      import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'),
+    ]);
+    pdfjs.GlobalWorkerOptions.workerSrc = workerModule.default;
+    const data = new Uint8Array(await file.arrayBuffer());
+    loadingTask = pdfjs.getDocument({ data });
+    document = await loadingTask.promise;
+
+    if (document.numPages > FILE_CONSTRAINTS.MAX_PDF_PAGES) {
+      return {
+        valid: false,
+        error: `PDF "${file.name}" has ${document.numPages} pages; the maximum is ${FILE_CONSTRAINTS.MAX_PDF_PAGES}.`,
+      };
+    }
+    return { valid: true };
+  } catch (error) {
+    // PDF.js and Gemini do not accept exactly the same set of valid PDFs.
+    // Keep the explicit >1,000-page rejection when decoding succeeds, but do
+    // not block a valid Gemini input solely because local preflight failed.
+    logger.warn(`Skipping page-count preflight for PDF "${file.name}":`, error);
+    return { valid: true };
+  } finally {
+    try {
+      if (document) {
+        await document.destroy();
+      } else if (loadingTask) {
+        await loadingTask.destroy();
+      }
+    } catch (error) {
+      logger.warn('PDF validation cleanup failed:', error);
+    }
+  }
+}
+
+/** Run all synchronous and content-level checks required before an API call. */
+export async function validateFileForProcessing(
+  file: File,
+): Promise<{ valid: boolean; error?: string }> {
+  const basicValidation = validateFile(file);
+  if (!basicValidation.valid) {
+    return basicValidation;
+  }
+
+  const magicValidation = await validateFileMagicBytes(file);
+  if (!magicValidation.valid) {
+    return magicValidation;
+  }
+
+  return validatePdfPageCount(file);
 }
 
 /**

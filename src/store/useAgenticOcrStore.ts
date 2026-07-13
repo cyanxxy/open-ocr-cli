@@ -421,7 +421,6 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
         {
           maxIterations: config.maxIterations,
           confidenceThreshold: config.confidenceThreshold,
-          temperature: 1,
           maxTokens: 16384,
           // Thinking is controlled by global settings, not per-agent config
         },

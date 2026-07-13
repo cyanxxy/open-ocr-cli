@@ -1,23 +1,48 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { mockInteractionCreate } = vi.hoisted(() => ({
+  mockInteractionCreate: vi.fn(),
+}));
+
+vi.mock('./client', async () => {
+  const actual = await vi.importActual<typeof import('./client')>('./client');
+  return {
+    ...actual,
+    getGenAIClient: vi.fn(() => ({
+      interactions: { create: mockInteractionCreate },
+    })),
+  };
+});
 
 import {
   createInteractionGenerationConfig,
   extractInteractionFunctionCalls,
   extractInteractionText,
   getInteractionSteps,
+  runModelInteraction,
   selectModelStepsForReplay,
   type InteractionStep,
 } from './interactions';
 
-describe('selectModelStepsForReplay — stateless replay fidelity (C-02 / A-05 / A-06)', () => {
-  it('preserves thought steps and their signature verbatim', () => {
+beforeEach(() => {
+  mockInteractionCreate.mockReset();
+});
+
+describe('selectModelStepsForReplay — exact transcript fidelity (C-02 / A-05 / A-06)', () => {
+  it('preserves thought steps, signatures, and server metadata by reference', () => {
     const steps: InteractionStep[] = [
-      { type: 'thought', signature: 'sig-abc', summary: [{ text: 'reasoning' }] },
+      {
+        type: 'thought',
+        signature: 'sig-abc',
+        summary: [{ text: 'reasoning' }],
+        server_metadata: { future_field: true },
+      } as InteractionStep,
       { type: 'function_call', id: 'call-1', name: 'analyze_document_structure', arguments: { a: 1 } },
     ];
     const replay = selectModelStepsForReplay(steps);
     const thought = replay.find((b) => b.type === 'thought');
-    expect(thought).toEqual({ type: 'thought', signature: 'sig-abc', summary: [{ text: 'reasoning' }] });
+    expect(thought).toBe(steps[0]);
+    expect(thought).toEqual(steps[0]);
   });
 
   it('uses the same canonical id for the model step and the executed call', () => {
@@ -26,7 +51,8 @@ describe('selectModelStepsForReplay — stateless replay fidelity (C-02 / A-05 /
     ];
     const replayCall = selectModelStepsForReplay(steps).find((b) => b.type === 'function_call');
     const executed = extractInteractionFunctionCalls(steps);
-    expect((replayCall as { id?: string }).id).toBe('cid-7');
+    expect(replayCall).toBe(steps[0]);
+    expect((replayCall as { call_id?: string }).call_id).toBe('cid-7');
     expect(executed[0].id).toBe('cid-7');
   });
 
@@ -47,18 +73,18 @@ describe('selectModelStepsForReplay — stateless replay fidelity (C-02 / A-05 /
     ];
     expect(extractInteractionFunctionCalls(steps)[0].arguments).toEqual({});
     const call = selectModelStepsForReplay(steps).find((b) => b.type === 'function_call');
-    expect((call as { arguments?: unknown }).arguments).toEqual({});
+    expect((call as { arguments?: unknown }).arguments).toEqual(['not', 'an', 'object']);
   });
 
-  it('maps legacy flat text outputs into model_output steps', () => {
+  it('does not rewrite legacy or forward-compatible step shapes', () => {
     const steps: InteractionStep[] = [
       { type: 'text', text: 'hello world' } as InteractionStep,
+      { type: 'future_server_step', opaque: { value: 1 } } as InteractionStep,
     ];
     const replay = selectModelStepsForReplay(steps);
-    expect(replay).toEqual([{
-      type: 'model_output',
-      content: [{ type: 'text', text: 'hello world' }],
-    }]);
+    expect(replay).toEqual(steps);
+    expect(replay[0]).toBe(steps[0]);
+    expect(replay[1]).toBe(steps[1]);
   });
 });
 
@@ -88,6 +114,25 @@ describe('getInteractionSteps', () => {
       id: 'i1',
       outputs: [{ type: 'url_context_result', result: [] }],
     })).toHaveLength(1);
+  });
+});
+
+describe('runModelInteraction', () => {
+  it('preserves the SDK output_text convenience property', async () => {
+    mockInteractionCreate.mockResolvedValueOnce({
+      id: 'interaction-output-text',
+      status: 'completed',
+      steps: [],
+      output_text: 'SDK convenience output',
+    });
+
+    await expect(runModelInteraction({
+      apiKey: 'test-key',
+      model: 'gemini-3.5-flash',
+      input: 'Extract text',
+    })).resolves.toEqual(expect.objectContaining({
+      output_text: 'SDK convenience output',
+    }));
   });
 });
 
@@ -129,6 +174,9 @@ describe('createInteractionGenerationConfig', () => {
 
     const pro = createInteractionGenerationConfig({}, 'gemini-3.1-pro-preview');
     expect(pro.thinking_level).toBe('high');
+
+    const preview = createInteractionGenerationConfig({}, 'gemini-3-flash-preview');
+    expect(preview.thinking_level).toBe('high');
   });
 
   it('enables thought summaries only when includeThoughts is set', () => {

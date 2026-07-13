@@ -1,4 +1,5 @@
 import type { GeminiModel, ThinkingConfig } from './gemini/types';
+import type { InteractionStep } from './gemini/interactions';
 
 /**
  * Types and interfaces for the agentic OCR system
@@ -81,7 +82,6 @@ export interface AgentResponse {
 export interface AgentLoopConfig {
   maxIterations: number;
   confidenceThreshold: number;
-  temperature: number;
   maxTokens: number;
   /**
    * Hard wall-clock budget for the whole run, in milliseconds. Acts as a
@@ -156,4 +156,12 @@ export interface AgentTurnResult {
   finished: boolean;
   /** All steps produced during this turn */
   steps: AgentStep[];
+}
+
+/** Mutable state for one server-side Interactions conversation. */
+export interface AgentInteractionState {
+  /** Most recent stored interaction used for `previous_interaction_id` chaining. */
+  previousInteractionId?: string;
+  /** Incremental input that has not yet been accepted by the API. */
+  pendingInput?: InteractionStep[];
 }

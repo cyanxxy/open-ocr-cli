@@ -92,7 +92,7 @@ Open `http://localhost:5173`, set your API key under **Settings**, then choose a
 
 - Pro does not support `MINIMAL` (clamped to supported levels).
 - Agentic mode raises `MINIMAL` to `MEDIUM` for extraction quality.
-- Unset levels follow model defaults where applicable (e.g. Flash-Lite → minimal, 3.5 Flash → medium).
+- Unset levels follow model defaults (Flash-Lite → minimal, 3.5 Flash → medium, 3 Flash Preview/Pro → high).
 
 ---
 
@@ -100,8 +100,8 @@ Open `http://localhost:5173`, set your API key under **Settings**, then choose a
 
 | Constraint | Value |
 | --- | --- |
-| Image upload | **100 MB** |
-| PDF upload | **50 MB** |
+| Image upload | **70 MB raw** (keeps base64 plus prompt/JSON below the 100 MB inline-payload ceiling) |
+| PDF upload | **50 MB**, up to **1,000 pages** |
 | Bulk batch | Up to **200** files, **500 MB** total |
 | Local formats | `png`, `jpg`/`jpeg`, `webp`, `heic`, `heif`, `pdf` |
 | Web OCR URLs | Up to **20** per request |

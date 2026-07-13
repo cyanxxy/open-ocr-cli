@@ -88,10 +88,10 @@ function clampThinkingLevel(model: ModelType, level: ThinkingLevel): ThinkingLev
   const allowed = isFlashFamily
     ? (['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'] as const)
     : (['LOW', 'MEDIUM', 'HIGH'] as const);
-  // Model-aware fallbacks match API defaults (Flash-Lite → MINIMAL, Flash → MEDIUM, Pro → HIGH).
+  // Model-aware fallbacks match API defaults.
   const fallback: ThinkingLevel = model === 'gemini-3.1-flash-lite'
     ? 'MINIMAL'
-    : isFlashFamily
+    : model === 'gemini-3.5-flash'
       ? 'MEDIUM'
       : 'HIGH';
 

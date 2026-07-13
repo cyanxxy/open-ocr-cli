@@ -16,7 +16,10 @@ import {
   Database,
   ExternalLink,
   Sparkles,
-  Monitor
+  Monitor,
+  Sprout,
+  Scale,
+  Brain
 } from 'lucide-react';
 import type { ThemeMode, ModelType, ThinkingConfig } from '../../store/useSettingsStore';
 import type { TestResult } from '../../utils/testGemini';
@@ -215,7 +218,7 @@ export function SettingsModal({
           <button
             type="button"
             onClick={onClose}
-            className="p-2 rounded-full text-stone-400 hover:text-stone-600 hover:bg-stone-100 dark:hover:bg-stone-800 dark:hover:text-stone-300 transition-colors"
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
             aria-label="Close"
           >
             <X className="w-5 h-5" />
@@ -301,6 +304,50 @@ export function SettingsModal({
             </div>
           </section>
 
+          {/* Reasoning Level */}
+          <section>
+            <label className="text-[11px] font-bold text-stone-400 dark:text-stone-500 uppercase tracking-wider mb-2 block px-1">Reasoning</label>
+            <div className={cn(
+              "grid p-1 bg-stone-100/80 dark:bg-stone-900/80 rounded-2xl ring-1 ring-inset ring-stone-200/50 dark:ring-white/5",
+              (model === 'gemini-3-flash-preview' || model === 'gemini-3.5-flash' || model === 'gemini-3.1-flash-lite')
+                ? "grid-cols-4"
+                : "grid-cols-3",
+            )}>
+              {[
+                ...((model === 'gemini-3-flash-preview' || model === 'gemini-3.5-flash' || model === 'gemini-3.1-flash-lite')
+                  ? [{ value: 'MINIMAL' as const, label: 'Min', icon: Sprout }]
+                  : []),
+                { value: 'LOW' as const, label: 'Low', icon: Zap },
+                { value: 'MEDIUM' as const, label: 'Med', icon: Scale },
+                { value: 'HIGH' as const, label: 'High', icon: Brain },
+              ].map((opt) => {
+                const Icon = opt.icon;
+                return (
+                  <button
+                    type="button"
+                    key={opt.value}
+                    onClick={() => setThinkingConfig({ ...thinkingConfig, level: opt.value })}
+                    className={cn(
+                      "flex flex-col items-center gap-1.5 p-2.5 rounded-xl transition-all duration-200",
+                      thinkingConfig.level === opt.value
+                        ? "bg-white dark:bg-stone-800 shadow-sm ring-1 ring-black/5 dark:ring-white/10"
+                        : "hover:bg-stone-200/50 dark:hover:bg-stone-800/50"
+                    )}
+                  >
+                    <Icon className={cn(
+                      "h-5 w-5 transition-transform duration-200 motion-reduce:transform-none",
+                      thinkingConfig.level === opt.value ? "scale-110 text-stone-900 dark:text-stone-100" : "text-stone-400 dark:text-stone-500"
+                    )} />
+                    <span className={cn(
+                      "text-xs font-medium transition-colors",
+                      thinkingConfig.level === opt.value ? "text-stone-900 dark:text-stone-100" : "text-stone-500 dark:text-stone-400"
+                    )}>{opt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
           {/* API Key */}
           <section>
             <div className="flex items-center justify-between mb-2 px-1">
@@ -356,47 +403,6 @@ export function SettingsModal({
                   Use this only on a trusted/private device. For production deployments, route Gemini requests through a server instead of shipping a long-lived API key to browsers.
                 </p>
               </div>
-            </div>
-          </section>
-
-          {/* Reasoning Level */}
-          <section>
-            <label className="text-[11px] font-bold text-stone-400 dark:text-stone-500 uppercase tracking-wider mb-2 block px-1">Reasoning</label>
-            <div className={cn(
-              "grid p-1 bg-stone-100/80 dark:bg-stone-900/80 rounded-2xl ring-1 ring-inset ring-stone-200/50 dark:ring-white/5",
-              (model === 'gemini-3-flash-preview' || model === 'gemini-3.5-flash' || model === 'gemini-3.1-flash-lite')
-                ? "grid-cols-4"
-                : "grid-cols-3",
-            )}>
-              {[
-                ...((model === 'gemini-3-flash-preview' || model === 'gemini-3.5-flash' || model === 'gemini-3.1-flash-lite')
-                  ? [{ value: 'MINIMAL' as const, label: 'Min', emoji: '🌱' }]
-                  : []),
-                { value: 'LOW' as const, label: 'Low', emoji: '⚡' },
-                { value: 'MEDIUM' as const, label: 'Med', emoji: '⚖️' },
-                { value: 'HIGH' as const, label: 'High', emoji: '🧠' },
-              ].map((opt) => (
-                <button
-                  type="button"
-                  key={opt.value}
-                  onClick={() => setThinkingConfig({ ...thinkingConfig, level: opt.value })}
-                  className={cn(
-                    "flex flex-col items-center gap-1.5 p-2.5 rounded-xl transition-all duration-200",
-                    thinkingConfig.level === opt.value
-                      ? "bg-white dark:bg-stone-800 shadow-sm ring-1 ring-black/5 dark:ring-white/10"
-                      : "hover:bg-stone-200/50 dark:hover:bg-stone-800/50"
-                  )}
-                >
-                  <span className={cn(
-                    "text-lg transition-transform duration-200",
-                    thinkingConfig.level === opt.value ? "scale-110" : "grayscale opacity-50"
-                  )}>{opt.emoji}</span>
-                  <span className={cn(
-                    "text-xs font-medium transition-colors",
-                    thinkingConfig.level === opt.value ? "text-stone-900 dark:text-stone-100" : "text-stone-500 dark:text-stone-400"
-                  )}>{opt.label}</span>
-                </button>
-              ))}
             </div>
           </section>
 

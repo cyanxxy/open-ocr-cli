@@ -1,6 +1,7 @@
 import { type Content } from '@google/genai';
 import {
   AgentClientConfig,
+  AgentInteractionState,
   AgentLoopConfig,
   AgentMemory,
   AgentStep,
@@ -41,7 +42,6 @@ function wasAborted(error: unknown, abortSignal?: AbortSignal): boolean {
 const DEFAULT_AGENT_CONFIG: AgentLoopConfig = {
   maxIterations: 5,
   confidenceThreshold: 0.8,
-  temperature: 1,
   maxTokens: 16384,
   maxDurationMs: 120000,
 };
@@ -74,7 +74,8 @@ function describeStopReason(reason: AgentStopReason, memory: AgentMemory): strin
 
 /**
  * Autonomous agent loop that processes documents iteratively.
- * Maintains a local interaction transcript for stateless interactions.
+ * Maintains a local audit transcript while the API conversation uses stored,
+ * stateful `previous_interaction_id` chaining.
  */
 export async function* agentLoop(
   file: File,
@@ -129,6 +130,7 @@ export async function* agentLoop(
       ]
     };
     const interactionTranscript: InteractionStep[] = [];
+    const interactionState: AgentInteractionState = {};
 
     while (iteration < agentConfig.maxIterations) {
       if (clientConfig.abortSignal?.aborted) {
@@ -179,6 +181,7 @@ export async function* agentLoop(
           systemPrompt,
           iterationContent,
           interactionTranscript,
+          interactionState,
           AGENT_FUNCTIONS,
           fileData,
           file.type,
@@ -212,9 +215,8 @@ export async function* agentLoop(
         }
 
         if (!turnResult.finished) {
-          // Inner loop hit MAX_INNER_ROUNDS; the transcript ends on a
-          // function_result turn, so appending another follow-up user turn would
-          // produce two consecutive user turns. Finalize honestly instead.
+          // Inner loop hit MAX_INNER_ROUNDS. Finalize honestly instead of
+          // allowing another outer iteration to bypass the tool-call ceiling.
           stopReason = 'tool_limit_reached';
           break;
         }
@@ -250,8 +252,8 @@ export async function* agentLoop(
 
         // Transient failures (rate limit, 5xx, network) are retried with bounded
         // exponential backoff + jitter rather than treated as fatal (audit H-17).
-        // executeAgentTurn already rolled its partial transcript turns back, so
-        // reusing this iteration slot is safe.
+        // executeAgentTurn retains the exact uncommitted incremental input, so
+        // reusing this iteration slot resumes without duplicating a turn/tool.
         if (isRetryableGeminiError(error) && transientRetries < MAX_TRANSIENT_RETRIES) {
           transientRetries++;
           const baseDelay = agentConfig.retryBaseDelayMs ?? RETRY_BASE_DELAY_MS;

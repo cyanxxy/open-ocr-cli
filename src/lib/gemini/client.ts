@@ -330,12 +330,13 @@ export function isRetryableGeminiError(error: unknown): boolean {
 /**
  * Model-aware default thinking level when the UI has not set one.
  * - 3.1 Flash-Lite: minimal (API default; cheap/high-volume)
- * - 3.5 Flash / 3 Flash: medium (3.5 Flash API default)
+ * - 3.5 Flash: medium
+ * - 3 Flash Preview: high
  * - 3.1 Pro: high
  */
 export function defaultThinkingLevelForModel(modelName: GeminiModel): ThinkingLevel {
   if (modelName === 'gemini-3.1-flash-lite') return 'MINIMAL';
-  if (modelName === 'gemini-3.5-flash' || modelName === 'gemini-3-flash-preview') return 'MEDIUM';
+  if (modelName === 'gemini-3.5-flash') return 'MEDIUM';
   return 'HIGH';
 }
 

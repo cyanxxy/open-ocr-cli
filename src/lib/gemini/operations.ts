@@ -195,6 +195,33 @@ function validateUrlContextResults(
 
     throw createGroundedUrlError(`Grounded URL retrieval failed for ${detail}.`);
   }
+
+  const requestedByKey = new Map(
+    urls.map((url) => [normalizeUrlForMatch(url), url] as const),
+  );
+  const retrievedKeys = new Set<string>();
+
+  for (const result of results) {
+    if (typeof result.url !== 'string' || result.url.trim().length === 0) {
+      throw createGroundedUrlError('Grounded URL retrieval returned a success result without its source URL.');
+    }
+
+    const key = normalizeUrlForMatch(result.url);
+    if (!requestedByKey.has(key)) {
+      throw createGroundedUrlError(`Grounded URL retrieval verified an unexpected URL (${result.url}).`);
+    }
+    if (retrievedKeys.has(key)) {
+      throw createGroundedUrlError(`Grounded URL retrieval returned a duplicate result for ${result.url}.`);
+    }
+    retrievedKeys.add(key);
+  }
+
+  const missingUrls = [...requestedByKey]
+    .filter(([key]) => !retrievedKeys.has(key))
+    .map(([, url]) => url);
+  if (missingUrls.length > 0) {
+    throw createGroundedUrlError(`Grounded URL retrieval did not verify: ${missingUrls.join(', ')}.`);
+  }
 }
 
 function normalizeUrlExtractionError(error: unknown): Error {

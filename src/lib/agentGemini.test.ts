@@ -62,6 +62,16 @@ function createInputContent(): Content {
   };
 }
 
+function createImageInputContent(): Content {
+  return {
+    role: 'user',
+    parts: [
+      { text: 'Analyze this invoice.' },
+      { inlineData: { mimeType: 'image/png', data: 'ZmFrZQ==' } },
+    ],
+  };
+}
+
 const functions: FunctionDeclaration[] = [
   {
     name: 'analyze_document_structure',
@@ -105,18 +115,18 @@ describe('executeAgentTurn', () => {
       'system prompt',
       createInputContent(),
       transcript,
+      {},
       functions,
       '[PDF attachment removed — 0 KB]',
       'application/pdf',
       memory,
       {
         apiKey: 'test-key',
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3.5-flash',
       },
       {
         maxIterations: 4,
         confidenceThreshold: 0.8,
-        temperature: 1,
         maxTokens: 1024,
       },
       vi.fn(),
@@ -125,9 +135,16 @@ describe('executeAgentTurn', () => {
     expect(result.finished).toBe(true);
     expect(mockRunModelInteraction).toHaveBeenCalledTimes(1);
     expect(mockRunModelInteraction).toHaveBeenCalledWith(expect.objectContaining({
-      store: false,
-      input: transcript,
+      model: 'gemini-3.5-flash',
+      store: true,
+      input: [transcript[0]],
+      systemInstruction: 'system prompt',
+      tools: expect.any(Array),
+      generationConfig: expect.objectContaining({
+        thinking_level: 'medium',
+      }),
     }));
+    expect(mockRunModelInteraction.mock.calls[0]?.[0].generationConfig).not.toHaveProperty('temperature');
     expect(mockRunModelInteraction.mock.calls[0]?.[0]).not.toHaveProperty('previousInteractionId');
     // user_input + model_output
     expect(transcript).toHaveLength(2);
@@ -150,18 +167,18 @@ describe('executeAgentTurn', () => {
       'system prompt',
       createInputContent(),
       transcript,
+      {},
       functions,
       '[PDF attachment removed — 0 KB]',
       'application/pdf',
       createMemory(),
       {
         apiKey: 'test-key',
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3.5-flash',
       },
       {
         maxIterations: 4,
         confidenceThreshold: 0.8,
-        temperature: 1,
         maxTokens: 1024,
       },
       vi.fn(),
@@ -169,6 +186,16 @@ describe('executeAgentTurn', () => {
 
     expect(mockRunModelInteraction).toHaveBeenCalledTimes(2);
     expect(result.finished).toBe(true);
+    expect(mockRunModelInteraction.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      previousInteractionId: 'interaction-1',
+      store: true,
+    }));
+    expect(mockRunModelInteraction).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      model: 'gemini-3.5-flash',
+      systemInstruction: 'system prompt',
+      tools: expect.any(Array),
+      generationConfig: expect.objectContaining({ thinking_level: 'medium' }),
+    }));
 
     const nudge = transcript.find((step) =>
       step.type === 'user_input'
@@ -258,20 +285,20 @@ describe('executeAgentTurn', () => {
     const transcript: InteractionStep[] = [];
     const result = await executeAgentTurn(
       'system prompt',
-      createInputContent(),
+      createImageInputContent(),
       transcript,
+      {},
       functions,
       'data:image/png;base64,ZmFrZQ==',
       'image/png',
       memory,
       {
         apiKey: 'test-key',
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3.5-flash',
       },
       {
         maxIterations: 4,
         confidenceThreshold: 0.8,
-        temperature: 1,
         maxTokens: 1024,
       },
       vi.fn(),
@@ -284,8 +311,8 @@ describe('executeAgentTurn', () => {
     expect(memory.documentAnalysis.documentType).toBe('invoice');
     expect(memory.extractedFields.invoice_number?.value).toBe('INV-42');
 
-    // Stateless history: every function_call must remain in the transcript and
-    // have exactly one matching function_result (including declined parallels).
+    // Local audit history keeps every function_call and exactly one matching
+    // function_result (including declined parallels).
     const functionCalls = transcript.filter((s) => s.type === 'function_call');
     const functionResults = transcript.filter((s) => s.type === 'function_result');
     expect(functionCalls.map((c) => (c as { id: string }).id)).toEqual(
@@ -295,6 +322,9 @@ describe('executeAgentTurn', () => {
     expect(functionResults[0]).toEqual(
       expect.objectContaining({ call_id: 'call-1', name: 'analyze_document_structure', is_error: false }),
     );
+    expect((functionResults[0] as { result: unknown }).result).toEqual([
+      expect.objectContaining({ type: 'text', text: expect.any(String) }),
+    ]);
     expect(functionResults.find((r) => (r as { call_id?: string }).call_id === 'call-2')).toEqual(
       expect.objectContaining({
         call_id: 'call-2',
@@ -304,5 +334,110 @@ describe('executeAgentTurn', () => {
     );
     // Thought signature was preserved in the transcript
     expect(transcript.some((s) => s.type === 'thought' && (s as { signature?: string }).signature === 'sig-1')).toBe(true);
+
+    // Stateful chaining sends only incremental results after the initial input.
+    expect(mockRunModelInteraction).toHaveBeenNthCalledWith(
+      1,
+      expect.not.objectContaining({ previousInteractionId: expect.anything() }),
+    );
+    expect(mockRunModelInteraction.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      previousInteractionId: 'interaction-1',
+      input: functionResults.filter((step) =>
+        (step as { call_id?: string }).call_id === 'call-1'
+        || (step as { call_id?: string }).call_id === 'call-2'),
+    }));
+    expect(mockRunModelInteraction.mock.calls[2]?.[0]).toEqual(expect.objectContaining({
+      previousInteractionId: 'interaction-2',
+    }));
+    for (const [request] of mockRunModelInteraction.mock.calls) {
+      expect(request).toEqual(expect.objectContaining({
+        model: 'gemini-3.5-flash',
+        systemInstruction: 'system prompt',
+        tools: expect.any(Array),
+        generationConfig: expect.objectContaining({ thinking_level: 'medium' }),
+      }));
+      expect(request.generationConfig).not.toHaveProperty('temperature');
+    }
+    const inputs = mockRunModelInteraction.mock.calls.map(([request]) => JSON.stringify(request));
+    expect(inputs.filter((input) => input.includes('"type":"image"'))).toHaveLength(1);
+  });
+
+  it('queues a function_result after a transient tool failure before retrying the model', async () => {
+    mockRunModelInteraction
+      .mockResolvedValueOnce({
+        id: 'interaction-tool-call',
+        status: 'requires_action',
+        steps: [{
+          type: 'function_call',
+          id: 'call-retry',
+          name: 're_ocr_region',
+          arguments: {
+            region: { page: 1, x: 0, y: 0, width: 0.5, height: 0.5, units: 'normalized' },
+            focus: 'invoice total',
+          },
+        }],
+      })
+      .mockResolvedValueOnce({
+        id: 'interaction-after-retry',
+        status: 'completed',
+        steps: [{ type: 'model_output', content: [{ type: 'text', text: 'Retry acknowledged.' }] }],
+      });
+    mockExecuteReOcrRegion.mockRejectedValueOnce(new Error('429 rate limit'));
+
+    const memory = createMemory();
+    memory.extractedFields.invoice_number = { value: 'INV-1', confidence: 0.95 };
+    const transcript: InteractionStep[] = [];
+    const interactionState: { previousInteractionId?: string; pendingInput?: InteractionStep[] } = {};
+    const agentConfig = {
+      maxIterations: 4,
+      confidenceThreshold: 0.8,
+      maxTokens: 1024,
+    };
+
+    await expect(executeAgentTurn(
+      'system prompt',
+      createInputContent(),
+      transcript,
+      interactionState,
+      functions,
+      'data:image/png;base64,ZmFrZQ==',
+      'image/png',
+      memory,
+      { apiKey: 'test-key', model: 'gemini-3.5-flash' },
+      agentConfig,
+      vi.fn(),
+    )).rejects.toThrow('429 rate limit');
+
+    const queuedResult = interactionState.pendingInput?.[0];
+    expect(interactionState.previousInteractionId).toBe('interaction-tool-call');
+    expect(queuedResult).toEqual(expect.objectContaining({
+      type: 'function_result',
+      call_id: 'call-retry',
+      name: 're_ocr_region',
+      is_error: true,
+    }));
+    expect((queuedResult as { result: unknown }).result).toEqual([
+      expect.objectContaining({ type: 'text', text: expect.stringContaining('Temporary Gemini API failure') }),
+    ]);
+
+    await executeAgentTurn(
+      'system prompt',
+      createInputContent(),
+      transcript,
+      interactionState,
+      functions,
+      'data:image/png;base64,ZmFrZQ==',
+      'image/png',
+      memory,
+      { apiKey: 'test-key', model: 'gemini-3.5-flash' },
+      agentConfig,
+      vi.fn(),
+    );
+
+    expect(mockRunModelInteraction.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      previousInteractionId: 'interaction-tool-call',
+      input: [queuedResult],
+    }));
+    expect(transcript.filter((step) => step.type === 'user_input')).toHaveLength(1);
   });
 });

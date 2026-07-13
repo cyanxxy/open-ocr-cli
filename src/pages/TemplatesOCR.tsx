@@ -24,6 +24,10 @@ import { useTemplateOcrStore } from '../store/useTemplateOcrStore';
 
 const PRESETS = listExtractionPresets();
 
+function outputLabel(outputShape: 'table' | 'record'): string {
+  return outputShape === 'table' ? 'Fields + rows' : 'Fields';
+}
+
 function triggerArtifactDownload(filename: string, content: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -187,19 +191,19 @@ export default function TemplatesOCR() {
             <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-stone-100 dark:bg-stone-800/50 border border-stone-200/60 dark:border-stone-700/50 mb-6">
               <Layers3 className="w-4 h-4 text-[#E34234]" />
               <span className="text-xs font-medium tracking-[0.18em] uppercase text-stone-500 dark:text-stone-400" style={{ fontFamily: editorial.fonts.body }}>
-                Structured Templates
+                Extraction templates
               </span>
             </div>
 
             <h1 className="text-4xl sm:text-5xl lg:text-6xl font-semibold tracking-tight text-stone-900 dark:text-stone-100 mb-4" style={{ fontFamily: editorial.fonts.heading }}>
-              OCR that ships <em className="font-normal italic">usable data</em>
+              Template <em className="font-normal italic">OCR</em>
             </h1>
             <p className="max-w-3xl mx-auto text-lg text-stone-500 dark:text-stone-400 leading-relaxed" style={{ fontFamily: editorial.fonts.body }}>
-              Pick a preset, upload a document, and get markdown and JSON from every run, plus tabular CSV for table presets like invoice and receipt.
+              Choose a template and upload a file. Get Markdown and JSON, plus CSV for invoices and receipts.
             </p>
           </header>
 
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 mb-8">
+          <section className="mb-6 grid grid-cols-2 gap-3 sm:mb-8 sm:gap-4 md:grid-cols-2 xl:grid-cols-4">
             {PRESETS.map((preset) => {
               const isActive = preset.id === presetId;
               return (
@@ -208,13 +212,13 @@ export default function TemplatesOCR() {
                   type="button"
                   onClick={() => setPresetId(preset.id)}
                   className={cn(
-                    'rounded-3xl p-5 text-left border transition-all duration-200',
+                    'rounded-2xl border p-3 text-left transition-all duration-200 active:scale-[0.98] sm:rounded-3xl sm:p-5 motion-reduce:transform-none',
                     isActive
                       ? 'bg-white dark:bg-stone-900 border-stone-900 dark:border-stone-100 shadow-lg shadow-stone-200/40 dark:shadow-stone-950/50'
                       : 'bg-white/70 dark:bg-stone-900/70 border-stone-200/70 dark:border-stone-700/60 hover:border-stone-400 dark:hover:border-stone-500',
                   )}
                 >
-                  <div className="flex items-center justify-between mb-3">
+                  <div className="mb-2 flex flex-col items-start gap-2 sm:mb-3 sm:flex-row sm:items-center sm:justify-between">
                     <span className="text-sm font-semibold text-stone-900 dark:text-stone-100" style={{ fontFamily: editorial.fonts.heading }}>
                       {preset.label}
                     </span>
@@ -224,15 +228,15 @@ export default function TemplatesOCR() {
                         ? 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300'
                         : 'bg-[#E34234]/10 text-[#E34234]',
                     )}>
-                      {preset.outputShape}
+                      {outputLabel(preset.outputShape)}
                     </span>
                   </div>
-                  <p className="text-sm text-stone-600 dark:text-stone-400 mb-4" style={{ fontFamily: editorial.fonts.body }}>
+                  <p className="mb-4 hidden text-sm text-stone-600 dark:text-stone-400 sm:block" style={{ fontFamily: editorial.fonts.body }}>
                     {preset.description}
                   </p>
                   <p className="text-xs text-stone-500 dark:text-stone-500" style={{ fontFamily: editorial.fonts.body }}>
                     {preset.rules.length} fields
-                    {preset.tableColumns?.length ? ` + ${preset.tableColumns.length} table columns` : ''}
+                    {preset.tableColumns?.length ? ` · ${preset.tableColumns.length} columns` : ''}
                   </p>
                 </button>
               );
@@ -245,7 +249,7 @@ export default function TemplatesOCR() {
                 onFileSelect={handleFileSelection}
                 variant="default"
                 showFileTypes={true}
-                message={`Drop a ${selectedPreset.label.toLowerCase()} document`}
+                message={`Upload your ${selectedPreset.label.toLowerCase()}`}
               />
             ) : (
               <ApiKeyPrompt variant="default" />
@@ -265,16 +269,16 @@ export default function TemplatesOCR() {
               onClick={handleRemoveFile}
               disabled={isProcessing}
               className="p-2.5 rounded-xl bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
-              aria-label="Remove file and go back"
+              aria-label="Choose another file"
             >
               <ArrowRight className="w-5 h-5 rotate-180" />
             </button>
             <div>
               <p className="text-xs uppercase tracking-[0.18em] text-stone-500 dark:text-stone-500 mb-2" style={{ fontFamily: editorial.fonts.body }}>
-                Template Run
+                {selectedPreset.label} template
               </p>
               <h1 className="text-2xl sm:text-3xl font-semibold text-stone-900 dark:text-stone-100" style={{ fontFamily: editorial.fonts.heading }}>
-                {selectedPreset.label} extraction
+                Extract {selectedPreset.label.toLowerCase()} data
               </h1>
             </div>
           </div>
@@ -296,7 +300,7 @@ export default function TemplatesOCR() {
               className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Download className="w-4 h-4" />
-              Download
+              Download {artifactView.toUpperCase()}
             </button>
           </div>
         </header>
@@ -326,7 +330,7 @@ export default function TemplatesOCR() {
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-sm font-medium text-stone-900 dark:text-stone-100">{preset.label}</span>
-                      <span className="text-[10px] uppercase tracking-wide text-stone-500 dark:text-stone-400">{preset.outputShape}</span>
+                      <span className="text-[10px] uppercase tracking-wide text-stone-500 dark:text-stone-400">{outputLabel(preset.outputShape)}</span>
                     </div>
                   </button>
                 ))}
@@ -366,7 +370,7 @@ export default function TemplatesOCR() {
                 )}
               >
                 {isProcessing ? <LoadingIndicator size="sm" text="" /> : <BadgeCheck className="w-4 h-4" />}
-                {isProcessing ? 'Cancel extraction' : `Run ${selectedPreset.label} preset`}
+                {isProcessing ? 'Stop extraction' : `Extract ${selectedPreset.label.toLowerCase()} data`}
               </button>
             </div>
 
@@ -381,10 +385,10 @@ export default function TemplatesOCR() {
             <div className="border-b border-stone-200/70 dark:border-stone-700/60 px-5 py-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-xs uppercase tracking-[0.18em] text-stone-500 dark:text-stone-500 mb-2" style={{ fontFamily: editorial.fonts.body }}>
-                  Output artifacts
+                  Results
                 </p>
                 <h2 className="text-xl font-semibold text-stone-900 dark:text-stone-100" style={{ fontFamily: editorial.fonts.heading }}>
-                  Markdown and JSON from one run, plus CSV for table presets
+                  Extracted data
                 </h2>
               </div>
 
@@ -415,10 +419,10 @@ export default function TemplatesOCR() {
                     <FileJson className="w-6 h-6 text-[#E34234]" />
                   </div>
                   <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100 mb-3" style={{ fontFamily: editorial.fonts.heading }}>
-                    No preset run yet
+                    No results yet
                   </h3>
                   <p className="max-w-md text-stone-500 dark:text-stone-400" style={{ fontFamily: editorial.fonts.body }}>
-                    Run the {selectedPreset.label.toLowerCase()} preset to generate structured artifacts you can copy, download, and evaluate.
+                    Select “Extract {selectedPreset.label.toLowerCase()} data” to start.
                   </p>
                 </div>
               ) : artifactView === 'markdown' ? (

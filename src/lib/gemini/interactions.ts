@@ -1,4 +1,4 @@
-import type { Content, FunctionDeclaration } from '@google/genai';
+import type { Content, FunctionDeclaration, Interactions } from '@google/genai';
 import { getGenAIClient, normalizeThinkingLevel } from './client';
 import type { GeminiModel, ThinkingConfig } from './types';
 import { recordGeminiUsage } from './usage';
@@ -37,7 +37,7 @@ export type InteractionFunctionResultStep = {
   type: 'function_result';
   call_id: string;
   name: string;
-  result: Record<string, unknown> | string;
+  result: InteractionMediaContent[] | Record<string, unknown> | string;
   is_error?: boolean;
 };
 
@@ -51,16 +51,13 @@ export type InteractionUrlContextResultStep = {
   call_id?: string;
   is_error?: boolean;
   result?: Array<{
-    status?: 'success' | 'error' | 'paywall' | 'unsafe' | string;
+    status?: string;
     url?: string;
   }>;
   signature?: string;
 };
 
-/**
- * A single step in a stateless Interactions transcript.
- * Matches the post–May 2026 Interactions `steps` schema.
- */
+/** A single step in a post–May 2026 Interactions transcript. */
 export type InteractionStep =
   | InteractionUserInputStep
   | InteractionThoughtStep
@@ -79,13 +76,13 @@ export interface InteractionResult {
   steps?: InteractionStep[];
   /** Legacy field kept only for defensive fallback while migrating tests/mocks. */
   outputs?: InteractionStep[];
-  output_text?: string;
+  output_text?: string | null;
 }
 
 export interface UrlContextResultSummary {
   hasToolError: boolean;
   results: Array<{
-    status?: 'success' | 'error' | 'paywall' | 'unsafe' | string;
+    status?: string;
     url?: string;
   }>;
 }
@@ -264,75 +261,24 @@ export function getInteractionSteps(interaction: InteractionResult | null | unde
 }
 
 /**
- * Convert model-generated steps into a replayable transcript slice for
- * stateless Interactions mode.
+ * Return model-generated steps exactly as the API produced them.
  *
  * Gemini requires every model-generated step — including ALL parallel
- * function_call steps and thought signatures — to be echoed back verbatim.
- * Never drop parallel calls from history (even if the runtime only executes
- * one); declined calls must still appear here and get a matching function_result.
+ * function_call steps and thought signatures — to be echoed back verbatim in
+ * stateless mode. Stateful callers also use this helper for a faithful local
+ * audit transcript. Do not normalize, clone, or drop unknown fields/step types:
+ * signatures and forward-compatible server metadata must survive unchanged.
  */
 export function selectModelStepsForReplay(steps?: InteractionStep[]): InteractionStep[] {
   if (!steps || steps.length === 0) {
     return [];
   }
-
-  const replay: InteractionStep[] = [];
-
-  for (const [index, step] of steps.entries()) {
-    if (!step || typeof step !== 'object' || typeof step.type !== 'string') {
-      continue;
-    }
-
-    if (step.type === 'thought') {
-      const thought = step as InteractionThoughtStep;
-      if (thought.signature || Array.isArray(thought.summary)) {
-        replay.push({
-          type: 'thought',
-          ...(thought.signature ? { signature: thought.signature } : {}),
-          ...(Array.isArray(thought.summary) ? { summary: thought.summary } : {}),
-        });
-      }
-      continue;
-    }
-
-    if (step.type === 'function_call') {
-      const fc = step as InteractionFunctionCallStep & { name?: string; arguments?: unknown };
-      if (typeof fc.name !== 'string' || fc.name.length === 0) {
-        continue;
-      }
-      replay.push({
-        type: 'function_call',
-        id: interactionCallId(fc, index),
-        name: fc.name,
-        arguments: toArgsObject(fc.arguments),
-      });
-      continue;
-    }
-
-    if (step.type === 'model_output') {
-      const mo = step as InteractionModelOutputStep;
-      const textBlocks = (mo.content || [])
-        .filter((block): block is { type: 'text'; text: string } =>
-          !!block && block.type === 'text' && typeof block.text === 'string' && block.text.trim().length > 0)
-        .map((block) => ({ type: 'text' as const, text: block.text }));
-      if (textBlocks.length > 0) {
-        replay.push({ type: 'model_output', content: textBlocks });
-      }
-      continue;
-    }
-
-    // Legacy flat text shapes (tests and transitional mocks).
-    if (step.type === 'text') {
-      const legacyText = (step as Record<string, unknown>).text;
-      if (typeof legacyText === 'string' && legacyText.trim()) {
-        replay.push({ type: 'model_output', content: [{ type: 'text', text: legacyText.trim() }] });
-      }
-      continue;
-    }
-  }
-
-  return replay;
+  return steps.filter(
+    (step): step is InteractionStep =>
+      typeof step === 'object'
+      && step !== null
+      && typeof step.type === 'string',
+  );
 }
 
 /** @deprecated Use selectModelStepsForReplay */
@@ -343,7 +289,7 @@ export function outputsToModelTurn(outputs?: InteractionStep[]): InteractionStep
 
 export function extractInteractionText(
   steps?: InteractionStep[],
-  fallbackOutputText?: string,
+  fallbackOutputText?: string | null,
 ): string {
   if (steps && steps.length > 0) {
     const parts: string[] = [];
@@ -475,29 +421,33 @@ export async function runModelInteraction({
   const genAI = getGenAIClient(apiKey);
   const responseFormat = buildResponseFormat(responseSchema, responseMimeType);
 
-  const params: Record<string, unknown> = {
+  const params: Interactions.CreateModelInteractionParamsNonStreaming = {
     model,
-    input,
+    stream: false,
+    input: input as Interactions.CreateModelInteractionParamsNonStreaming['input'],
     ...(store !== undefined ? { store } : {}),
     ...(systemInstruction ? { system_instruction: systemInstruction } : {}),
     ...(previousInteractionId ? { previous_interaction_id: previousInteractionId } : {}),
-    ...(tools && tools.length > 0 ? { tools } : {}),
-    ...(generationConfig ? { generation_config: generationConfig } : {}),
-    ...(responseFormat ? { response_format: responseFormat } : {}),
+    ...(tools && tools.length > 0 ? { tools: tools as Interactions.Tool[] } : {}),
+    ...(generationConfig
+      ? { generation_config: generationConfig as Interactions.GenerationConfig }
+      : {}),
+    ...(responseFormat
+      ? {
+          response_format: responseFormat as Interactions.CreateModelInteractionParamsNonStreaming['response_format'],
+        }
+      : {}),
   };
 
-  const options = abortSignal
-    ? { fetch_options: { signal: abortSignal } }
-    : undefined;
-
-  const interactionsClient = genAI.interactions as unknown as {
-    create: (
-      createParams: Record<string, unknown>,
-      createOptions?: { fetch_options?: { signal?: AbortSignal } },
-    ) => Promise<InteractionResult>;
-  };
-
-  const interaction = await interactionsClient.create(params, options);
+  const interaction = await genAI.interactions.create(
+    params,
+    abortSignal ? { fetchOptions: { signal: abortSignal } } : undefined,
+  ) as Interactions.Interaction;
   recordGeminiUsage(interaction);
-  return interaction;
+  return {
+    id: interaction.id,
+    status: interaction.status,
+    steps: interaction.steps as InteractionStep[] | undefined,
+    output_text: interaction.output_text,
+  };
 }

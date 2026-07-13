@@ -416,6 +416,66 @@ export function buildPresetPrompt(preset: ExtractionPreset): string {
   ].join('\n\n');
 }
 
+function fieldValueSchema(rule: ExtractionRule): Record<string, unknown> {
+  const nullSchema = { type: 'null' };
+  if (rule.type === 'list') {
+    return { anyOf: [{ type: 'array', items: { type: 'string' } }, nullSchema] };
+  }
+  if (rule.type === 'boolean') {
+    return { anyOf: [{ type: 'boolean' }, { type: 'string' }, nullSchema] };
+  }
+  if (rule.type === 'number' || rule.type === 'currency') {
+    return { anyOf: [{ type: 'number' }, { type: 'string' }, nullSchema] };
+  }
+  return { anyOf: [{ type: 'string' }, nullSchema] };
+}
+
+function buildPresetResponseSchema(preset: ExtractionPreset): Record<string, unknown> {
+  const fieldProperties = Object.fromEntries(
+    preset.rules.map((rule) => [
+      rule.field,
+      {
+        type: 'object',
+        additionalProperties: false,
+        required: ['value', 'confidence'],
+        properties: {
+          value: fieldValueSchema(rule),
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+        },
+      },
+    ]),
+  );
+  const rowProperties = Object.fromEntries(
+    (preset.tableColumns ?? []).map((column) => [column, { type: 'string' }]),
+  );
+
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: ['documentType', 'summary', 'fields', 'warnings'],
+    properties: {
+      documentType: { type: 'string' },
+      summary: { type: 'string' },
+      fields: {
+        type: 'object',
+        additionalProperties: false,
+        required: preset.rules.map((rule) => rule.field),
+        properties: fieldProperties,
+      },
+      rows: {
+        type: 'array',
+        maxItems: MAX_ROWS,
+        items: {
+          type: 'object',
+          additionalProperties: preset.tableColumns?.length ? false : { type: 'string' },
+          properties: rowProperties,
+        },
+      },
+      warnings: { type: 'array', items: { type: 'string' } },
+    },
+  };
+}
+
 export async function runExtractionPreset(
   fileData: string,
   mimeType: string,
@@ -443,6 +503,7 @@ export async function runExtractionPreset(
     let generationConfig: Record<string, unknown> = {
       maxOutputTokens: 16384,
       responseMimeType: 'application/json',
+      responseJsonSchema: buildPresetResponseSchema(preset),
       mediaResolution: generateContentMediaResolution(mimeType),
     };
 
@@ -474,11 +535,14 @@ export async function runExtractionPreset(
         config: generationConfig,
       });
 
+      let lastChunk: unknown;
       for await (const chunk of stream) {
+        lastChunk = chunk;
         const chunkText = chunk.text || '';
         rawText += chunkText;
         callbacks.onProgress?.(chunkText);
       }
+      recordGeminiUsage(lastChunk);
     } else {
       const response = await genAI.models.generateContent({
         model,

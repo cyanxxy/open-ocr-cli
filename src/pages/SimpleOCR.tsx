@@ -157,7 +157,7 @@ export default function SimpleOCR() {
             className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-semibold tracking-tight text-stone-900 dark:text-stone-100 mb-4"
             style={{ fontFamily: "'Playfair Display', Georgia, serif" }}
           >
-            Text <em className="font-normal italic">Extraction</em>
+            Simple <em className="font-normal italic">OCR</em>
           </h1>
 
           <p

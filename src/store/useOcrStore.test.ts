@@ -3,13 +3,23 @@ import { useOcrStore } from './useOcrStore';
 import { useSettingsStore } from './useSettingsStore';
 import type { ExtractedContent } from '../lib/gemini';
 import * as geminiModule from '../lib/gemini';
+import * as fileUtilsModule from '../lib/fileUtils';
 
 // Mock the gemini module
 vi.mock('../lib/gemini', () => ({
   extractTextFromFile: vi.fn(),
 }));
 
+vi.mock('../lib/fileUtils', async () => {
+  const actual = await vi.importActual<typeof import('../lib/fileUtils')>('../lib/fileUtils');
+  return {
+    ...actual,
+    validateFileForProcessing: vi.fn(),
+  };
+});
+
 const mockExtractTextFromFile = vi.mocked(geminiModule.extractTextFromFile);
+const mockValidateFileForProcessing = vi.mocked(fileUtilsModule.validateFileForProcessing);
 
 // Create a proper FileReader mock class
 class MockFileReader {
@@ -62,6 +72,7 @@ describe('useOcrStore', () => {
   });
 
   beforeEach(() => {
+    mockValidateFileForProcessing.mockResolvedValue({ valid: true });
     // Setup FileReader mock
     globalThis.FileReader = MockFileReader as unknown as typeof FileReader;
     Object.defineProperty(window, 'FileReader', {

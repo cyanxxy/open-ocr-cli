@@ -278,7 +278,7 @@ export default function AgenticOCR() {
             className="text-3xl sm:text-4xl lg:text-5xl font-semibold text-stone-900 dark:text-stone-100 mb-4 tracking-tight"
             style={{ fontFamily: editorial.fonts.heading }}
           >
-            Digital <em className="font-normal">Correspondent</em>
+            Agentic <em className="font-normal">OCR</em>
           </h1>
 
           {/* Subtitle */}

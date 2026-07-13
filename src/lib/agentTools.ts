@@ -9,6 +9,7 @@ import {
 } from './agentSchema';
 import { applyThinkingConfig, generateContentMediaResolution, getGenAIClient, isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
 import { parseJsonPayload } from './gemini/structured';
+import { recordGeminiUsage } from './gemini/usage';
 import { assertNormalizedRegion, cropDocumentRegion } from './regionRaster';
 
 // Runtime validation helpers for Gemini function call args
@@ -246,6 +247,40 @@ export async function executeReOcrRegion(
     let generationConfig: Record<string, unknown> = {
       maxOutputTokens: 8192,
       responseMimeType: 'application/json',
+      responseJsonSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['fields'],
+        properties: {
+          fields: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['field_name', 'field_value', 'confidence'],
+              properties: {
+                field_name: { type: 'string' },
+                field_value: { type: 'string' },
+                confidence: { type: 'number', minimum: 0, maximum: 1 },
+                validation_rule: { type: 'string' },
+                location: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['page', 'x', 'y', 'width', 'height', 'units'],
+                  properties: {
+                    page: { type: 'integer', minimum: 1 },
+                    x: { type: 'number', minimum: 0, maximum: 1 },
+                    y: { type: 'number', minimum: 0, maximum: 1 },
+                    width: { type: 'number', minimum: 0, maximum: 1 },
+                    height: { type: 'number', minimum: 0, maximum: 1 },
+                    units: { type: 'string', enum: ['normalized'] },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       mediaResolution: generateContentMediaResolution(croppedRegion.mimeType),
     };
 
@@ -291,6 +326,7 @@ export async function executeReOcrRegion(
       }],
       config: generationConfig,
     });
+    recordGeminiUsage(response);
 
     const rawFields = parseRegionFieldPayload(response.text || '');
     const filteredFields = rawFields.filter((entry) => {

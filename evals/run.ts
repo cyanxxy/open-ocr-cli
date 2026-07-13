@@ -148,7 +148,6 @@ async function runAgenticEvalCase(evalCase: EvalCase, clientConfig: AgentClientC
     {
       maxIterations: evalCase.agentConfig?.maxIterations ?? 4,
       confidenceThreshold: evalCase.agentConfig?.confidenceThreshold ?? 0.65,
-      temperature: 1,
       maxTokens: 4096,
     },
   );
@@ -252,8 +251,9 @@ function resolveThinkingLevel(model: GeminiModel): ThinkingLevel {
     return envLevel as ThinkingLevel;
   }
 
-  // Prefer medium for 3.5 Flash (API default); low for Pro eval speed.
-  return isFlashFamily ? 'MEDIUM' : 'LOW';
+  if (model === 'gemini-3.1-flash-lite') return 'MINIMAL';
+  if (model === 'gemini-3.5-flash') return 'MEDIUM';
+  return 'HIGH';
 }
 
 async function main() {

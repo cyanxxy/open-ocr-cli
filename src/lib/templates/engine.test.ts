@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const { mockTemplateGenerateContent } = vi.hoisted(() => ({
+  mockTemplateGenerateContent: vi.fn(),
+}));
+
 import type { ExtractionPreset, PresetStructuredOutput } from '../gemini/types';
 import { buildPresetCsv, buildPresetMarkdown, buildPresetPrompt, normalizeFieldValue, runExtractionPreset } from './engine';
 import { getExtractionPreset } from './presets';
@@ -16,19 +20,22 @@ let mockModelPayload: unknown = {
   rows: [],
 };
 
+mockTemplateGenerateContent.mockImplementation(async () => {
+  await Promise.resolve();
+  return { text: JSON.stringify(mockModelPayload) };
+});
+
 vi.mock('@google/genai', () => ({
   GoogleGenAI: class {
     models = {
-      generateContent: vi.fn(async () => ({
-        text: JSON.stringify(mockModelPayload),
-      })),
+      generateContent: mockTemplateGenerateContent,
     };
   },
 }));
 
 const testClientConfig = {
   apiKey: 'test-key',
-  model: 'gemini-3-flash-preview' as const,
+  model: 'gemini-3.5-flash' as const,
   thinkingConfig: { level: 'MINIMAL' as const, includeThoughts: false },
 };
 
@@ -108,7 +115,7 @@ describe('template engine helpers', () => {
       'application/pdf',
       {
         apiKey: 'test-key',
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3.5-flash',
         thinkingConfig: { level: 'MINIMAL', includeThoughts: false },
       },
       preset,
@@ -116,6 +123,16 @@ describe('template engine helpers', () => {
 
     expect(result.json.fields.total?.value).toBe('1471.50');
     expect(result.json.fields.currency?.value).toBe('USD');
+    expect(mockTemplateGenerateContent).toHaveBeenLastCalledWith(expect.objectContaining({
+      model: 'gemini-3.5-flash',
+      config: expect.objectContaining({
+        responseMimeType: 'application/json',
+        responseJsonSchema: expect.objectContaining({
+          type: 'object',
+          required: ['documentType', 'summary', 'fields', 'warnings'],
+        }),
+      }),
+    }));
   });
 });
 

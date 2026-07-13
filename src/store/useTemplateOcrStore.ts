@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { createAbortController, createBaseOcrSlice, createRunId, handleOcrError, type BaseOcrStore } from './base/BaseOcrStore';
-import { readFileAsDataUrl, validateFile } from '../lib/fileUtils';
+import { readFileAsDataUrl, validateFileForProcessing } from '../lib/fileUtils';
 import { logger } from '../lib/logger';
 import { useSettingsStore } from './useSettingsStore';
 import { getExtractionPreset, runExtractionPreset } from '../lib/templates';
@@ -37,7 +37,7 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
       getExtractionPreset(presetId);
     } catch (error) {
       set({
-        error: handleOcrError(error, 'Unknown template preset'),
+        error: handleOcrError(error, 'Template not found'),
       });
       return;
     }
@@ -53,7 +53,7 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
   },
 
   processFile: async (file, apiKey) => {
-    const validation = validateFile(file);
+    const validation = await validateFileForProcessing(file);
     if (!validation.valid) {
       set({ error: validation.error || 'Invalid file', isProcessing: false });
       return;
@@ -69,7 +69,7 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
       preset = getExtractionPreset(get().presetId);
     } catch (error) {
       set({
-        error: handleOcrError(error, 'Unknown template preset'),
+        error: handleOcrError(error, 'Template not found'),
         isProcessing: false,
       });
       return;
@@ -135,7 +135,7 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
             }
 
             set({
-              error: handleOcrError(error, 'Template extraction failed'),
+              error: handleOcrError(error, 'Could not extract this document'),
               isProcessing: false,
               progress: 0,
               abortController: null,
@@ -151,7 +151,7 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
 
       if (abortController.signal.aborted || (error instanceof Error && error.message === 'Extraction cancelled')) {
         set({
-          error: 'Extraction cancelled',
+          error: null,
           isProcessing: false,
           progress: 0,
           abortController: null,
@@ -161,7 +161,7 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
       }
 
       set({
-        error: handleOcrError(error, 'Failed to process template'),
+        error: handleOcrError(error, 'Could not extract this document'),
         isProcessing: false,
         progress: 0,
         abortController: null,
@@ -175,7 +175,7 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
     if (abortController) {
       set({
         isProcessing: false,
-        error: 'Extraction cancelled',
+        error: null,
         progress: 0,
         abortController: null,
         activeRunId: null,
@@ -208,7 +208,7 @@ export const useTemplateOcrStore = create<TemplateOcrStore>((set, get) => ({
         : result.csv;
 
     if (!artifact) {
-      set({ error: `No ${kind.toUpperCase()} artifact available for this preset run.` });
+      set({ error: `${kind.toUpperCase()} is not available for this template.` });
       return;
     }
 

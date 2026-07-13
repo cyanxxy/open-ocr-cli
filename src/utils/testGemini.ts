@@ -34,13 +34,12 @@ export async function testGemini(apiKey: string, model: ModelType = 'gemini-3.5-
   const timeout = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
 
   try {
-    // Reuse the shared (single-entry) client and a deterministic minimal prompt.
+    // Reuse the shared client and keep Gemini 3's recommended default temperature.
     const ai = getGenAIClient(apiKey.trim());
     const response = await ai.models.generateContent({
       model,
       contents: 'Reply with exactly: OK',
       config: {
-        temperature: 0,
         maxOutputTokens: 64,
         abortSignal: controller.signal,
       }
@@ -101,4 +100,3 @@ export async function testGemini(apiKey: string, model: ModelType = 'gemini-3.5-
     clearTimeout(timeout);
   }
 }
-

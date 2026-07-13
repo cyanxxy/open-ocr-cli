@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../lib/fileUtils', () => ({
   readFileAsDataUrl: vi.fn(),
   validateFile: vi.fn(),
-  validateFileMagicBytes: vi.fn(),
+  validateFileForProcessing: vi.fn(),
   generateUuid: vi.fn(),
   BULK_LIMITS: {
     MAX_FILES: 200,
@@ -25,7 +25,7 @@ import { useSettingsStore } from './useSettingsStore';
 const mockExtractTextFromFile = vi.mocked(extractionModule.extractTextFromFile);
 const mockReadFileAsDataUrl = vi.mocked(fileUtilsModule.readFileAsDataUrl);
 const mockValidateFile = vi.mocked(fileUtilsModule.validateFile);
-const mockValidateFileMagicBytes = vi.mocked(fileUtilsModule.validateFileMagicBytes);
+const mockValidateFileMagicBytes = vi.mocked(fileUtilsModule.validateFileForProcessing);
 const mockGenerateUuid = vi.mocked(fileUtilsModule.generateUuid);
 
 const makeFile = (name: string, size = 100): File => {

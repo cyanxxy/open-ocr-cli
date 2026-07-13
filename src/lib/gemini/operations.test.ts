@@ -51,11 +51,14 @@ describe('extractTextFromUrls', () => {
         ['https://example.com', 'https://example.org'],
         'test-api-key',
         'comparison',
-        'gemini-3-flash-preview',
+        'gemini-3.5-flash',
       ),
     ).resolves.toEqual({
       comparisonAnalysis: 'Verified comparison output',
     });
+    expect(mockRunModelInteraction).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'gemini-3.5-flash',
+    }));
   });
 
   it('fails closed when URL-context results are missing', async () => {
@@ -104,6 +107,50 @@ describe('extractTextFromUrls', () => {
       ),
     ).rejects.toThrow(
       'Grounded URL retrieval failed for https://example.org (error). Web OCR only returns content when URL-context retrieval reports success for every URL; it does not guess content.',
+    );
+  });
+
+  it('fails closed when successful URL-context metadata belongs to another URL', async () => {
+    mockRunModelInteraction.mockResolvedValueOnce({
+      id: 'interaction-url-mismatch',
+      status: 'completed',
+      steps: [
+        urlContextResult(['https://example.com', 'https://unexpected.example']),
+        { type: 'model_output', content: [{ type: 'text', text: 'Unverified comparison' }] },
+      ],
+    });
+
+    await expect(
+      extractTextFromUrls(
+        ['https://example.com', 'https://example.org'],
+        'test-api-key',
+        'comparison',
+        'gemini-3-flash-preview',
+      ),
+    ).rejects.toThrow(
+      'Grounded URL retrieval verified an unexpected URL (https://unexpected.example).',
+    );
+  });
+
+  it('fails closed when URL-context metadata duplicates one requested URL', async () => {
+    mockRunModelInteraction.mockResolvedValueOnce({
+      id: 'interaction-url-duplicate',
+      status: 'completed',
+      steps: [
+        urlContextResult(['https://example.com', 'https://example.com']),
+        { type: 'model_output', content: [{ type: 'text', text: 'Unverified comparison' }] },
+      ],
+    });
+
+    await expect(
+      extractTextFromUrls(
+        ['https://example.com', 'https://example.org'],
+        'test-api-key',
+        'comparison',
+        'gemini-3-flash-preview',
+      ),
+    ).rejects.toThrow(
+      'Grounded URL retrieval returned a duplicate result for https://example.com.',
     );
   });
 

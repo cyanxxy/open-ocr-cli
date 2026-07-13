@@ -3,21 +3,21 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 
 vi.mock('../lib/fileUtils', () => ({
   readFileAsDataUrl: vi.fn(),
-  validateFile: vi.fn(),
+  validateFileForProcessing: vi.fn(),
 }));
 
 import * as fileUtils from '../lib/fileUtils';
 import { useImageUpload } from './useImageUpload';
 
 const mockReadFileAsDataUrl = vi.mocked(fileUtils.readFileAsDataUrl);
-const mockValidateFile = vi.mocked(fileUtils.validateFile);
+const mockValidateFile = vi.mocked(fileUtils.validateFileForProcessing);
 
 const makeFile = (name: string): File => new File(['x'], name, { type: 'image/png' });
 
 describe('useImageUpload', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockValidateFile.mockReturnValue({ valid: true });
+    mockValidateFile.mockResolvedValue({ valid: true });
   });
 
   it('keeps the latest file when an earlier slow read resolves last (audit B-08)', async () => {
@@ -38,9 +38,15 @@ describe('useImageUpload', () => {
 
     // Start processing A (slow), then B (fast) before A resolves.
     let pA: Promise<void>;
-    let pB: Promise<void>;
     act(() => {
       pA = result.current.handleDrop([fileA]);
+    });
+    await waitFor(() => {
+      expect(mockReadFileAsDataUrl).toHaveBeenCalledWith(fileA);
+    });
+
+    let pB: Promise<void>;
+    act(() => {
       pB = result.current.handleDrop([fileB]);
     });
 
@@ -81,6 +87,10 @@ describe('useImageUpload', () => {
       pA = result.current.handleDrop([fileA]);
     });
 
+    await waitFor(() => {
+      expect(mockReadFileAsDataUrl).toHaveBeenCalledWith(fileA);
+    });
+
     // Reset invalidates the in-flight read.
     act(() => {
       result.current.reset();
@@ -111,7 +121,7 @@ describe('useImageUpload', () => {
 
   it('surfaces validation errors via onError', async () => {
     const onError = vi.fn();
-    mockValidateFile.mockReturnValue({ valid: false, error: 'File "x.png" is empty.' });
+    mockValidateFile.mockResolvedValue({ valid: false, error: 'File "x.png" is empty.' });
 
     const { result } = renderHook(() => useImageUpload({ onError }));
 

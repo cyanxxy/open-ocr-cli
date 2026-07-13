@@ -57,7 +57,7 @@ The application stores your API key in the browser's localStorage using XOR encr
 ### Content Security
 
 - The application processes images and PDFs locally before sending to the Gemini API
-- File size is limited by MIME type: 100MB for images, 50MB for PDFs (Gemini document limits)
+- File size is limited by MIME type: 70MB raw for inline images (safe below the 100MB payload ceiling after base64), 50MB and 1,000 pages for PDFs
 - Only supported file types (images, PDFs) are accepted
 
 ## Security Features

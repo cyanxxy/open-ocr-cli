@@ -21,7 +21,7 @@ export function Header({ apiKey, onOpenSettings }: HeaderProps) {
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6">
         {/* Main header row */}
-        <div className="flex items-center justify-between h-16 sm:h-20">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 py-2 md:flex md:h-20 md:justify-between md:py-0">
 
           {/* Logo & Masthead */}
           <Link
@@ -98,7 +98,7 @@ export function Header({ apiKey, onOpenSettings }: HeaderProps) {
           </Link>
 
           {/* Right side: Nav + Settings */}
-          <div className="flex items-center gap-2 sm:gap-3 md:gap-4">
+          <div className="contents md:flex md:items-center md:gap-4">
 
             {/* Desktop Navigation */}
             <nav
@@ -126,7 +126,7 @@ export function Header({ apiKey, onOpenSettings }: HeaderProps) {
 
             {/* Mobile Navigation - Compact pills */}
             <nav
-              className="flex md:hidden items-center gap-0.5 p-0.5 rounded-lg bg-stone-100/80 dark:bg-stone-900/80 border border-stone-200/60 dark:border-stone-800/60"
+              className="col-span-2 row-start-2 grid w-full grid-cols-5 gap-1 rounded-xl border border-stone-200/60 bg-stone-100/80 p-1 dark:border-stone-800/60 dark:bg-stone-900/80 md:hidden"
               role="navigation"
               aria-label="Main navigation"
             >
@@ -154,7 +154,7 @@ export function Header({ apiKey, onOpenSettings }: HeaderProps) {
               type="button"
               onClick={onOpenSettings}
               className={cn(
-                "relative flex items-center justify-center gap-1.5 sm:gap-2 rounded-lg sm:rounded-xl text-xs sm:text-sm font-medium",
+                "relative col-start-2 row-start-1 flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-xl text-xs font-medium sm:gap-2 sm:text-sm",
                 "transition-all duration-200 ease-out",
                 "focus:outline-none focus:ring-2 focus:ring-offset-2",
                 "active:scale-95",
@@ -238,7 +238,7 @@ function MobileNavLink({ to, isActive, ariaLabel, children }: MobileNavLinkProps
     <Link
       to={to}
       className={cn(
-        "flex items-center justify-center w-9 h-9 rounded-md",
+        "flex min-h-11 w-full items-center justify-center rounded-lg",
         "transition-all duration-200 motion-reduce:transition-none",
         isActive
           ? "bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 shadow-sm"

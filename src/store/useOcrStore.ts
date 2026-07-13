@@ -7,7 +7,7 @@ import {
 } from '../lib/gemini/index';
 import { useSettingsStore } from './useSettingsStore';
 import { logger } from '../lib/logger';
-import { validateFile, readFileAsDataUrl } from '../lib/fileUtils';
+import { validateFileForProcessing, readFileAsDataUrl } from '../lib/fileUtils';
 import {
   BaseOcrStore,
   createBaseOcrSlice,
@@ -75,7 +75,7 @@ const useOcrStoreBase = create<OcrState>()(
 
   // OCR-specific actions
   processFile: async (file: File, apiKey: string, handwritingMode: boolean) => {
-    const validation = validateFile(file);
+    const validation = await validateFileForProcessing(file);
     if (!validation.valid) {
       set({ error: validation.error || 'Invalid file', isProcessing: false });
       return;

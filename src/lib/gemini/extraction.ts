@@ -113,6 +113,56 @@ function wantsJsonOutput(options?: ExtractionOptions): boolean {
  * audit G-03). Callers needing more pass `options.maxTokens` explicitly. */
 const DEFAULT_MAX_OUTPUT_TOKENS = 32768;
 
+const EXTRACTED_CONTENT_RESPONSE_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['sections'],
+  properties: {
+    title: { type: 'string' },
+    sections: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['content'],
+        properties: {
+          heading: { type: 'string' },
+          content: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+    content: { type: 'string' },
+    headings: { type: 'array', items: { type: 'string' } },
+    tables: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['headers', 'rows', 'content'],
+        properties: {
+          headers: { type: 'array', items: { type: 'string' } },
+          rows: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
+          content: { type: 'string' },
+        },
+      },
+    },
+    code: { type: 'array', items: { type: 'string' } },
+    lists: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['type', 'items'],
+        properties: {
+          type: { type: 'string', enum: ['ordered', 'unordered'] },
+          items: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+    markdown: { type: 'string' },
+  },
+};
+
 /**
  * Build generation configuration for Gemini preview API calls
  */
@@ -130,6 +180,7 @@ function buildGenerationConfig(
 
   if (wantsJsonOutput(options)) {
     config.responseMimeType = 'application/json';
+    config.responseJsonSchema = EXTRACTED_CONTENT_RESPONSE_SCHEMA;
   }
 
   if (options?.abortSignal) {
@@ -330,6 +381,7 @@ export async function extractTextFromFile(
       // Streaming does not always attach finish metadata on the final chunk;
       // still reject obvious safety blocks when present.
       if (lastChunk) {
+        recordGeminiUsage(lastChunk);
         assertUsableResponse(lastChunk);
       }
       const finalContent = coerceExtractionResult(fullText, wantsJson);

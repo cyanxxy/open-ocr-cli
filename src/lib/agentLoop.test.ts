@@ -29,7 +29,6 @@ const FIXTURE_DATA = 'data:application/pdf;base64,ZmFrZQ==';
 // Zero out the backoff/pause so retry behavior is exercised without real waits.
 const BASE_CONFIG = {
   confidenceThreshold: 0.8,
-  temperature: 1,
   maxTokens: 1024,
   retryBaseDelayMs: 0,
   iterationPauseMs: 0,
@@ -137,14 +136,14 @@ describe('agentLoop', () => {
   it('reports success only when readiness criteria are met', async () => {
     // The model stops calling tools AND the runtime's deterministic criteria
     // (a valid field + confidence >= threshold) are satisfied (audit C-03).
-    mockExecuteAgentTurn.mockImplementation(async (...args: unknown[]) => {
-      const memory = args[6] as AgentMemory;
+    mockExecuteAgentTurn.mockImplementation((...args: unknown[]) => {
+      const memory = args[7] as AgentMemory;
       memory.extractedFields.note = { value: 'hello', confidence: 0.9, isValid: true, extractedAt: 1 };
       memory.confidence = 0.9;
-      return {
+      return Promise.resolve({
         finished: true,
         steps: [{ type: 'thinking', content: 'No more tool calls are needed.', timestamp: 1 }],
-      };
+      });
     });
 
     const { steps, memory } = await drainLoop(agentLoop(

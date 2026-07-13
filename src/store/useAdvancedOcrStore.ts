@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { extractTextFromFile } from '../lib/gemini/extraction';
 import type { ExtractedContent } from '../lib/gemini/types';
-import { validateFile, validateFileMagicBytes, readFileAsDataUrl, BULK_LIMITS, generateUuid } from '../lib/fileUtils';
+import { validateFile, validateFileForProcessing, readFileAsDataUrl, BULK_LIMITS, generateUuid } from '../lib/fileUtils';
 import { useSettingsStore } from './useSettingsStore';
 import { logger } from '../lib/logger';
 import { createSelectors } from './createSelectors';
@@ -282,7 +282,7 @@ const useAdvancedOcrStoreBase = create<AdvancedOcrState>()(
       try {
         // Verify the bytes match the declared type before spending an API call
         // (audit B-04). A spoofed file is recorded as a failed result.
-        const magicCheck = await validateFileMagicBytes(trackedFile.file);
+        const magicCheck = await validateFileForProcessing(trackedFile.file);
         if (!isCurrentRun() || abortController.signal.aborted) {
           return;
         }

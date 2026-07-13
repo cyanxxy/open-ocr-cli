@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import { validateFile, readFileAsDataUrl } from '../lib/fileUtils';
+import { validateFileForProcessing, readFileAsDataUrl } from '../lib/fileUtils';
 import { logger } from '../lib/logger';
 
 interface UseImageUploadOptions {
@@ -54,7 +54,10 @@ export function useImageUpload(options?: UseImageUploadOptions): UseImageUploadR
 
     try {
       // Validate file
-      const validation = validateFile(file);
+      const validation = await validateFileForProcessing(file);
+      if (!isCurrent()) {
+        return;
+      }
       if (!validation.valid) {
         throw new Error(validation.error || 'Invalid file');
       }

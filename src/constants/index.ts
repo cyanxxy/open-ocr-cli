@@ -3,20 +3,22 @@
  */
 
 // File upload constraints (MIME-specific Gemini inline limits).
-// Images: up to 100MB inline. PDFs: 50MB (document processing limit).
+// Images: 70MB raw, leaving room for base64 expansion plus prompt/JSON overhead
+// under the current 100MB inline payload ceiling. PDFs: 50MB / 1,000 pages.
 export const FILE_CONSTRAINTS = {
   /** Absolute max for any single non-PDF file (images). */
-  MAX_IMAGE_SIZE: 100 * 1024 * 1024,
-  MAX_IMAGE_SIZE_LABEL: '100MB',
+  MAX_IMAGE_SIZE: 70 * 1024 * 1024,
+  MAX_IMAGE_SIZE_LABEL: '70MB',
   /** PDF document limit per Gemini document-processing guidance. */
   MAX_PDF_SIZE: 50 * 1024 * 1024,
   MAX_PDF_SIZE_LABEL: '50MB',
+  MAX_PDF_PAGES: 1000,
   /**
    * Absolute max across MIME types (images). Prefer MAX_IMAGE_SIZE / MAX_PDF_SIZE
    * for validation; kept for callers that need a single upper bound.
    */
-  MAX_SIZE: 100 * 1024 * 1024,
-  MAX_SIZE_LABEL: '100MB',
+  MAX_SIZE: 70 * 1024 * 1024,
+  MAX_SIZE_LABEL: '70MB',
   SUPPORTED_IMAGE_MIME_TYPES: [
     'image/png',
     'image/jpeg',
