@@ -1,0 +1,15 @@
+{
+  "model": "gemini-3.5-flash",
+  "thinking": "MEDIUM",
+  "concurrency": 4,
+  "retries": 3,
+  "timeoutSeconds": 180,
+  "maxFiles": 5000,
+  "maxTotalMb": 20480,
+  "resume": true,
+  "format": "json",
+  "exclude": [
+    "**/archive/**",
+    "**/.*/**"
+  ]
+}

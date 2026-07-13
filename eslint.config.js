@@ -7,7 +7,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   // Global ignores
-  { ignores: ['dist', '**/dist/**', 'coverage', '**/coverage/**', 'node_modules', '.claude/**', '*.config.js', 'src/setupTests.ts'] },
+  { ignores: ['dist', 'dist-cli', '**/dist/**', 'coverage', '**/coverage/**', 'node_modules', '.claude/**', '*.config.js', 'src/setupTests.ts'] },
 
   // Base configuration for all JS/TS files. Type-aware linting is enabled via
   // `projectService` + `recommendedTypeChecked` (audit M-08). Newly-surfaced
@@ -75,6 +75,16 @@ export default tseslint.config(
   {
     files: ['*.config.{js,ts}', 'eslint.config.js', 'evals/**/*.{ts,tsx}'],
     extends: [tseslint.configs.disableTypeChecked],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
+
+  // The CLI has its own strict TypeScript project and runs in Node.js.
+  {
+    files: ['src/cli/**/*.{ts,tsx}'],
     languageOptions: {
       globals: {
         ...globals.node,

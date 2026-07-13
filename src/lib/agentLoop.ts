@@ -1,6 +1,7 @@
 import { type Content } from '@google/genai';
 import {
   AgentClientConfig,
+  AgentDocumentInput,
   AgentInteractionState,
   AgentLoopConfig,
   AgentMemory,
@@ -78,7 +79,7 @@ function describeStopReason(reason: AgentStopReason, memory: AgentMemory): strin
  * stateful `previous_interaction_id` chaining.
  */
 export async function* agentLoop(
-  file: File,
+  file: AgentDocumentInput,
   fileData: string,
   clientConfig: AgentClientConfig,
   config: Partial<AgentLoopConfig> = {},

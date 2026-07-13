@@ -10,7 +10,7 @@ import {
 import { applyThinkingConfig, generateContentMediaResolution, getGenAIClient, isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
 import { parseJsonPayload } from './gemini/structured';
 import { recordGeminiUsage } from './gemini/usage';
-import { assertNormalizedRegion, cropDocumentRegion } from './regionRaster';
+import { assertNormalizedRegion } from './normalizedRegion';
 
 // Runtime validation helpers for Gemini function call args
 
@@ -237,7 +237,10 @@ export async function executeReOcrRegion(
       ? explicitTargetFields
       : readiness.missingRequiredFields;
     const schema = getAgentDocumentSchema(memory.documentAnalysis.documentType);
-    const croppedRegion = await cropDocumentRegion(fileData, mimeType, region);
+    if (!clientConfig.regionCropper) {
+      throw new Error('Region refinement is not configured for this runtime');
+    }
+    const croppedRegion = await clientConfig.regionCropper(fileData, mimeType, region);
     const base64Data = croppedRegion.dataUrl.split(',')[1];
     if (!base64Data) {
       throw new Error('Failed to generate cropped region image for refinement');

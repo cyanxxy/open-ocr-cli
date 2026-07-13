@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.4.0 - 2026-07-13
+
+### Batch command-line interface
+
+- Added the `gemini-ocr` TypeScript CLI for files, recursive directories, globs,
+  binary stdin, and grounded public URLs using the same simple, template, Web,
+  bulk, and agentic engines as the web app.
+- Added bounded concurrency, transient retries, per-document timeouts, safety
+  budgets, resumable manifests, collision-safe output, dry runs, and fail-fast mode.
+- Added Markdown, JSON, CSV, combined artifact, and JSONL pipeline output with
+  aggregate token usage and machine-readable batch summaries.
+- Added native Node image/PDF region rasterization so agentic re-OCR works outside
+  the browser without changing the shared agent loop.
+- Added user/project configuration files, environment-based credentials, model and
+  preset discovery, diagnostics, npm executable packaging, and CLI test coverage.
+- Hardened partial-result resume, dry-run validation, fail-fast accounting,
+  configuration allowlisting, per-document input failures, and native PDF global
+  isolation before release.
+
+[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v1.3.0...v1.4.0)
+
 ## 1.3.0 - 2026-07-13
 
 ### Current Gemini model and API support

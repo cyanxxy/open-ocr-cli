@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGenerateContent, mockCropDocumentRegion } = vi.hoisted(() => ({
+const { mockGenerateContent, mockRegionCropper } = vi.hoisted(() => ({
   mockGenerateContent: vi.fn(),
-  mockCropDocumentRegion: vi.fn(),
+  mockRegionCropper: vi.fn(),
 }));
 
 vi.mock('@google/genai', async () => {
@@ -15,15 +15,6 @@ vi.mock('@google/genai', async () => {
         generateContent: mockGenerateContent,
       };
     },
-  };
-});
-
-vi.mock('./regionRaster', async () => {
-  const actual = await vi.importActual<typeof import('./regionRaster')>('./regionRaster');
-
-  return {
-    ...actual,
-    cropDocumentRegion: mockCropDocumentRegion,
   };
 });
 
@@ -80,8 +71,8 @@ const totalRegion: NormalizedRegion = {
 describe('agentTools', () => {
   beforeEach(() => {
     mockGenerateContent.mockReset();
-    mockCropDocumentRegion.mockReset();
-    mockCropDocumentRegion.mockResolvedValue({
+    mockRegionCropper.mockReset();
+    mockRegionCropper.mockResolvedValue({
       dataUrl: 'data:image/png;base64,Y3JvcA==',
       mimeType: 'image/png',
       width: 160,
@@ -231,10 +222,11 @@ describe('agentTools', () => {
           level: 'MINIMAL',
           includeThoughts: false,
         },
+        regionCropper: mockRegionCropper,
       },
     );
 
-    expect(mockCropDocumentRegion).toHaveBeenCalledWith(
+    expect(mockRegionCropper).toHaveBeenCalledWith(
       'data:application/pdf;base64,ZmFrZQ==',
       'application/pdf',
       totalRegion,
@@ -275,11 +267,26 @@ describe('agentTools', () => {
       {
         apiKey: 'test-key',
         model: 'gemini-3-flash-preview',
+        regionCropper: mockRegionCropper,
       },
     );
 
-    expect(mockCropDocumentRegion).not.toHaveBeenCalled();
+    expect(mockRegionCropper).not.toHaveBeenCalled();
     expect(result.success).toBe(false);
     expect(result.error).toContain('"region" must be a normalized region object');
+  });
+
+  it('fails closed when region refinement is not configured for the runtime', async () => {
+    const result = await executeReOcrRegion(
+      { region: totalRegion, focus: 'invoice total' },
+      'data:application/pdf;base64,ZmFrZQ==',
+      'application/pdf',
+      createMemory('invoice'),
+      { apiKey: 'test-key', model: 'gemini-3-flash-preview' },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Region refinement is not configured');
+    expect(mockGenerateContent).not.toHaveBeenCalled();
   });
 });

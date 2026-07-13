@@ -44,6 +44,30 @@ export interface NormalizedRegion {
   units: 'normalized';
 }
 
+/** Runtime-neutral result returned by a document region rasterizer. */
+export interface RegionCropResult {
+  dataUrl: string;
+  mimeType: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Runtime adapter used by re-OCR. The web app supplies the browser canvas
+ * implementation; the CLI supplies a native Node implementation.
+ */
+export type RegionCropper = (
+  fileData: string,
+  mimeType: string,
+  region: NormalizedRegion,
+) => Promise<RegionCropResult>;
+
+/** Minimal document descriptor required by the agent loop. */
+export interface AgentDocumentInput {
+  name: string;
+  type: string;
+}
+
 /**
  * Represents a step in the agent's reasoning process
  */
@@ -64,6 +88,8 @@ export interface AgentClientConfig {
   model: GeminiModel;
   thinkingConfig?: ThinkingConfig;
   abortSignal?: AbortSignal;
+  /** Runtime-specific rasterizer for the re_ocr_region tool. */
+  regionCropper?: RegionCropper;
 }
 
 /**

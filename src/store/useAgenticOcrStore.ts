@@ -4,6 +4,7 @@ import { useSettingsStore } from './useSettingsStore';
 import { logger } from '../lib/logger';
 import { AgentMemory, AgentStep, NormalizedRegion } from '../lib/agentTypes';
 import { createAbortController, createRunId } from './base/BaseOcrStore';
+import { cropDocumentRegion } from '../lib/regionRaster';
 
 // --- Type Definitions ---
 
@@ -417,6 +418,7 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
             includeThoughts: thinkingConfig.includeThoughts,
           },
           abortSignal: abortController.signal,
+          regionCropper: cropDocumentRegion,
         },
         {
           maxIterations: config.maxIterations,
