@@ -12,9 +12,11 @@ import type {
   ExtractionInstruction,
   GeminiModel,
   GeminiClientConfig,
+  JsonValue,
   ThinkingConfig
 } from './types';
 import { recordGeminiUsage } from './usage';
+import { waitForGeminiRequestSlot } from './requestPolicy';
 
 /**
  * Helper function to process markdown text into ExtractedContent structure
@@ -96,6 +98,60 @@ function processMarkdownIntoExtractedContent(
   commitSection();
 
   return { title, sections };
+}
+
+/** Extract a document directly into a caller-provided JSON Schema contract. */
+export async function extractStructuredDataFromFile(
+  fileData: string,
+  mimeType: string,
+  clientConfig: GeminiClientConfig,
+  responseJsonSchema: Record<string, unknown>,
+  instructions?: ExtractionInstruction[],
+  options?: Pick<ExtractionOptions, 'abortSignal' | 'maxTokens' | 'detectImages' | 'detectMathEquations'>,
+): Promise<JsonValue> {
+  const { apiKey, model, thinkingConfig } = clientConfig;
+  if (!apiKey) throw new Error('Please configure your Gemini API key in settings');
+
+  const prompt = [
+    'Extract the document into the exact JSON structure described by the response schema.',
+    'Use only information visible in the document. Do not invent missing values.',
+    'Return JSON only, without Markdown fences or commentary.',
+    ...(instructions?.map((instruction) => instruction.prompt) ?? []),
+    ...(options?.detectImages ? ['Include relevant information visible in charts, diagrams, or images.'] : []),
+    ...(options?.detectMathEquations ? ['Represent mathematical expressions accurately.'] : []),
+  ].join(' ');
+  const base64Data = fileData.split(',')[1] || fileData;
+  let generationConfig: Record<string, unknown> = {
+    maxOutputTokens: options?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+    responseMimeType: 'application/json',
+    responseJsonSchema,
+    mediaResolution: generateContentMediaResolution(mimeType),
+  };
+  if (options?.abortSignal) generationConfig.abortSignal = options.abortSignal;
+  generationConfig = applyThinkingConfig(generationConfig, model, thinkingConfig);
+
+  const genAI = getGenAIClient(apiKey);
+  await waitForGeminiRequestSlot(options?.abortSignal);
+  const response = await genAI.models.generateContent({
+    model,
+    contents: [{
+      role: 'user',
+      parts: [
+        { text: prompt },
+        { inlineData: { mimeType, data: base64Data } },
+      ],
+    }],
+    config: generationConfig,
+  });
+  recordGeminiUsage(response, model);
+  assertUsableResponse(response);
+  const text = response.text?.trim() ?? '';
+  if (!text) throw new Error('Schema extraction returned an empty response');
+  try {
+    return JSON.parse(text) as JsonValue;
+  } catch {
+    throw new Error('Schema extraction returned invalid JSON');
+  }
 }
 
 /**
@@ -357,6 +413,7 @@ export async function extractTextFromFile(
     // Handle streaming if callbacks are provided
     if (callbacks) {
       callbacks.onStart?.();
+      await waitForGeminiRequestSlot(options?.abortSignal);
       const result = await genAI.models.generateContentStream({
         model,
         contents,
@@ -381,7 +438,7 @@ export async function extractTextFromFile(
       // Streaming does not always attach finish metadata on the final chunk;
       // still reject obvious safety blocks when present.
       if (lastChunk) {
-        recordGeminiUsage(lastChunk);
+        recordGeminiUsage(lastChunk, model);
         assertUsableResponse(lastChunk);
       }
       const finalContent = coerceExtractionResult(fullText, wantsJson);
@@ -389,13 +446,14 @@ export async function extractTextFromFile(
       return finalContent;
 
     } else {
+      await waitForGeminiRequestSlot(options?.abortSignal);
       const response = await genAI.models.generateContent({
         model,
         contents,
         config: generationConfig
       });
 
-      recordGeminiUsage(response);
+      recordGeminiUsage(response, model);
       assertUsableResponse(response);
       return coerceExtractionResult(response.text || '', wantsJson);
     }

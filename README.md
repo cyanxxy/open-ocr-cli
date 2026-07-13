@@ -107,6 +107,9 @@ gemini-ocr extract invoice.pdf
 ### Common workflows
 
 ```bash
+# Create ./.gemini-ocr.json and validate GEMINI_API_KEY
+gemini-ocr init
+
 # One document to stdout
 gemini-ocr extract document.pdf
 
@@ -124,6 +127,17 @@ gemini-ocr extract ./invoices \
   --preset invoice \
   --format all \
   --output ./invoice-results
+
+# Extract arbitrary structured JSON and validate it against your schema
+gemini-ocr extract invoice.pdf \
+  --schema examples/invoice.schema.json \
+  --output invoice.json
+
+# Bound request starts and stop scheduling when estimated cost reaches $5
+gemini-ocr extract ./documents \
+  --requests-per-minute 60 \
+  --max-cost 5 \
+  --output ./results
 
 # Agentic extraction for difficult scans
 gemini-ocr extract difficult-scan.pdf \
@@ -156,6 +170,11 @@ and PDF.
 | Agentic | `--mode agentic` | Difficult scans that benefit from iterative field recovery | Markdown · JSON · all |
 | Web | `gemini-ocr web` | Grounded extraction from public URLs | Markdown · JSON |
 
+`--schema <path>` is available in simple mode and implies JSON output. The CLI
+validates the schema before making a request, sends it as Gemini structured-output
+configuration, then validates every response locally. Schemas use the supported
+JSON Schema subset; unsupported keywords fail early with a path-specific error.
+
 Use `gemini-ocr presets` to list the installed structured presets and
 `gemini-ocr models` to list accepted model IDs.
 
@@ -163,7 +182,8 @@ For batches, the default output directory is `./gemini-ocr-output`. It contains:
 
 - One artifact per input document, preserving relative directory structure
 - `.gemini-ocr-manifest.json` for safe `--resume` processing
-- `batch-summary.json` with statuses, latency, model, and aggregate token usage
+- `batch-summary.json` with statuses, latency, model, aggregate token usage, and
+  estimated paid-tier cost
 
 Existing artifacts are never replaced unless `--overwrite` is provided. Batch
 processing continues after per-document failures unless `--fail-fast` is used.
@@ -181,6 +201,16 @@ batch-wide file-count and total-size safety budgets still stop discovery early.
 Every batch summary contains one result for every discovered input. When
 `--fail-fast` stops scheduling work, the remainder is recorded as `skipped`
 with zero attempts instead of disappearing from the summary.
+
+`--requests-per-minute` evenly spaces Gemini request starts across the active
+command; it is not a burst-capable sliding window. Queued waits remain immediately
+abortable on timeout or Ctrl-C. `--max-cost` stops scheduling new batch documents
+and blocks the next request in a multi-request or agentic flow once recorded
+paid-tier usage reaches the limit. A single request and already-running concurrent
+requests cannot be stopped based on post-response token metadata, so the final
+estimate can exceed the limit. Estimates use current list prices and reported
+input totals—which already include tool-use input—so separately reported tool
+tokens are not billed twice. Estimates are guidance rather than billing records.
 
 ### Configuration
 
@@ -202,6 +232,8 @@ Example:
   "timeoutSeconds": 180,
   "maxFiles": 5000,
   "maxTotalMb": 20480,
+  "maxCostUsd": 5,
+  "requestsPerMinute": 60,
   "resume": true,
   "format": "json",
   "exclude": ["**/archive/**", "**/.*/**"]
@@ -214,11 +246,17 @@ keys should not be committed to configuration files. Configuration is
 allowlisted: unknown keys are ignored with a warning and are not included in
 `doctor --json` output.
 
+Run `gemini-ocr init` for guided project configuration, or
+`gemini-ocr init --global` for the user configuration. The command stores only
+the environment-variable name, never the API key. Use `--yes` for recommended
+non-interactive defaults and `--skip-validation` to avoid the credential check.
+
 Supported configuration keys are `model`, `thinking`, `includeThoughts`,
 `mode`, `preset`, `format`, `output`, `concurrency`, `retries`,
 `timeoutSeconds`, `maxFiles`, `maxTotalMb`, `resume`, `overwrite`, `failFast`,
 `hidden`, `exclude`, `instructions`, `detectImages`, `detectMath`, `maxTokens`,
 `maxIterations`, `confidenceThreshold`, and `apiKeyEnv`.
+It also accepts `schema`, `maxCostUsd`, and `requestsPerMinute`.
 
 Useful discovery commands:
 
@@ -226,12 +264,14 @@ Useful discovery commands:
 gemini-ocr presets
 gemini-ocr models
 gemini-ocr doctor
+gemini-ocr init --help
 gemini-ocr extract --help
 gemini-ocr web --help
 ```
 
 Exit status is `0` when all scheduled documents succeed or resume cleanly, `1`
-when one or more document jobs fail or agentic extraction finishes partially,
+when one or more document jobs fail, agentic extraction finishes partially, or
+a configured cost limit is reached,
 `2` for command/configuration errors, and `130` when interrupted. Partial
 agentic artifacts are still written and retain their explicit stop reason.
 

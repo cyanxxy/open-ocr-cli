@@ -7,7 +7,7 @@ vi.mock('./client', async () => {
   return { ...actual, getGenAIClient: mockGetClient };
 });
 
-import { extractTextFromFile } from './extraction';
+import { extractStructuredDataFromFile, extractTextFromFile } from './extraction';
 import { getGeminiUsage, resetGeminiUsage } from './usage';
 
 const FILE_DATA = 'data:image/png;base64,ZmFrZQ==';
@@ -61,6 +61,34 @@ describe('extractTextFromFile — output contract', () => {
     const result = await extractTextFromFile(FILE_DATA, 'image/png', CLIENT, undefined, { structuredOutput: true });
     expect(result.title).toBe('Invoice');
     expect(result.sections[0].content).toEqual(['line']);
+  });
+
+  it('extracts JSON with a caller-provided schema', async () => {
+    const generateContent = mockGenerate({
+      text: '{"invoice_number":"INV-42","total":12.5}',
+      candidates: [{ finishReason: 'STOP' }],
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 20,
+        totalTokenCount: 120,
+      },
+    });
+    const schema = {
+      type: 'object',
+      properties: {
+        invoice_number: { type: 'string' },
+        total: { type: 'number' },
+      },
+      required: ['invoice_number', 'total'],
+    };
+
+    const result = await extractStructuredDataFromFile(FILE_DATA, 'image/png', CLIENT, schema);
+
+    expect(result).toEqual({ invoice_number: 'INV-42', total: 12.5 });
+    const call = generateContent.mock.calls[0][0];
+    expect(call.config.responseMimeType).toBe('application/json');
+    expect(call.config.responseJsonSchema).toEqual(schema);
+    expect(getGeminiUsage().estimatedCostUsd).toBeGreaterThan(0);
   });
 
   it('G-02: a safety-blocked response throws instead of returning empty', async () => {

@@ -10,6 +10,7 @@ import {
 import { applyThinkingConfig, generateContentMediaResolution, getGenAIClient, isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
 import { parseJsonPayload } from './gemini/structured';
 import { recordGeminiUsage } from './gemini/usage';
+import { waitForGeminiRequestSlot } from './gemini/requestPolicy';
 import { assertNormalizedRegion } from './normalizedRegion';
 
 // Runtime validation helpers for Gemini function call args
@@ -313,6 +314,7 @@ export async function executeReOcrRegion(
       'If no useful structured fields are visible, return {"fields":[]}.',
     ].join(' ');
 
+    await waitForGeminiRequestSlot(clientConfig.abortSignal);
     const response = await genAI.models.generateContent({
       model: clientConfig.model,
       contents: [{
@@ -329,7 +331,7 @@ export async function executeReOcrRegion(
       }],
       config: generationConfig,
     });
-    recordGeminiUsage(response);
+    recordGeminiUsage(response, clientConfig.model);
 
     const rawFields = parseRegionFieldPayload(response.text || '');
     const filteredFields = rawFields.filter((entry) => {

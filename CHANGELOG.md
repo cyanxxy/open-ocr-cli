@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.5.0 - 2026-07-13
+
+### CLI extraction controls
+
+- Added custom JSON Schema extraction with local schema and result validation.
+- Added `gemini-ocr init` for safe configuration setup and optional credential validation.
+- Added paid-tier cost estimates, batch cost ceilings, and configurable Gemini request-rate limits.
+- Hardened queued-request cancellation, multi-request cost ceilings, local-only
+  schema references, conflicting option validation, and non-interactive setup feedback.
+
+[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v1.4.0...v1.5.0)
+
 ## 1.4.0 - 2026-07-13
 
 ### Batch command-line interface

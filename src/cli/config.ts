@@ -43,6 +43,7 @@ const DEFAULT_CONFIG: Required<Pick<
   | 'maxTokens'
   | 'maxIterations'
   | 'confidenceThreshold'
+  | 'requestsPerMinute'
 >> = {
   model: 'gemini-3.5-flash',
   thinking: 'MEDIUM',
@@ -68,6 +69,7 @@ const DEFAULT_CONFIG: Required<Pick<
   maxTokens: 32768,
   maxIterations: 5,
   confidenceThreshold: 0.8,
+  requestsPerMinute: 0,
 };
 
 function asRecord(value: unknown, label: string): Record<string, unknown> {
@@ -78,8 +80,8 @@ function asRecord(value: unknown, label: string): Record<string, unknown> {
 }
 
 function pickConfig(value: Record<string, unknown>, label: string): CliConfigFile {
-  const stringKeys = ['model', 'thinking', 'mode', 'preset', 'format', 'output', 'apiKeyEnv'] as const;
-  const numberKeys = ['concurrency', 'retries', 'timeoutSeconds', 'maxFiles', 'maxTotalMb', 'maxTokens', 'maxIterations', 'confidenceThreshold'] as const;
+  const stringKeys = ['model', 'thinking', 'mode', 'preset', 'format', 'output', 'apiKeyEnv', 'schema'] as const;
+  const numberKeys = ['concurrency', 'retries', 'timeoutSeconds', 'maxFiles', 'maxTotalMb', 'maxTokens', 'maxIterations', 'confidenceThreshold', 'maxCostUsd', 'requestsPerMinute'] as const;
   const booleanKeys = ['includeThoughts', 'resume', 'overwrite', 'failFast', 'hidden', 'detectImages', 'detectMath'] as const;
   const arrayKeys = ['exclude', 'instructions'] as const;
   const knownKeys = new Set<string>([...stringKeys, ...numberKeys, ...booleanKeys, ...arrayKeys]);
@@ -166,6 +168,16 @@ function numberInRange(value: string | number | undefined, fallback: number, lab
   return parsed;
 }
 
+function optionalNumberInRange(
+  value: string | number | undefined,
+  label: string,
+  min: number,
+  max: number,
+): number | undefined {
+  if (value === undefined) return undefined;
+  return numberInRange(value, min, label, min, max);
+}
+
 function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], label: string, fallback: T): T {
   if (value === undefined) return fallback;
   if (!allowed.includes(value as T)) throw new Error(`${label} must be one of: ${allowed.join(', ')}`);
@@ -189,16 +201,25 @@ export function resolveCliOptions(
     '--thinking',
     DEFAULT_CONFIG.thinking,
   );
+  const schemaPath = flags.schema ?? fileConfig.schema;
   const mode = oneOf<CliMode>(flags.mode ?? fileConfig.mode, CLI_MODES, '--mode', DEFAULT_CONFIG.mode);
-  const format = oneOf<CliFormat>(flags.format ?? fileConfig.format, CLI_FORMATS, '--format', DEFAULT_CONFIG.format);
+  const format = oneOf<CliFormat>(
+    flags.format ?? fileConfig.format ?? (schemaPath ? 'json' : undefined),
+    CLI_FORMATS,
+    '--format',
+    DEFAULT_CONFIG.format,
+  );
   const preset = flags.preset ?? fileConfig.preset;
   const effectiveMode: CliMode = preset && !flags.mode && !fileConfig.mode ? 'template' : mode;
 
   if (model === 'gemini-3.1-pro-preview' && thinking === 'MINIMAL') thinking = 'LOW';
   if (effectiveMode === 'agentic' && thinking === 'MINIMAL') thinking = 'MEDIUM';
+  if (schemaPath && preset) throw new Error('--schema cannot be combined with --preset');
   if (effectiveMode === 'template' && !preset) throw new Error('--preset is required when --mode template is selected');
   if (preset) getExtractionPreset(preset);
   if (format === 'csv' && effectiveMode !== 'template') throw new Error('--format csv is only available in template mode');
+  if (schemaPath && effectiveMode !== 'simple') throw new Error('--schema is only available in simple mode');
+  if (schemaPath && format !== 'json') throw new Error('--schema requires --format json');
 
   const apiKeyEnv = fileConfig.apiKeyEnv || 'GEMINI_API_KEY';
   const apiKey = process.env[apiKeyEnv]?.trim() || '';
@@ -242,6 +263,20 @@ export function resolveCliOptions(
       '--confidence-threshold',
       0,
       1,
+    ),
+    schemaPath,
+    maxCostUsd: optionalNumberInRange(
+      flags.maxCost ?? fileConfig.maxCostUsd,
+      '--max-cost',
+      0.000001,
+      1_000_000,
+    ),
+    requestsPerMinute: integer(
+      flags.requestsPerMinute ?? fileConfig.requestsPerMinute,
+      DEFAULT_CONFIG.requestsPerMinute,
+      '--requests-per-minute',
+      0,
+      60_000,
     ),
     cwd,
   };

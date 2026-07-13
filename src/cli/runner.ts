@@ -3,12 +3,14 @@ import process from 'node:process';
 import { agentLoop } from '../lib/agentLoop';
 import type { AgentMemory, AgentStep } from '../lib/agentTypes';
 import { isRetryableGeminiError } from '../lib/gemini/client';
-import { extractTextFromFile } from '../lib/gemini/extraction';
+import { extractStructuredDataFromFile, extractTextFromFile } from '../lib/gemini/extraction';
+import { configureGeminiRequestPolicy, resetGeminiRequestPolicy } from '../lib/gemini/requestPolicy';
 import { getGeminiUsage, resetGeminiUsage } from '../lib/gemini/usage';
 import type { ExtractedContent, ExtractionInstruction, GeminiClientConfig } from '../lib/gemini/types';
 import { getExtractionPreset, runExtractionPreset } from '../lib/templates';
 import { inputFingerprint, readAndValidateInput } from './inputs';
 import { nodeRegionCropper } from './nodeRegionCropper';
+import { assertCustomSchemaOutput } from './schema';
 import {
   defaultOutputDirectory,
   jsonlResult,
@@ -125,6 +127,23 @@ async function extractOnce(
   if (options.mode === 'agentic') return runAgentic(input, dataUrl, options, signal, onStep);
 
   const instructions: ExtractionInstruction[] = options.instructions.map((prompt) => ({ prompt }));
+  if (options.customSchema) {
+    const result = await extractStructuredDataFromFile(
+      dataUrl,
+      input.mimeType,
+      clientConfig,
+      options.customSchema,
+      instructions.length > 0 ? instructions : undefined,
+      {
+        detectImages: options.detectImages,
+        detectMathEquations: options.detectMath,
+        maxTokens: options.maxTokens,
+        abortSignal: signal,
+      },
+    );
+    assertCustomSchemaOutput(options.customSchema, result);
+    return { json: result };
+  }
   const result = await extractTextFromFile(
     dataUrl,
     input.mimeType,
@@ -193,6 +212,7 @@ function modeFingerprint(options: ResolvedCliOptions): string {
     maxTokens: options.maxTokens,
     maxIterations: options.maxIterations,
     confidenceThreshold: options.confidenceThreshold,
+    customSchema: options.customSchema,
   });
 }
 
@@ -210,7 +230,7 @@ interface BatchRuntime {
   writeStderr?: (text: string) => void;
 }
 
-export async function runBatch(
+async function runBatchInternal(
   inputs: ResolvedInput[],
   options: ResolvedCliOptions,
   runtime: BatchRuntime,
@@ -228,10 +248,18 @@ export async function runBatch(
   let cursor = 0;
   let completed = 0;
   let failFastTriggered = false;
+  let costLimitReached = false;
   const fingerprintMode = modeFingerprint(options);
 
   const worker = async (): Promise<void> => {
-    while (!runtime.abortController.signal.aborted && !failFastTriggered) {
+    while (!runtime.abortController.signal.aborted && !failFastTriggered && !costLimitReached) {
+      if (
+        options.maxCostUsd !== undefined
+        && getGeminiUsage().estimatedCostUsd >= options.maxCostUsd
+      ) {
+        costLimitReached = true;
+        return;
+      }
       const index = cursor;
       cursor += 1;
       if (index >= inputs.length) return;
@@ -331,12 +359,18 @@ export async function runBatch(
       results[index] = inputs.length > 1 && result.artifacts
         ? { ...result, artifacts: undefined }
         : result;
+      if (
+        options.maxCostUsd !== undefined
+        && getGeminiUsage().estimatedCostUsd >= options.maxCostUsd
+      ) costLimitReached = true;
     }
   };
 
   await Promise.all(Array.from({ length: Math.min(options.concurrency, inputs.length) }, () => worker()));
   const unscheduledReason = runtime.abortController.signal.aborted
     ? 'Not started because the batch was cancelled'
+    : costLimitReached
+      ? `Not started because the estimated cost reached --max-cost $${options.maxCostUsd?.toFixed(4)}`
     : 'Not started because --fail-fast stopped the batch';
   for (let index = 0; index < inputs.length; index += 1) {
     if (results[index]) continue;
@@ -375,6 +409,8 @@ export async function runBatch(
     mode: options.mode,
     model: options.model,
     usage: getGeminiUsage(),
+    costLimitUsd: options.maxCostUsd,
+    costLimitReached,
     results: finishedResults,
   };
 
@@ -391,4 +427,20 @@ export async function runBatch(
     writeStdout(`${JSON.stringify({ type: 'summary', ...summary, results: undefined })}\n`);
   }
   return summary;
+}
+
+export async function runBatch(
+  inputs: ResolvedInput[],
+  options: ResolvedCliOptions,
+  runtime: BatchRuntime,
+): Promise<BatchSummary> {
+  configureGeminiRequestPolicy({
+    requestsPerMinute: options.requestsPerMinute,
+    maxCostUsd: options.maxCostUsd,
+  });
+  try {
+    return await runBatchInternal(inputs, options, runtime);
+  } finally {
+    resetGeminiRequestPolicy();
+  }
 }

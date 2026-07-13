@@ -13,7 +13,7 @@ describe('Gemini usage accumulator', () => {
         thoughtsTokenCount: 5,
         totalTokenCount: 125,
       },
-    });
+    }, 'gemini-3.5-flash');
     recordGeminiUsage({
       usage: {
         total_input_tokens: 50,
@@ -21,7 +21,7 @@ describe('Gemini usage accumulator', () => {
         total_tool_use_tokens: 4,
         total_tokens: 64,
       },
-    });
+    }, 'gemini-3.1-flash-lite');
 
     expect(getGeminiUsage()).toEqual({
       requests: 2,
@@ -31,11 +31,30 @@ describe('Gemini usage accumulator', () => {
       toolTokens: 4,
       cachedTokens: 0,
       totalTokens: 189,
+      estimatedCostUsd: 0.0004025,
     });
   });
 
   it('ignores responses without usage metadata', () => {
     recordGeminiUsage({ text: 'no metadata' });
     expect(getGeminiUsage().requests).toBe(0);
+  });
+
+  it('records tool-use tokens without double-counting their input cost', () => {
+    recordGeminiUsage({
+      usage: {
+        total_input_tokens: 100,
+        total_output_tokens: 25,
+        total_tool_use_tokens: 50,
+        total_tokens: 125,
+      },
+    }, 'gemini-3.5-flash');
+    expect(getGeminiUsage()).toMatchObject({
+      inputTokens: 100,
+      outputTokens: 25,
+      toolTokens: 50,
+      totalTokens: 125,
+      estimatedCostUsd: 0.000375,
+    });
   });
 });

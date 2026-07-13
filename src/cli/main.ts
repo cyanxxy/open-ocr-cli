@@ -6,9 +6,15 @@ import { fileURLToPath } from 'node:url';
 import { Command, Option } from 'commander';
 
 import { listExtractionPresets } from '../lib/templates';
+import {
+  configureGeminiRequestPolicy,
+  resetGeminiRequestPolicy,
+} from '../lib/gemini/requestPolicy';
 import { getGeminiUsage, resetGeminiUsage } from '../lib/gemini/usage';
 import { loadCliConfig, loadLocalEnv, resolveCliOptions } from './config';
 import { discoverInputs } from './inputs';
+import { runInit, type InitFlags } from './init';
+import { loadCustomSchema } from './schema';
 import { runBatch } from './runner';
 import { SUPPORTED_MODELS, type ExtractCommandFlags } from './types';
 import {
@@ -51,6 +57,7 @@ function addExtractOptions(command: Command): Command {
     .option('--config <path>', 'explicit JSON configuration file')
     .addOption(new Option('--mode <mode>', 'OCR mode').choices(['simple', 'template', 'agentic']))
     .option('--preset <id>', 'structured extraction preset (implies template mode)')
+    .option('--schema <path>', 'JSON Schema for custom structured extraction')
     .addOption(new Option('--format <format>', 'artifact format').choices(['markdown', 'json', 'csv', 'all']))
     .option('-o, --output <path>', 'output file for one document or directory for batches')
     .addOption(new Option('--model <model>', 'Gemini model').choices([...SUPPORTED_MODELS]))
@@ -61,6 +68,8 @@ function addExtractOptions(command: Command): Command {
     .option('--timeout <seconds>', 'per-document time limit')
     .option('--max-files <count>', 'safety limit for matched documents')
     .option('--max-total-mb <megabytes>', 'safety limit for total input size')
+    .option('--max-cost <usd>', 'block new requests and documents after estimated paid-tier cost reaches this value')
+    .option('--requests-per-minute <count>', 'maximum Gemini API request starts per minute (0 disables)')
     .option('--exclude <glob>', 'exclude pattern; repeatable', collect, [])
     .option('--instruction <text>', 'custom extraction instruction; repeatable', collect, [])
     .option('--hidden', 'include hidden files when expanding directories and globs')
@@ -89,9 +98,11 @@ export function createProgram(): Command {
     .showHelpAfterError()
     .addHelpText('after', `
 Examples:
+  $ gemini-ocr init
   $ gemini-ocr extract invoice.pdf
+  $ gemini-ocr extract invoice.pdf --schema invoice.schema.json
   $ gemini-ocr extract ./documents --mode template --preset invoice --format all
-  $ gemini-ocr extract '**/*.pdf' --concurrency 4 --jsonl --output ./results
+  $ gemini-ocr extract '**/*.pdf' --concurrency 4 --max-cost 5 --output ./results
   $ cat scan.png | gemini-ocr extract - --stdin-name scan.png --format json
   $ gemini-ocr web https://example.com/report.pdf --format markdown
   $ gemini-ocr presets
@@ -110,7 +121,10 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
       const cwd = process.cwd();
       loadLocalEnv(cwd);
       const fileConfig = await loadCliConfig(cwd, flags.config);
-      const options = resolveCliOptions(flags, fileConfig, cwd);
+      const resolvedOptions = resolveCliOptions(flags, fileConfig, cwd);
+      const options = resolvedOptions.schemaPath
+        ? { ...resolvedOptions, customSchema: await loadCustomSchema(resolvedOptions.schemaPath, cwd) }
+        : resolvedOptions;
       const resolvedInputs = await discoverInputs(inputs, options);
       const abortController = new AbortController();
       const onInterrupt = (): void => abortController.abort(new Error('Interrupted'));
@@ -127,15 +141,26 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
         if (!options.quiet) {
           process.stderr.write(
             `Finished: ${summary.succeeded} succeeded, ${summary.partial} partial, ${summary.failed} failed, ${summary.skipped} skipped; `
-            + `${summary.usage.totalTokens} tokens across ${summary.usage.requests} request(s)\n`,
+            + `${summary.usage.totalTokens} tokens across ${summary.usage.requests} request(s); `
+            + `estimated cost $${summary.usage.estimatedCostUsd.toFixed(6)}\n`,
           );
         }
         if (abortController.signal.aborted) process.exitCode = 130;
-        else if (summary.failed > 0 || summary.partial > 0) process.exitCode = 1;
+        else if (summary.failed > 0 || summary.partial > 0 || summary.costLimitReached) process.exitCode = 1;
       } finally {
         process.removeListener('SIGINT', onInterrupt);
         process.removeListener('SIGTERM', onInterrupt);
       }
+    });
+
+  program.command('init')
+    .description('interactively create a safe CLI configuration and validate credentials')
+    .option('--global', 'write the user configuration instead of ./.gemini-ocr.json')
+    .option('--force', 'replace an existing configuration without confirmation')
+    .option('--yes', 'accept recommended defaults without prompting')
+    .option('--skip-validation', 'do not make the credential validation request')
+    .action(async (flags: InitFlags) => {
+      await runInit(flags);
     });
 
   program.command('web')
@@ -150,6 +175,8 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
     .addOption(new Option('--thinking <level>', 'thinking level').choices(['minimal', 'low', 'medium', 'high']))
     .option('--include-thoughts', 'request thought summaries where supported')
     .option('--timeout <seconds>', 'request time limit')
+    .option('--max-cost <usd>', 'fail if estimated paid-tier cost reaches this value')
+    .option('--requests-per-minute <count>', 'maximum Gemini API request starts per minute (0 disables)')
     .option('--overwrite', 'replace an existing output file')
     .option('--dry-run', 'validate URLs and configuration without calling Gemini')
     .option('--quiet', 'suppress status output on stderr')
@@ -163,6 +190,8 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
       thinking?: string;
       includeThoughts?: boolean;
       timeout?: string;
+      maxCost?: string;
+      requestsPerMinute?: string;
       overwrite?: boolean;
       dryRun?: boolean;
       quiet?: boolean;
@@ -178,11 +207,13 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
           format: flags.format,
           output: flags.output,
           timeout: flags.timeout,
+          maxCost: flags.maxCost,
+          requestsPerMinute: flags.requestsPerMinute,
           overwrite: flags.overwrite,
           dryRun: flags.dryRun,
           quiet: flags.quiet,
         },
-        { ...fileConfig, mode: 'simple', preset: undefined },
+        { ...fileConfig, mode: 'simple', preset: undefined, schema: undefined },
         cwd,
       );
       if (options.format !== 'markdown' && options.format !== 'json') {
@@ -207,14 +238,22 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
         options.timeoutSeconds * 1000,
       );
       resetGeminiUsage();
+      configureGeminiRequestPolicy({
+        requestsPerMinute: options.requestsPerMinute,
+        maxCostUsd: options.maxCostUsd,
+      });
       try {
         const result = await runWebExtraction(urls, flags.analysis, options, abortController.signal);
         const content = renderWebResult(result, flags.analysis, options.format);
         if (options.output) await writeWebOutput(content, options.output, cwd, options.overwrite);
         else process.stdout.write(content);
-        if (!options.quiet) {
-          const usage = getGeminiUsage();
-          process.stderr.write(`Extracted ${urls.length} URL(s); ${usage.totalTokens} tokens across ${usage.requests} request(s)\n`);
+        const usage = getGeminiUsage();
+        if (!options.quiet) process.stderr.write(
+          `Extracted ${urls.length} URL(s); ${usage.totalTokens} tokens across ${usage.requests} request(s); `
+          + `estimated cost $${usage.estimatedCostUsd.toFixed(6)}\n`,
+        );
+        if (options.maxCostUsd !== undefined && usage.estimatedCostUsd >= options.maxCostUsd) {
+          process.exitCode = 1;
         }
       } catch (error) {
         if (interrupted) {
@@ -227,6 +266,7 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
         throw error;
       } finally {
         clearTimeout(timeout);
+        resetGeminiRequestPolicy();
         process.removeListener('SIGINT', onInterrupt);
         process.removeListener('SIGTERM', onInterrupt);
       }

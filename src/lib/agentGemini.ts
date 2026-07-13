@@ -26,6 +26,7 @@ import {
 } from './agentTypes';
 import { applyMemoryUpdate } from './agentMemory';
 import { isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
+import { isGeminiCostLimitError } from './gemini/requestPolicy';
 import { buildAgentSchemaGuidance, getAgentReadiness } from './agentSchema';
 
 import {
@@ -376,7 +377,7 @@ export async function executeFunctionCall(
     // terminal ones (bad key, permission) should stop the run, and transient
     // ones (rate limit, 5xx, network) should bubble to the outer loop's backoff
     // instead of letting the model keep hammering the endpoint (audit H-17).
-    if (isFatalGeminiError(error) || isRetryableGeminiError(error)) {
+    if (isFatalGeminiError(error) || isRetryableGeminiError(error) || isGeminiCostLimitError(error)) {
       throw error;
     }
 

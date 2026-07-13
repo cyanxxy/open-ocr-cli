@@ -2,6 +2,7 @@ import { applyThinkingConfig, generateContentMediaResolution, getGenAIClient } f
 import { parseJsonPayload } from '../gemini/structured';
 import { logger } from '../logger';
 import { recordGeminiUsage } from '../gemini/usage';
+import { waitForGeminiRequestSlot } from '../gemini/requestPolicy';
 import type {
   ExtractionPreset,
   ExtractionRule,
@@ -529,6 +530,7 @@ export async function runExtractionPreset(
     let rawText = '';
 
     if (callbacks) {
+      await waitForGeminiRequestSlot(options?.abortSignal);
       const stream = await genAI.models.generateContentStream({
         model,
         contents,
@@ -542,14 +544,15 @@ export async function runExtractionPreset(
         rawText += chunkText;
         callbacks.onProgress?.(chunkText);
       }
-      recordGeminiUsage(lastChunk);
+      recordGeminiUsage(lastChunk, model);
     } else {
+      await waitForGeminiRequestSlot(options?.abortSignal);
       const response = await genAI.models.generateContent({
         model,
         contents,
         config: generationConfig,
       });
-      recordGeminiUsage(response);
+      recordGeminiUsage(response, model);
       rawText = response.text || '';
     }
 

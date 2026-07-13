@@ -1,6 +1,6 @@
 {
   "name": "open-ocr-cli",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Batch OCR CLI for images and PDFs using Google Gemini.",
   "license": "MIT",
   "type": "module",
@@ -38,6 +38,8 @@
   "dependencies": {
     "@google/genai": "^2.11.0",
     "@napi-rs/canvas": "^1.0.2",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "commander": "^14.0.0",
     "fast-glob": "^3.3.3",
     "pdfjs-dist": "^5.6.205",

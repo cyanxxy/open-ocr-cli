@@ -132,6 +132,7 @@ export type AgentStopReason =
   | 'max_iterations'
   | 'tool_limit_reached'
   | 'budget_exhausted'
+  | 'cost_limit_reached'
   | 'cancelled'
   | 'failed';
 

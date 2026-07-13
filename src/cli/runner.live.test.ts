@@ -4,17 +4,20 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockExtractTextFromFile } = vi.hoisted(() => ({
+const { mockExtractStructuredDataFromFile, mockExtractTextFromFile } = vi.hoisted(() => ({
+  mockExtractStructuredDataFromFile: vi.fn(),
   mockExtractTextFromFile: vi.fn(),
 }));
 
 vi.mock('../lib/gemini/extraction', () => ({
+  extractStructuredDataFromFile: mockExtractStructuredDataFromFile,
   extractTextFromFile: mockExtractTextFromFile,
 }));
 
 import { resolveCliOptions } from './config';
 import { discoverInputs } from './inputs';
 import { runBatch } from './runner';
+import { recordGeminiUsage } from '../lib/gemini/usage';
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 let directory: string;
@@ -25,10 +28,12 @@ beforeEach(async () => {
   outputDirectory = path.join(directory, 'results');
   process.env.GEMINI_API_KEY = 'test-key';
   mockExtractTextFromFile.mockReset();
+  mockExtractStructuredDataFromFile.mockReset();
   mockExtractTextFromFile.mockResolvedValue({
     title: 'Extracted document',
     sections: [{ content: ['Hello from OCR'] }],
   });
+  mockExtractStructuredDataFromFile.mockResolvedValue({ invoice_number: 'INV-42', total: 12.5 });
 });
 
 afterEach(async () => {
@@ -147,5 +152,58 @@ describe('CLI live batch orchestration', () => {
     expect(summary.succeeded).toBe(1);
     expect(summary.results[0].attempts).toBe(2);
     expect(mockExtractTextFromFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('extracts and writes caller-defined schema output', async () => {
+    await writeFile(path.join(directory, 'schema.jpg'), JPEG_BYTES);
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      properties: { invoice_number: { type: 'string' }, total: { type: 'number' } },
+      required: ['invoice_number', 'total'],
+    };
+    const options = {
+      ...resolveCliOptions({ schema: 'invoice.schema.json', output: outputDirectory, quiet: true }, {}, directory),
+      customSchema: schema,
+    };
+    const inputs = await discoverInputs(['schema.jpg'], options);
+    const summary = await runBatch(inputs, options, {
+      abortController: new AbortController(), writeStdout: () => undefined, writeStderr: () => undefined,
+    });
+    expect(summary.succeeded).toBe(1);
+    expect(mockExtractStructuredDataFromFile).toHaveBeenCalledWith(
+      expect.any(String),
+      'image/jpeg',
+      expect.objectContaining({ model: 'gemini-3.5-flash' }),
+      schema,
+      undefined,
+      expect.objectContaining({ maxTokens: 32768 }),
+    );
+    expect(await readFile(path.join(outputDirectory, 'schema.json'), 'utf8')).toContain('INV-42');
+  });
+
+  it('stops scheduling new documents when the estimated cost ceiling is reached', async () => {
+    await writeFile(path.join(directory, 'a.jpg'), JPEG_BYTES);
+    await writeFile(path.join(directory, 'b.jpg'), JPEG_BYTES);
+    mockExtractTextFromFile.mockImplementation(() => {
+      recordGeminiUsage({
+        usageMetadata: { promptTokenCount: 1_000, candidatesTokenCount: 100, totalTokenCount: 1_100 },
+      }, 'gemini-3.5-flash');
+      return Promise.resolve({ sections: [{ content: ['Costed result'] }] });
+    });
+    const options = resolveCliOptions({
+      output: outputDirectory,
+      quiet: true,
+      concurrency: '1',
+      maxCost: '0.000001',
+    }, {}, directory);
+    const inputs = await discoverInputs(['*.jpg'], options);
+    const summary = await runBatch(inputs, options, {
+      abortController: new AbortController(), writeStdout: () => undefined, writeStderr: () => undefined,
+    });
+    expect(summary).toMatchObject({ total: 2, succeeded: 1, skipped: 1, costLimitReached: true });
+    expect(summary.usage.estimatedCostUsd).toBeGreaterThan(options.maxCostUsd!);
+    expect(summary.results[1].error).toContain('--max-cost');
+    expect(mockExtractTextFromFile).toHaveBeenCalledTimes(1);
   });
 });

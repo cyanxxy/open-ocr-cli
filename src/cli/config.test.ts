@@ -70,6 +70,32 @@ describe('CLI configuration', () => {
     expect(() => resolveCliOptions({ format: 'csv' }, {}, '/workspace')).toThrow('only available in template mode');
     expect(() => resolveCliOptions({ concurrency: '0' }, {}, '/workspace')).toThrow('--concurrency');
     expect(() => resolveCliOptions({ preset: 'missing' }, {}, '/workspace')).toThrow('Unknown extraction preset');
+    expect(() => resolveCliOptions({ maxCost: '0' }, {}, '/workspace')).toThrow('--max-cost');
+    expect(() => resolveCliOptions({ requestsPerMinute: '-1' }, {}, '/workspace')).toThrow('--requests-per-minute');
+  });
+
+  it('makes custom schemas JSON-only simple extraction', () => {
+    process.env.GEMINI_API_KEY = 'test-key';
+    expect(resolveCliOptions({ schema: 'invoice.schema.json' }, {}, '/workspace')).toMatchObject({
+      mode: 'simple',
+      format: 'json',
+      schemaPath: 'invoice.schema.json',
+    });
+    expect(() => resolveCliOptions(
+      { schema: 'invoice.schema.json', mode: 'agentic' },
+      {},
+      '/workspace',
+    )).toThrow('--schema is only available in simple mode');
+    expect(() => resolveCliOptions(
+      { schema: 'invoice.schema.json', format: 'markdown' },
+      {},
+      '/workspace',
+    )).toThrow('--schema requires --format json');
+    expect(() => resolveCliOptions(
+      { schema: 'invoice.schema.json', preset: 'invoice', mode: 'simple' },
+      {},
+      '/workspace',
+    )).toThrow('--schema cannot be combined with --preset');
   });
 
   it('allowlists file configuration and warns about unknown keys without retaining secrets', async () => {

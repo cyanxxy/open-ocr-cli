@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "Structured fields extracted from an invoice.",
+  "properties": {
+    "invoice_number": {
+      "type": ["string", "null"],
+      "description": "Invoice identifier exactly as printed."
+    },
+    "invoice_date": {
+      "type": ["string", "null"],
+      "description": "Invoice date exactly as printed."
+    },
+    "currency": {
+      "type": ["string", "null"],
+      "description": "Three-letter currency code when identifiable."
+    },
+    "total": {
+      "type": ["number", "null"],
+      "description": "Final amount due without a currency symbol."
+    },
+    "line_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "description": { "type": "string" },
+          "quantity": { "type": ["number", "null"] },
+          "amount": { "type": ["number", "null"] }
+        },
+        "required": ["description", "quantity", "amount"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["invoice_number", "invoice_date", "currency", "total", "line_items"],
+  "additionalProperties": false
+}

@@ -6,6 +6,8 @@
   "timeoutSeconds": 180,
   "maxFiles": 5000,
   "maxTotalMb": 20480,
+  "maxCostUsd": 5,
+  "requestsPerMinute": 60,
   "resume": true,
   "format": "json",
   "exclude": [

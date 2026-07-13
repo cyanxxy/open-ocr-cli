@@ -2,8 +2,8 @@
 
 Production-oriented batch OCR for images, PDFs, and public URLs using Google
 Gemini. It supports recursive discovery, globs, binary stdin, structured
-presets, agentic OCR, bounded concurrency, resumable manifests, and JSONL
-pipeline output.
+presets, arbitrary JSON schemas, agentic OCR, bounded concurrency, resumable
+manifests, cost/rate controls, and JSONL pipeline output.
 
 ## Install
 
@@ -22,6 +22,9 @@ different environment variable is required.
 ## Examples
 
 ```bash
+# Create a project config and validate credentials
+gemini-ocr init
+
 # Extract one document to stdout
 gemini-ocr extract invoice.pdf
 
@@ -30,6 +33,12 @@ gemini-ocr extract ./documents --output ./results --concurrency 4
 
 # Structured invoice extraction with every available artifact
 gemini-ocr extract ./invoices --preset invoice --format all --output ./results
+
+# Arbitrary structured output, validated against the schema before and after the request
+gemini-ocr extract invoice.pdf --schema invoice.schema.json --output invoice.json
+
+# Rate-limit requests and stop scheduling around a $5 paid-tier estimate
+gemini-ocr extract ./documents --requests-per-minute 60 --max-cost 5 --output ./results
 
 # Iterative field recovery for a difficult scan
 gemini-ocr extract scan.pdf --mode agentic --format json --max-iterations 6
@@ -52,11 +61,16 @@ limited to 50 MB and 1,000 pages; images are limited to 70 MB raw. CLI batches
 default to 1,000 files, 5,120 MB total, and concurrency 2. Safety budgets and
 concurrency are configurable.
 
+Custom schemas use Gemini's supported JSON Schema subset. `--schema` is limited
+to simple mode, implies JSON output, and rejects unsupported schema keywords or
+responses that fail local validation.
+
 ## Batch behavior
 
 The default batch output directory is `./gemini-ocr-output`. It contains one or
 more artifacts per document, `.gemini-ocr-manifest.json`, and
-`batch-summary.json`.
+`batch-summary.json`. Summaries include aggregate tokens and estimated paid-tier
+cost.
 
 - Existing output is never replaced without `--overwrite`.
 - Resume skips unchanged successful and partial agentic jobs when all recorded
@@ -68,6 +82,13 @@ more artifacts per document, `.gemini-ocr-manifest.json`, and
 - Unstarted fail-fast remainder is represented explicitly as skipped jobs.
 - Progress is written to stderr; extracted content and JSONL are written to
   stdout.
+- A max-cost limit stops new documents from being scheduled. Concurrent requests
+  already in flight finish, so the final estimate can be slightly higher. Once
+  recorded usage reaches the limit, the next request in an agentic or other
+  multi-request flow is also blocked; a single in-flight request cannot be
+  stopped using token metadata that is only available afterward.
+- Request-rate limits evenly space request starts rather than allowing bursts,
+  and queued waits abort immediately on timeout or Ctrl-C.
 
 Exit status is `0` for a successful or cleanly resumed batch, `1` for failed or
 partial document jobs, `2` for command/configuration errors, and `130` when
@@ -85,10 +106,16 @@ Configuration is merged from:
 Unknown configuration keys are ignored with a warning and are not echoed by
 `doctor --json`.
 
+Use `gemini-ocr init` for guided project setup or `gemini-ocr init --global` for
+user-wide defaults. The generated configuration stores an environment-variable
+name, never a raw API key. Configuration supports `schema`, `maxCostUsd`, and
+`requestsPerMinute` in addition to the extraction options.
+
 ```bash
 gemini-ocr presets
 gemini-ocr models
 gemini-ocr doctor
+gemini-ocr init --help
 gemini-ocr extract --help
 gemini-ocr web --help
 ```

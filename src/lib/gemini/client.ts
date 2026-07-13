@@ -5,6 +5,7 @@
 
 import { GoogleGenAI } from '@google/genai';
 import { logger } from '../logger';
+import { waitForGeminiRequestSlot } from './requestPolicy';
 import { GeminiModel, OcrError, OcrErrorType, ThinkingLevel } from './types';
 
 /**
@@ -161,6 +162,7 @@ export function getModelClient(
       }
 
       // Use the new SDK's API
+      await waitForGeminiRequestSlot();
       const response = await genAI.models.generateContent({
         model: modelName,
         contents,
@@ -201,6 +203,7 @@ export function getModelClient(
         config.safetySettings = params.safetySettings;
       }
 
+      await waitForGeminiRequestSlot();
       const stream = await genAI.models.generateContentStream({
         model: modelName,
         contents,

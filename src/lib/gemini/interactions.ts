@@ -2,6 +2,7 @@ import type { Content, FunctionDeclaration, Interactions } from '@google/genai';
 import { getGenAIClient, normalizeThinkingLevel } from './client';
 import type { GeminiModel, ThinkingConfig } from './types';
 import { recordGeminiUsage } from './usage';
+import { waitForGeminiRequestSlot } from './requestPolicy';
 
 type InteractionToolChoice = 'auto' | 'any' | 'none' | 'validated';
 
@@ -439,11 +440,12 @@ export async function runModelInteraction({
       : {}),
   };
 
+  await waitForGeminiRequestSlot(abortSignal);
   const interaction = await genAI.interactions.create(
     params,
     abortSignal ? { fetchOptions: { signal: abortSignal } } : undefined,
   ) as Interactions.Interaction;
-  recordGeminiUsage(interaction);
+  recordGeminiUsage(interaction, model);
   return {
     id: interaction.id,
     status: interaction.status,

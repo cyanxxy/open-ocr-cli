@@ -20,6 +20,7 @@ import { createInitialMemory } from './agentMemory';
 import { evaluateAgentCompletion } from './agentSchema';
 import type { InteractionStep } from './gemini/interactions';
 import { isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
+import { isGeminiCostLimitError } from './gemini/requestPolicy';
 
 // Re-export the memory reducer from its neutral home so existing importers that
 // reference `applyMemoryUpdate` from this module keep working (the function moved
@@ -66,6 +67,8 @@ function describeStopReason(reason: AgentStopReason, memory: AgentMemory): strin
       return `Reached the per-document tool-call limit: finalizing with ${fields} field(s) at ${confidence} confidence.`;
     case 'budget_exhausted':
       return `Reached the time budget for this document: finalizing with ${fields} field(s) at ${confidence} confidence.`;
+    case 'cost_limit_reached':
+      return `Reached the estimated cost limit: finalizing with ${fields} field(s) at ${confidence} confidence.`;
     case 'failed':
       return `Stopped after repeated errors with ${fields} field(s) at ${confidence} confidence.`;
     case 'cancelled':
@@ -235,6 +238,10 @@ export async function* agentLoop(
       } catch (error) {
         if (wasAborted(error, clientConfig.abortSignal)) {
           stopReason = 'cancelled';
+          break;
+        }
+        if (isGeminiCostLimitError(error)) {
+          stopReason = 'cost_limit_reached';
           break;
         }
 

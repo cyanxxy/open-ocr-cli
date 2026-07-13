@@ -1,3 +1,6 @@
+import { estimateGeminiRequestCostUsd } from './pricing';
+import type { GeminiModel } from './types';
+
 export interface GeminiUsageSnapshot {
   requests: number;
   inputTokens: number;
@@ -6,6 +9,7 @@ export interface GeminiUsageSnapshot {
   toolTokens: number;
   cachedTokens: number;
   totalTokens: number;
+  estimatedCostUsd: number;
 }
 
 const emptyUsage = (): GeminiUsageSnapshot => ({
@@ -16,6 +20,7 @@ const emptyUsage = (): GeminiUsageSnapshot => ({
   toolTokens: 0,
   cachedTokens: 0,
   totalTokens: 0,
+  estimatedCostUsd: 0,
 });
 
 let accumulatedUsage = emptyUsage();
@@ -33,7 +38,7 @@ function numberAt(record: Record<string, unknown>, ...keys: string[]): number {
 }
 
 /** Accumulate either generateContent usageMetadata or Interactions usage. */
-export function recordGeminiUsage(response: unknown): void {
+export function recordGeminiUsage(response: unknown, model?: GeminiModel): void {
   if (!isRecord(response)) return;
   const candidate = response.usageMetadata ?? response.usage_metadata ?? response.usage;
   if (!isRecord(candidate)) return;
@@ -52,6 +57,16 @@ export function recordGeminiUsage(response: unknown): void {
   accumulatedUsage.toolTokens += toolTokens;
   accumulatedUsage.cachedTokens += cachedTokens;
   accumulatedUsage.totalTokens += reportedTotal || inputTokens + outputTokens + thoughtTokens + toolTokens;
+  if (model) {
+    // toolTokens is a diagnostic subset of prompt/input usage, not an
+    // additional billed category. Adding it here would double-count input.
+    accumulatedUsage.estimatedCostUsd += estimateGeminiRequestCostUsd(
+      model,
+      inputTokens,
+      outputTokens,
+      thoughtTokens,
+    );
+  }
 }
 
 export function resetGeminiUsage(): void {
@@ -59,5 +74,8 @@ export function resetGeminiUsage(): void {
 }
 
 export function getGeminiUsage(): GeminiUsageSnapshot {
-  return { ...accumulatedUsage };
+  return {
+    ...accumulatedUsage,
+    estimatedCostUsd: Number(accumulatedUsage.estimatedCostUsd.toFixed(8)),
+  };
 }

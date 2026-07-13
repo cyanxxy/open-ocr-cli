@@ -13,6 +13,7 @@ vi.mock('./agentGemini', () => ({
 
 import { agentLoop, applyMemoryUpdate } from './agentLoop';
 import type { AgentMemory, AgentStep } from './agentTypes';
+import { GeminiCostLimitError } from './gemini/requestPolicy';
 
 async function drainLoop(generator: AsyncGenerator<AgentStep, AgentMemory>) {
   const steps: AgentStep[] = [];
@@ -209,6 +210,22 @@ describe('agentLoop', () => {
     expect(mockExecuteAgentTurn).toHaveBeenCalledTimes(1);
     expect(memory.stopReason).toBe('failed');
     expect(steps.some((s) => s.type === 'error')).toBe(true);
+  });
+
+  it('preserves partial agent output when the next request is blocked by the cost limit', async () => {
+    mockExecuteAgentTurn.mockRejectedValue(new GeminiCostLimitError(0.01));
+
+    const { steps, memory } = await drainLoop(agentLoop(
+      FIXTURE_FILE(),
+      FIXTURE_DATA,
+      { apiKey: 'test-key', model: 'gemini-3-flash-preview' },
+      { maxIterations: 3, ...BASE_CONFIG },
+    ));
+
+    expect(mockExecuteAgentTurn).toHaveBeenCalledTimes(1);
+    expect(memory.stopReason).toBe('cost_limit_reached');
+    expect(steps.some((step) => step.type === 'result' && /cost limit/i.test(step.content))).toBe(true);
+    expect(steps.some((step) => step.type === 'error')).toBe(false);
   });
 
   it('retries a transient error with backoff before giving up', async () => {

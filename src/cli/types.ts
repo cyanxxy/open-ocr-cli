@@ -3,6 +3,7 @@ import type {
   ExtractedContent,
   GeminiModel,
   GeminiUsageSnapshot,
+  JsonValue,
   PresetStructuredOutput,
   ThinkingLevel,
 } from '../lib/gemini';
@@ -45,6 +46,9 @@ export interface CliConfigFile {
   maxIterations?: number;
   confidenceThreshold?: number;
   apiKeyEnv?: string;
+  schema?: string;
+  maxCostUsd?: number;
+  requestsPerMinute?: number;
 }
 
 export interface ExtractCommandFlags {
@@ -78,6 +82,9 @@ export interface ExtractCommandFlags {
   maxTokens?: string;
   maxIterations?: string;
   confidenceThreshold?: string;
+  schema?: string;
+  maxCost?: string;
+  requestsPerMinute?: string;
 }
 
 export interface ResolvedCliOptions {
@@ -111,6 +118,10 @@ export interface ResolvedCliOptions {
   maxTokens: number;
   maxIterations: number;
   confidenceThreshold: number;
+  schemaPath?: string;
+  customSchema?: Record<string, unknown>;
+  maxCostUsd?: number;
+  requestsPerMinute: number;
   cwd: string;
 }
 
@@ -127,7 +138,7 @@ export interface ResolvedInput {
 
 export interface OcrArtifacts {
   markdown?: string;
-  json?: ExtractedContent | PresetStructuredOutput | AgentMemory;
+  json?: ExtractedContent | PresetStructuredOutput | AgentMemory | JsonValue;
   csv?: string;
   agentSteps?: AgentStep[];
 }
@@ -159,6 +170,8 @@ export interface BatchSummary {
   mode: CliMode;
   model: GeminiModel;
   usage: GeminiUsageSnapshot;
+  costLimitUsd?: number;
+  costLimitReached: boolean;
   results: OcrJobResult[];
 }
 
