@@ -1,59 +1,55 @@
-<div align="center">
+<!-- markdownlint-disable MD013 -->
 
 # Open Gemini OCR
 
-**OCR for images, PDFs, URLs, and automated document pipelines — powered by Google Gemini.**
+## Document extraction for people, pipelines, and difficult scans
+
+Extract text and structured data from images, PDFs, and public URLs with a
+polished React application and a production-oriented Node.js CLI.
+
+[**Open OCR CLI on npm**](https://www.npmjs.com/package/open-ocr-cli)
+· [**Latest release**](https://github.com/cyanxxy/gemini-ocr/releases/latest)
+· [**Report an issue**](https://github.com/cyanxxy/gemini-ocr/issues)
 
 [![CI](https://github.com/cyanxxy/gemini-ocr/actions/workflows/ci.yml/badge.svg)](https://github.com/cyanxxy/gemini-ocr/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/open-ocr-cli?logo=npm&label=open-ocr-cli)](https://www.npmjs.com/package/open-ocr-cli)
 [![Release](https://img.shields.io/github/v/release/cyanxxy/gemini-ocr?display_name=tag)](https://github.com/cyanxxy/gemini-ocr/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node](https://img.shields.io/badge/node-%3E%3D20.19-43853d.svg)](package.json)
-[![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
-[![Vite](https://img.shields.io/badge/Vite-7-646cff.svg)](https://vite.dev/)
+[![Node.js](https://img.shields.io/badge/Node.js-20.19%2B-43853d?logo=node.js&logoColor=white)](package.json)
+[![License: MIT](https://img.shields.io/badge/License-MIT-0f766e.svg)](LICENSE)
 
-</div>
+> [!NOTE]
+> **Open Gemini OCR** is the web application and repository. The npm package is
+> **Open OCR CLI** (`open-ocr-cli`). The previous `gemini-ocr` executable remains
+> available as a backwards-compatible alias.
 
----
+## Why this project
 
-## Overview
+Open Gemini OCR provides one extraction engine through two interfaces:
 
-Open Gemini OCR is an open-source web app and batch CLI for extracting text and structured data from documents. Files remain local except for direct requests to the Gemini API using **your** API key.
-
-Unlike many OCR tools, it does not invent content when a URL cannot be retrieved. Web OCR fails closed when grounding cannot be verified.
-
-| | |
+| Web application | Open OCR CLI |
 | --- | --- |
-| **Stack** | React 19 · TypeScript · Vite 7 · Zustand · Tailwind · `@google/genai` |
-| **Deployment** | Static SPA (Netlify / Vercel configs included) |
-| **License** | [MIT](LICENSE) |
+| Interactive, responsive workflows | Repeatable document pipelines |
+| Simple, template, bulk, Web, and agentic modes | Files, directories, globs, URLs, and binary stdin |
+| Light, dark, and AMOLED themes | Markdown, JSON, CSV, and JSONL output |
+| Local browser settings and previews | Resume manifests, batch audits, cost limits, and rate control |
 
----
+The project is designed to fail clearly. Truncated model responses are rejected,
+unverifiable URL retrieval is not presented as extracted content, and the CLI
+checks output conflicts before starting paid model work.
 
-## Features
+## Workflows
 
-- **Five modes** — plain OCR, structured templates, bulk batches, grounded URL extraction, and an iterative agent for difficult documents
-- **Model choice** — Gemini 3.5 Flash (default), 3.1 Flash-Lite, 3 Flash Preview, and 3.1 Pro, with configurable reasoning depth
-- **Structured artifacts** — Markdown, JSON, and CSV from template extractions (invoices, receipts, resumes, business cards)
-- **Grounded Web OCR** — Gemini URL context with per-URL verification; no fabricated text on failed retrieval
-- **Themes** — light, dark, and AMOLED; KaTeX-aware Markdown via `streamdown`
-- **Built-in evals** — assertion-based suite under [`evals/`](evals)
-- **Automation-ready CLI** — recursive batches, globs, concurrency, resumable manifests, JSONL, and agentic OCR
-- **Privacy-minded** — no app backend, no telemetry; only outbound traffic is to Gemini with your key
-
----
-
-## Modes
-
-| Mode | Route | Best for | Output |
+| Workflow | Web route | CLI | Best for |
 | --- | --- | --- | --- |
-| **Simple** | `/` | Single image or PDF | Markdown |
-| **Templates** | `/templates` | Invoices, receipts, resumes, business cards | Markdown · JSON · CSV |
-| **Bulk** | `/advanced` | Multi-file jobs | Combined Markdown |
-| **Web** | `/web` | Public URL extraction (grounded) | Markdown |
-| **Agent** | `/agentic` | Iterative recovery on harder documents | Structured fields |
+| **Simple OCR** | `/` | `extract --mode simple` | General text, layout, equations, and image descriptions |
+| **Template OCR** | `/templates` | `extract --preset <id>` | Invoices, receipts, resumes, and business cards |
+| **Bulk OCR** | `/advanced` | `extract <inputs...>` | Multi-document jobs and automation |
+| **Web OCR** | `/web` | `web <urls...>` | Grounded extraction from public URLs |
+| **Agentic OCR** | `/agentic` | `extract --mode agentic` | Iterative field recovery and targeted re-OCR |
 
----
+Built-in templates produce normalized records and, where applicable, table data
+for line items. The CLI also accepts custom JSON Schemas and validates both the
+schema and the returned value locally.
 
 ## Quick start
 
@@ -62,7 +58,7 @@ Unlike many OCR tools, it does not invent content when a URL cannot be retrieved
 - Node.js **20.19+**, **22.13+**, or **24+**
 - A Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
 
-### Install and run
+### Run the web application
 
 ```bash
 git clone https://github.com/cyanxxy/gemini-ocr.git
@@ -71,368 +67,245 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:5173`, set your API key under **Settings**, then choose a mode.
+Open `http://localhost:5173`, choose **Settings**, and add your Gemini API key.
+For a first run, use **Simple OCR** for a document or **Templates** for an
+invoice, receipt, resume, or business card.
 
-- Structured documents → **Templates**
-- Plain text extraction → **Simple**
-
-## Command-line interface
-
-The CLI uses the same extraction engine, templates, models, and agent loop as
-the web application. It is intended for large document folders, data pipelines,
-CI jobs, and shell automation.
-
-### Set the API key
-
-The CLI reads `GEMINI_API_KEY` from the current environment or a project-local
-`.env` file. It does not accept API keys as command-line flags.
-
-```bash
-# macOS / Linux
-export GEMINI_API_KEY="your-key"
-
-# PowerShell
-$env:GEMINI_API_KEY="your-key"
-
-# Verify that the CLI can see the key
-open-ocr-cli doctor
-```
-
-For project-local setup, add `GEMINI_API_KEY=your-key` to `./.env`; `.env` is
-gitignored in this repository. When the key is missing, `open-ocr-cli init` and
-`open-ocr-cli doctor` print platform-specific setup guidance.
-
-### Run from the repository
-
-```bash
-npm ci
-export GEMINI_API_KEY="your-key"
-npm run cli -- extract invoice.pdf
-```
-
-Build and invoke the distributable command:
-
-```bash
-npm run cli:build
-node packages/cli/dist/index.js extract invoice.pdf
-```
-
-After installing the package globally, the primary executable is
-`open-ocr-cli`. The existing `gemini-ocr` command remains a backwards-compatible
-alias:
+### Install Open OCR CLI
 
 ```bash
 npm install --global open-ocr-cli
+export GEMINI_API_KEY="your-key"
+open-ocr-cli doctor
 open-ocr-cli extract invoice.pdf
 ```
 
-### Common workflows
+PowerShell:
+
+```powershell
+$env:GEMINI_API_KEY="your-key"
+open-ocr-cli doctor
+```
+
+The CLI also loads `GEMINI_API_KEY` from a project-local `.env` file. It never
+accepts an API key as a command-line flag or raw configuration value.
+
+## Open OCR CLI
+
+The CLI is published as
+[`open-ocr-cli`](https://www.npmjs.com/package/open-ocr-cli) and installs two
+equivalent commands:
+
+```text
+open-ocr-cli   Primary command
+gemini-ocr     Backwards-compatible alias
+```
+
+### Useful commands
 
 ```bash
-# Create ./.gemini-ocr.json and validate GEMINI_API_KEY
+# Guided project configuration and credential validation
 open-ocr-cli init
 
-# One document to stdout
-open-ocr-cli extract document.pdf
-
-# Recursive directory batch; outputs keep the input directory structure
-open-ocr-cli extract ./documents --output ./results --concurrency 4
-
-# Shell glob with exclusions and resumable processing
-open-ocr-cli extract '**/*.{pdf,png,jpg}' \
-  --exclude '**/archive/**' \
+# A recursive, resumable batch
+open-ocr-cli extract ./documents \
   --output ./results \
+  --concurrency 4 \
   --resume
 
-# Invoice fields plus Markdown, JSON, and CSV artifacts
+# Structured invoice artifacts
 open-ocr-cli extract ./invoices \
   --preset invoice \
   --format all \
   --output ./invoice-results
 
-# Extract arbitrary structured JSON and validate it against your schema
+# Custom structured output
 open-ocr-cli extract invoice.pdf \
   --schema examples/invoice.schema.json \
   --output invoice.json
 
-# Bound request starts and stop scheduling when estimated cost reaches $5
-open-ocr-cli extract ./documents \
-  --requests-per-minute 60 \
-  --max-cost 5 \
-  --output ./results
+# Grounded public-URL extraction
+open-ocr-cli web https://example.com/report.pdf --format markdown
 
-# Agentic extraction for difficult scans
-open-ocr-cli extract difficult-scan.pdf \
-  --mode agentic \
-  --format json \
-  --max-iterations 6
-
-# Machine-readable event stream for another process
-open-ocr-cli extract ./documents --jsonl --quiet --output ./results
+# Validate the complete plan without credentials, API calls, or writes
+open-ocr-cli extract ./documents --dry-run
 
 # Audit a completed or interrupted batch
 open-ocr-cli status ./results
 open-ocr-cli status ./results --json
-
-# Grounded extraction from public URLs
-open-ocr-cli web https://example.com/report.pdf --format markdown
-open-ocr-cli web --file urls.txt --analysis comparison --output comparison.md
-
-# Binary stdin
-cat scan.png | open-ocr-cli extract - --stdin-name scan.png --format json
-
-# Validate discovery, MIME signatures, PDF page counts, and budgets without API calls
-open-ocr-cli extract ./documents --dry-run
 ```
 
-`extract` accepts any mixture of files, directories, and glob patterns. Directory
-inputs are recursive. Supported local formats are PNG, JPEG, WebP, HEIC, HEIF,
-and PDF.
+Inputs can be individual files, recursive directories, shell globs, public URLs,
+or binary stdin. Progress and diagnostics go to `stderr`; extracted content and
+JSONL events stay on `stdout`, so the command is safe to compose in pipelines.
 
-| CLI mode | Select with | Best for | Available output |
-| --- | --- | --- | --- |
-| Simple | `--mode simple` (default) | General text and layout extraction | Markdown · JSON |
-| Template | `--preset <id>` | Invoices, receipts, resumes, and business cards | Markdown · JSON · CSV · all |
-| Agentic | `--mode agentic` | Difficult scans that benefit from iterative field recovery | Markdown · JSON · all |
-| Web | `open-ocr-cli web` | Grounded extraction from public URLs | Markdown · JSON |
+For the complete command reference, configuration keys, batch semantics, and
+exit codes, see the [CLI package guide](packages/cli/README.md).
 
-`--schema <path>` is available in simple mode and implies JSON output. The CLI
-validates the schema before making a request, sends it as Gemini structured-output
-configuration, then validates every response locally. Schemas use the supported
-JSON Schema subset; unsupported keywords fail early with a path-specific error.
+### Configuration precedence
 
-Use `open-ocr-cli presets` to list the installed structured presets and
-`open-ocr-cli models` to list accepted model IDs.
-
-For batches, the default output directory is `./gemini-ocr-output`. It contains:
-
-- One artifact per input document, preserving relative directory structure
-- `.gemini-ocr-manifest.json` for safe `--resume` processing
-- `batch-summary.json` with statuses, latency, model, aggregate token usage, and
-  estimated paid-tier cost
-
-Existing artifacts are never replaced unless `--overwrite` is provided. Batch
-processing continues after per-document failures unless `--fail-fast` is used.
-Progress and errors go to stderr; document content and JSONL events go to stdout,
-so shell pipelines remain clean.
-
-For non-resumed work, the CLI checks every artifact it could produce before any
-worker calls Gemini, including optional CSV output from `--format all`.
-
-Each non-dry-run batch exclusively locks its output directory before any Gemini
-request, preventing concurrent processes from racing resume-manifest updates.
-If a local process is forcibly killed, rerun with `--force-unlock`; recovery is
-allowed only when the lock metadata is valid, its hostname matches this machine,
-and its PID is proven dead. Cross-host or invalid locks still require manual
-review. Resume manifests are strictly validated before any entry is trusted.
-
-Before extraction, the CLI rejects output collisions such as `invoice.pdf` and
-`invoice.png` mapping to the same artifact name. Multi-format artifacts are
-staged with exception rollback, and `--dry-run` shows planned output paths
-without writing them. Hard-link commits are atomic where supported; filesystems
-without hard links use a portable exclusive no-clobber write. A kill or power
-loss can still leave `.tmp`/`.bak` recovery files, so the multi-file operation is
-not crash-atomic or ACID.
-
-Collision checks are intentionally case-insensitive on every platform so a
-batch remains portable to default macOS and Windows filesystems. `open-ocr-cli
-status` uses the latest summary totals and reports cost-limited, cancelled, or
-fail-fast runs as requiring attention, even when every completed artifact is
-present. It also identifies live or stale batch locks by PID, host, and start
-time instead of presenting an older summary as healthy. Missing or archived
-source documents are reported as source drift but do not make intact successful
-artifacts unhealthy.
-
-Resume treats both successful jobs and partial agentic jobs as complete when the
-input/config fingerprint still matches and every recorded artifact exists. This
-avoids repeating model work or colliding with useful partial output; use
-`--overwrite` to intentionally rerun and replace it. `--dry-run` always validates
-every discovered document and ignores resume state. Empty, oversized, spoofed,
-or otherwise invalid documents are reported as individual job failures, while
-batch-wide file-count and total-size safety budgets still stop discovery early.
-
-Every batch summary contains one result for every discovered input. When
-`--fail-fast` stops scheduling work, the remainder is recorded as `skipped`
-with zero attempts instead of disappearing from the summary.
-
-`--requests-per-minute` evenly spaces Gemini request starts across the active
-command; it is not a burst-capable sliding window. Queued waits remain immediately
-abortable on timeout or Ctrl-C. `--max-cost` stops scheduling new batch documents
-and blocks the next request in a multi-request or agentic flow once recorded
-paid-tier usage reaches the limit. A single request and already-running concurrent
-requests cannot be stopped based on post-response token metadata, so the final
-estimate can exceed the limit. Estimates use current list prices and reported
-input totals—which already include tool-use input—so separately reported tool
-tokens are not billed twice. Estimates are guidance rather than billing records.
-
-`MAX_TOKENS` is treated as a hard failure across streamed and non-streamed OCR;
-truncated content is never persisted as success. For unusually long documents,
-retry with `--max-tokens 65536` or lower `--thinking` so more of the generation
-budget remains available for extracted content.
-
-### Configuration
-
-Configuration is merged in this order:
+Configuration is merged from lowest to highest priority:
 
 1. `~/.config/gemini-ocr/config.json`
 2. `./.gemini-ocr.json`
-3. A file passed with `--config`
-4. CLI flags
+3. `--config <path>`
+4. Command-line flags
 
-Example:
+These legacy-compatible paths intentionally retain the `gemini-ocr` name.
+Configuration stores only the environment-variable name used for credentials.
 
-```json
-{
-  "model": "gemini-3.5-flash",
-  "thinking": "MEDIUM",
-  "concurrency": 4,
-  "retries": 3,
-  "timeoutSeconds": 180,
-  "maxFiles": 5000,
-  "maxTotalMb": 20480,
-  "maxCostUsd": 5,
-  "requestsPerMinute": 60,
-  "resume": true,
-  "format": "json",
-  "exclude": ["**/archive/**", "**/.*/**"]
-}
+## Reliability by design
+
+| Contract | Behavior |
+| --- | --- |
+| **Complete responses only** | Non-terminal streams, blocked responses, `MAX_TOKENS`, and unsuccessful interactions fail closed. |
+| **Preflight before spend** | Inputs, schemas, output occupancy, and same-stem collisions are checked before extraction begins. |
+| **No silent document loss** | Every discovered input receives a succeeded, partial, failed, or skipped result. |
+| **Safe batch ownership** | An exclusive output lock prevents concurrent processes from racing manifest updates. |
+| **Recoverable batches** | Fingerprinted manifests support `--resume`; `status` audits artifacts, usage, locks, and source drift. |
+| **No-clobber output** | Existing artifacts require `--overwrite`; unsupported hard links fall back to exclusive writes. |
+| **Bounded API use** | Request spacing, retries, timeouts, concurrency, estimated-cost ceilings, and abort signals share one policy. |
+| **Pipeline-safe streams** | Machine-readable results use `stdout`; human diagnostics use `stderr`. |
+
+Multi-artifact writes use staging and exception rollback. They are deliberately
+documented as best-effort across process crashes or power loss, not as an ACID
+filesystem transaction.
+
+## Architecture
+
+The browser application and CLI share extraction logic, templates, usage
+accounting, request controls, and the agent loop.
+
+```mermaid
+flowchart LR
+  Web["React web application"] --> Core["Shared OCR and extraction layer"]
+  CLI["Open OCR CLI"] --> Core
+  Core --> Generate["generateContent<br/>Simple · Templates · Bulk"]
+  Core --> Interactions["Interactions API<br/>Web · Agentic"]
+  Generate --> Models["Gemini models"]
+  Interactions --> Models
+  Core --> Guardrails["Schemas · retries · usage · cost and rate controls"]
 ```
 
-The API key is read from `GEMINI_API_KEY` by default. To use a different
-environment variable, set `"apiKeyEnv": "YOUR_VARIABLE"` in the config. Raw API
-keys should not be committed to configuration files. Configuration is
-allowlisted: unknown keys are ignored with a warning and are not included in
-`doctor --json` output.
+Agentic OCR uses a two-loop design:
 
-Run `open-ocr-cli init` for guided project configuration, or
-`open-ocr-cli init --global` for the user configuration. The command stores only
-the environment-variable name, never the API key. Use `--yes` for recommended
-non-interactive defaults and `--skip-validation` to avoid the credential check.
-
-Supported configuration keys are `model`, `thinking`, `includeThoughts`,
-`mode`, `preset`, `format`, `output`, `concurrency`, `retries`,
-`timeoutSeconds`, `maxFiles`, `maxTotalMb`, `resume`, `overwrite`, `failFast`,
-`hidden`, `exclude`, `instructions`, `detectImages`, `detectMath`, `maxTokens`,
-`maxIterations`, `confidenceThreshold`, and `apiKeyEnv`.
-It also accepts `schema`, `maxCostUsd`, and `requestsPerMinute`.
-
-Useful discovery commands:
-
-```bash
-open-ocr-cli presets
-open-ocr-cli models
-open-ocr-cli doctor
-open-ocr-cli status ./results
-open-ocr-cli init --help
-open-ocr-cli extract --help
-open-ocr-cli web --help
-```
-
-Exit status is `0` when all scheduled documents succeed or resume cleanly, `1`
-for extraction/Web runtime failures, partial agentic results, or a reached cost
-limit, `2` for command/configuration errors, `130` for SIGINT, and `143` for
-SIGTERM. Partial agentic artifacts are still written and retain their explicit
-stop reason.
-
----
+- An outer document loop evaluates confidence and coverage.
+- An inner interaction loop lets Gemini request one tool, inspect its result,
+  and decide the next action.
+- The original document is sent once; stored interaction chaining carries
+  context into later tool rounds.
+- Structure analysis, batch field extraction, validation, and targeted region
+  re-OCR update a local audit transcript and agent memory.
 
 ## Models and reasoning
 
-| Model ID | Status | Thinking levels | Notes |
-| --- | --- | --- | --- |
-| `gemini-3.5-flash` | Stable | MINIMAL · LOW · MEDIUM · HIGH | Default; recommended for most work |
-| `gemini-3.1-flash-lite` | Stable | MINIMAL · LOW · MEDIUM · HIGH | Lowest cost / high volume |
-| `gemini-3-flash-preview` | Preview¹ | MINIMAL · LOW · MEDIUM · HIGH | Preview Flash |
-| `gemini-3.1-pro-preview` | Preview¹ | LOW · MEDIUM · HIGH | Highest reasoning |
+The current release accepts these model IDs:
 
-¹ Preview models may change or be retired without notice.
+| Model | Project role | Thinking levels |
+| --- | --- | --- |
+| `gemini-3.5-flash` | Default; recommended for most documents | MINIMAL · LOW · MEDIUM · HIGH |
+| `gemini-3.1-flash-lite` | Lower-cost, high-volume extraction | MINIMAL · LOW · MEDIUM · HIGH |
+| `gemini-3-flash-preview` | Preview Flash option | MINIMAL · LOW · MEDIUM · HIGH |
+| `gemini-3.1-pro-preview` | Highest-reasoning option | LOW · MEDIUM · HIGH |
 
-**Thinking depth** is set in Settings (app default: **MEDIUM**).
+The application default is **MEDIUM**. Agentic mode raises `MINIMAL` to
+`MEDIUM`, and unsupported levels are clamped to a model-compatible value.
 
-- Pro does not support `MINIMAL` (clamped to supported levels).
-- Agentic mode raises `MINIMAL` to `MEDIUM` for extraction quality.
-- Unset levels follow model defaults (Flash-Lite → minimal, 3.5 Flash → medium, 3 Flash Preview/Pro → high).
+## Inputs, outputs, and limits
 
----
-
-## Limits
-
-| Constraint | Value |
+| Constraint | Current limit |
 | --- | --- |
-| Image upload | **70 MB raw** (keeps base64 plus prompt/JSON below the 100 MB inline-payload ceiling) |
-| PDF upload | **50 MB**, up to **1,000 pages** |
-| Web-app bulk batch | Up to **200** files, **500 MB** total |
-| CLI batch default | Up to **1,000** files, **5,120 MB** total; configurable with safety flags |
-| CLI concurrency | **2** by default; configurable from **1–16** |
-| Local formats | `png`, `jpg`/`jpeg`, `webp`, `heic`, `heif`, `pdf` |
-| Web OCR URLs | Up to **20** per request |
+| Local formats | PNG · JPEG · WebP · HEIC · HEIF · PDF |
+| Image input | 70 MB raw |
+| PDF input | 50 MB and up to 1,000 pages |
+| Web-app bulk queue | 200 files and 500 MB total |
+| CLI batch defaults | 1,000 files and 5,120 MB total; configurable |
+| CLI concurrency | 2 by default; configurable from 1–16 |
+| Web OCR | Up to 20 public HTTP(S) URLs per request |
+| Output | Markdown · JSON · CSV · JSONL · agent audit steps |
 
-### Web OCR rules
+Web OCR rejects credentials in URLs, localhost, private network ranges, and
+common tunnel hosts. It verifies retrieval metadata per URL and reports failed
+or unverifiable grounding instead of generating substitute content.
 
-- Only public `http`/`https` URLs; credentials in URLs, localhost, private ranges, and tunnel hosts (e.g. ngrok) are rejected
-- Duplicates are de-duplicated; in-progress runs can be cancelled
-- Retrieval metadata is verified per URL; failure or unverifiable grounding surfaces an error instead of guessed content
+## Security and privacy
 
----
+> [!IMPORTANT]
+> The browser stores the API key in `localStorage` with light obfuscation, not
+> strong encryption. Anyone with access to that browser profile can recover it.
+
+- There is no application backend and no telemetry service. Documents are sent
+  directly to the Gemini API using the key supplied by the user.
+- The CLI reads credentials from the environment and never serializes the raw
+  key into its configuration or batch metadata.
+- Agentic mode uses stored Gemini Interactions so later rounds can reference the
+  original document. Those interactions follow Google's
+  [data-retention policy](https://ai.google.dev/gemini-api/docs/interactions).
+- One-shot Web OCR explicitly disables interaction storage.
+- File signatures, MIME types, sizes, PDF page counts, URL schemes, and custom
+  schemas are validated before use.
+- Production builds omit source maps and ship CSP and other hardening headers
+  through the included Netlify and Vercel configuration.
+
+Use a trusted browser profile, rotate exposed keys, and prefer a backend proxy
+when deploying with organization-owned credentials. See [SECURITY.md](SECURITY.md)
+for private vulnerability reporting.
 
 ## Development
 
-### Scripts
-
-| Command | Description |
-| --- | --- |
-| `npm run dev` | Start Vite dev server |
-| `npm run build` | Production build |
-| `npm run preview` | Preview production build |
-| `npm run typecheck` | TypeScript (`tsc --noEmit`) |
-| `npm run cli -- extract …` | Run the CLI directly from TypeScript |
-| `npm run cli:build` | Build the distributable Node CLI |
-| `npm run cli:smoke` | Build the CLI and verify its command surface |
-| `npm run cli:pack` | Create the publishable standalone CLI package |
-| `npm run lint` | ESLint |
-| `npm test` | Vitest (single run) |
-| `npm run test:watch` | Vitest watch mode |
-| `npm run test:coverage` | Coverage report |
-| `npm run evals:validate` | Static checks on eval cases/corpus |
-| `npm run evals:fixtures` | Rebuild local PDFs plus deterministic raster/degraded fixtures |
-| `npm run evals:setup` | Download pinned CORD and OmniDocBench subsets into the ignored cache |
-| `npm run evals:canary` | Small live Gemini eval (`GEMINI_API_KEY` required) |
-| `npm run evals` | Full local and public-dataset live eval (`GEMINI_API_KEY` required) |
-| `npm run evals:benchmark` | Public benchmark subset only (`GEMINI_API_KEY` required) |
-| `npm run evals:stability` | Public benchmark subset repeated three times |
-| `npm run evals:report` | Render latest eval report as Markdown |
-
-### Quality gates
-
-CI (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every push and pull request:
-
-- Type-check · Lint · Tests + coverage thresholds · Dependency audit · Eval fixture validation · Production build
-
-Before opening a PR:
+### Quality commands
 
 ```bash
-npm run typecheck && npm run lint && npm test && npm run build
+npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run evals:validate
 ```
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start the Vite development server |
+| `npm run build` | Create the production web build |
+| `npm run preview` | Preview the production build |
+| `npm run typecheck` | Check browser, Node, and CLI TypeScript projects |
+| `npm run lint` | Run ESLint |
+| `npm test` | Run the Vitest suite |
+| `npm run test:coverage` | Run tests with coverage thresholds |
+| `npm run cli -- extract …` | Run the TypeScript CLI locally |
+| `npm run cli:smoke` | Build and smoke-test the packaged executable |
+| `npm run cli:pack` | Create the standalone npm tarball |
+| `npm run evals:validate` | Validate evaluation cases and corpus metadata |
+| `npm run evals:canary` | Run the small live Gemini evaluation suite |
+| `npm run evals` | Run the complete live evaluation suite |
+
+CI runs typechecking, linting, tests with coverage, dependency auditing,
+evaluation-fixture validation, and the production build. Version tags run the
+release gates again before GitHub publishes an artifact.
 
 ### Project layout
 
 ```text
 src/
-  cli/            Node CLI discovery, orchestration, outputs, and native rasterization
-  components/     UI (atoms → molecules → organisms, layout, modals)
-  pages/          One screen per mode
+  cli/            Commands, discovery, orchestration, artifacts, status
+  components/     Reusable UI from atoms through page-level organisms
+  pages/          Simple, Templates, Web, Bulk, and Agentic workflows
   lib/
-    gemini/       Client, Interactions API helpers, extraction, URL ops
-    templates/    Structured extraction presets
-    agent*.ts     Agentic OCR loop, tools, memory
-  store/          Zustand stores (settings + one per mode)
-  hooks/          Shared hooks
+    gemini/       Client, extraction, Interactions, usage, request policy
+    templates/    Structured extraction presets and rendering
+    agent*.ts     Agent loop, tools, prompts, memory, and audit steps
+  store/          Zustand settings and workflow stores
+  hooks/          Shared React hooks
   design/         Theme tokens
-evals/            Assertion-based AI eval suite
-packages/cli/     Standalone npm package metadata and distributable build
+evals/            Reproducible OCR quality and regression evaluations
+packages/cli/     Publishable Open OCR CLI package
 ```
 
-### AI evals
+### AI evaluations
+
+The evaluation suite measures character and word error rates, edit similarity,
+coverage, unsupported text, structured-field precision/recall/F1, critical-field
+exact match, table-cell F1, latency, and per-mode breakdowns.
 
 ```bash
 npm run evals:fixtures
@@ -443,47 +316,28 @@ GEMINI_API_KEY=your_key npm run evals
 npm run evals:report
 ```
 
-The evaluator reports CER, normalized CER, WER, edit similarity, text coverage,
-unsupported-text rate, field precision/recall/F1, critical-field exact match,
-table-cell F1, latency, and mode/tag breakdowns. Public dataset files and
-timestamped raw outputs remain local and untracked. See [`evals/README.md`](evals/README.md)
-for dataset terms, scoring details, and suite composition.
+Public benchmark downloads and timestamped raw outputs remain local and
+untracked. The committed [latest report](evals/reports/latest.md) is a historical
+snapshot; its header states when it needs regeneration. See
+[evals/README.md](evals/README.md) for datasets, scoring, and reproduction steps.
 
-| Path | Contents |
-| --- | --- |
-| [`evals/cases`](evals/cases) | Assertions and fixtures |
-| [`evals/corpus`](evals/corpus) | Input documents |
-| [`evals/references`](evals/references) | Versioned text and structured ground truth |
-| [`evals/reports/latest.md`](evals/reports/latest.md) | Last committed Markdown report |
-| [`evals/reports/latest.json`](evals/reports/latest.json) | Last committed JSON summary |
+## Deployment
 
-`latest.md` / `latest.json` are snapshots from the last manual run (see the report timestamp). They may lag the current code or case set until you re-run evals.
-
----
-
-## Security and privacy
-
-- API keys are stored in `localStorage` with **light obfuscation only** — anyone with access to the browser profile can recover them.
-- Prefer trusted, private devices. For production, proxy Gemini through a backend instead of embedding long-lived keys in the client.
-- Files are read in the browser and sent only to the Gemini API; no other third-party data path.
-- Agent mode uses Gemini's stored Interactions chaining so later tool rounds can reference the first document upload. Those interactions are subject to Google's [Interactions data-retention policy](https://ai.google.dev/gemini-api/docs/interactions). One-shot Web OCR explicitly disables interaction storage.
-- Netlify/Vercel configs set hardening headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Strict-Transport-Security`, `Permissions-Policy`) plus the in-document CSP. HSTS omits `preload` by design.
-- Production builds omit source maps by default.
-
-See [SECURITY.md](SECURITY.md) for vulnerability reporting.
-
----
+`npm run build` produces a static application in `dist/`. Deployment
+configuration is included for Netlify and Vercel. Release tags also attach a
+production build archive to the corresponding
+[GitHub release](https://github.com/cyanxxy/gemini-ocr/releases).
 
 ## Contributing
 
-Contributions are welcome.
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), follow
+the community expectations in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and
+include tests or evaluation evidence for behavior changes.
 
-- Setup and PR checklist: [CONTRIBUTING.md](CONTRIBUTING.md)
-- User-facing release history: [CHANGELOG.md](CHANGELOG.md)
-- Community standards: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-
----
+- [Open issues](https://github.com/cyanxxy/gemini-ocr/issues)
+- [Release history](CHANGELOG.md)
+- [Security policy](SECURITY.md)
 
 ## License
 
-[MIT](LICENSE)
+Released under the [MIT License](LICENSE).
