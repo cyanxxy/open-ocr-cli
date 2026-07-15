@@ -1,6 +1,6 @@
 {
   "name": "open-ocr-cli",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Provider-neutral multimodal OCR CLI for images, PDFs, URLs, JSON schemas, and agentic extraction with Gemini, Kimi, Muse, and OpenRouter.",
   "license": "MIT",
   "type": "module",
@@ -47,6 +47,7 @@
     "prepack": "npm --prefix ../.. run cli:build"
   },
   "dependencies": {
+    "@clack/prompts": "^1.7.0",
     "@google/genai": "^2.11.0",
     "@napi-rs/canvas": "^1.0.2",
     "ajv": "^8.20.0",

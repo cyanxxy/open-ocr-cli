@@ -80,9 +80,15 @@ invoice, receipt, resume, or business card.
 ```bash
 npm install --global open-ocr-cli
 export GEMINI_API_KEY="your-key"
-open-ocr-cli doctor
-open-ocr-cli extract invoice.pdf
+open-ocr-cli
 ```
+
+Running `open-ocr-cli` with no arguments in an interactive terminal opens the
+guided menu. Use the arrow keys to choose Extract, Web, Init, Providers, Models,
+Presets, Doctor, Status, or Help; press Enter to confirm and Ctrl-C to cancel.
+When stdin or the prompt stream is not a TTY, the bare command prints help
+instead. If you installed the package locally with `npm install open-ocr-cli`,
+run `npx open-ocr-cli` instead.
 
 PowerShell:
 
@@ -149,6 +155,9 @@ gemini-ocr     Backwards-compatible alias
 ### Useful commands
 
 ```bash
+# Guided command menu (also available as `open-ocr-cli interactive`)
+open-ocr-cli
+
 # Guided project configuration and credential validation
 open-ocr-cli init
 
@@ -187,6 +196,8 @@ open-ocr-cli models --provider openrouter
 Inputs can be individual files, recursive directories, shell globs, public URLs,
 or binary stdin. Progress and diagnostics go to `stderr`; extracted content and
 JSONL events stay on `stdout`, so the command is safe to compose in pipelines.
+Direct subcommands never prompt unless the command itself is interactive, so
+existing scripts and CI workflows keep deterministic behavior.
 
 For the complete command reference, configuration keys, batch semantics, and
 exit codes, see the [CLI package guide](packages/cli/README.md).

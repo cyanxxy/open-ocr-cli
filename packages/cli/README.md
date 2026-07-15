@@ -12,11 +12,21 @@ Node.js 20.19+, 22.13+, or 24+ is required.
 ```bash
 npm install --global open-ocr-cli
 export GEMINI_API_KEY="your-key"
-open-ocr-cli extract invoice.pdf
+open-ocr-cli
 ```
 
 `open-ocr-cli` is the primary executable. `gemini-ocr` remains an equivalent
 backwards-compatible alias.
+
+Running with no arguments in an interactive terminal opens a guided arrow-key
+menu covering every command: Extract, Web, Init, Providers, Models, Presets,
+Doctor, Status, and Help. Press Enter to select and Ctrl-C to cancel. When stdin
+or the prompt stream is not a TTY, the bare command prints help instead. You can
+also launch it explicitly with `open-ocr-cli interactive`.
+
+For a project-local install, use `npx open-ocr-cli`. Direct subcommands such as
+`open-ocr-cli extract invoice.pdf` remain non-interactive and safe for scripts
+and CI.
 
 ## Pick a provider
 
@@ -110,6 +120,9 @@ for the corresponding dashboard setup.
 ## Common workflows
 
 ```bash
+# Guided menu for choosing a command, provider, model, mode, and output
+open-ocr-cli
+
 # Guided provider-aware project configuration and credential validation
 open-ocr-cli init
 

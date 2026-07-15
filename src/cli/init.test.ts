@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runInit, type InitPrompter } from './init';
+import { cliExitCode } from './errors';
 
 let directory: string;
 
@@ -44,6 +45,96 @@ describe('CLI init', () => {
     expect(config).not.toHaveProperty('apiKey');
     expect(await readFile(path.join(directory, '.open-ocr-cli.json'), 'utf8')).not.toContain('secret-value');
     expect(output.join('')).toContain('credential validated');
+  });
+
+  it('shows fixed-choice options and re-prompts after an invalid provider', async () => {
+    const output: string[] = [];
+    const questions: string[] = [];
+    const responses = ['y', '1', '1', '1', '3'];
+    let responseIndex = 0;
+    const prompter: InitPrompter = {
+      ask: (question, defaultValue) => {
+        questions.push(question);
+        return Promise.resolve(responses[responseIndex++] ?? defaultValue);
+      },
+      confirm: () => Promise.resolve(true),
+      close: () => undefined,
+    };
+    const result = await runInit({ skipValidation: true }, {
+      cwd: directory,
+      env: {},
+      prompter,
+      writeOutput: (text) => output.push(text),
+    });
+
+    expect(result).toMatchObject({ written: true, provider: 'gemini', gateway: 'direct' });
+    expect(questions.slice(0, 2)).toEqual([
+      'Choose provider by number or value',
+      'Choose provider by number or value',
+    ]);
+    expect(questions).toContain('Choose gateway by number or value');
+    expect(questions).toContain('Choose default model by number or value');
+    expect(questions).toContain('Choose thinking level by number or value');
+    expect(output.join('')).toContain('1. Google Gemini (gemini) (default)');
+    expect(output.join('')).toContain('2. Moonshot Kimi (kimi)');
+    expect(output.join('')).toContain('1. Direct provider API (direct) (default)');
+    expect(output.join('')).toContain('gemini-3.1-flash-lite');
+    expect(output.join('')).toContain('MEDIUM — balanced (recommended) (default)');
+    expect(output.join('')).toContain('Invalid provider "y". Enter 1-5');
+  });
+
+  it('offers recommended models plus a custom model choice', async () => {
+    const output: string[] = [];
+    const result = await runInit({ skipValidation: true }, {
+      cwd: directory,
+      env: {},
+      prompter: answers(['2', '1', '2', 'kimi-custom-vision', '3']),
+      writeOutput: (text) => output.push(text),
+    });
+
+    expect(result).toMatchObject({ written: true, provider: 'kimi', gateway: 'direct' });
+    const config = JSON.parse(await readFile(result.configPath, 'utf8')) as Record<string, unknown>;
+    expect(config.model).toBe('kimi-custom-vision');
+    expect(output.join('')).toContain('1. kimi-k2.6 (default)');
+    expect(output.join('')).toContain('2. Enter a custom model ID');
+  });
+
+  it('maps Ctrl-C during interactive setup to exit code 130', async () => {
+    const abort = Object.assign(new Error('Aborted with Ctrl+C'), { code: 'ABORT_ERR' });
+    let thrown: unknown;
+    try {
+      await runInit({}, {
+        cwd: directory,
+        prompter: {
+          ask: () => Promise.reject(abort),
+          confirm: () => Promise.resolve(false),
+          close: () => undefined,
+        },
+        writeOutput: () => undefined,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(cliExitCode(thrown)).toBe(130);
+  });
+
+  it('fails fast when interactive init has no terminal', async () => {
+    let thrown: unknown;
+    try {
+      await runInit({ skipValidation: true }, {
+        cwd: directory,
+        stdinIsTTY: false,
+        stderrIsTTY: false,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain('pass --yes');
+    expect(cliExitCode(thrown)).toBe(2);
   });
 
   it('does not replace existing configuration when confirmation is declined', async () => {

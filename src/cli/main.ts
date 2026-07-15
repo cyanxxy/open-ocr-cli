@@ -3,7 +3,7 @@ import process from 'node:process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { Command, Option } from 'commander';
+import { Command, CommanderError, Option } from 'commander';
 
 import { listExtractionPresets } from '../lib/templates';
 import {
@@ -21,6 +21,7 @@ import { credentialSetupGuidance, loadCliConfig, loadLocalEnv, resolveCliOptions
 import { asCliExitError, cliSignalExitCode, type CliExitCode } from './errors';
 import { discoverInputs } from './inputs';
 import { runInit, type InitFlags } from './init';
+import { promptInteractiveArguments } from './interactive';
 import { loadCustomSchema } from './schema';
 import { runBatch } from './runner';
 import { inspectBatchStatus, renderBatchStatus } from './status';
@@ -130,9 +131,12 @@ export function createProgram(binaryName = PRIMARY_CLI_NAME): Command {
     .name(commandName)
     .description('Provider-neutral multimodal OCR for files, URLs, and document pipelines')
     .version(cliVersion())
+    .exitOverride()
     .showHelpAfterError()
     .addHelpText('after', `
 Examples:
+  $ ${commandName}                       # guided interactive mode
+  $ ${commandName} interactive           # explicitly launch the command menu
   $ ${commandName} init
   $ ${commandName} extract invoice.pdf
   $ ${commandName} extract invoice.pdf --provider kimi --model kimi-k2.6
@@ -157,6 +161,18 @@ Configuration is loaded from the legacy Gemini paths, then
 ~/.config/open-ocr-cli/config.json, ./.open-ocr-cli.json, and --config.
 CLI flags take precedence.
 `);
+
+  program.command('interactive')
+    .alias('i')
+    .description('launch the guided command menu')
+    .action(async () => {
+      if (!process.stdin.isTTY || !process.stderr.isTTY) {
+        throw asCliExitError(new Error('Interactive mode requires a terminal (TTY)'), 2);
+      }
+      const selectedArguments = await promptInteractiveArguments();
+      if (!selectedArguments) return;
+      await createProgram(commandName).parseAsync(['node', commandName, ...selectedArguments]);
+    });
 
   addExtractOptions(program.command('extract').description('extract one or many documents'))
     .action(async (inputs: string[], flags: ExtractCommandFlags) => {
@@ -449,9 +465,30 @@ CLI flags take precedence.
 
 export async function main(argv: string[] = process.argv): Promise<void> {
   const program = createProgram(cliBinaryName(argv));
-  if (argv.length <= 2) {
-    program.outputHelp();
-    return;
+  try {
+    if (argv.length <= 2) {
+      if (process.stdin.isTTY && process.stderr.isTTY) {
+        const selectedArguments = await promptInteractiveArguments();
+        if (selectedArguments) {
+          await createProgram(cliBinaryName(argv)).parseAsync([
+            argv[0] ?? 'node',
+            argv[1] ?? PRIMARY_CLI_NAME,
+            ...selectedArguments,
+          ]);
+        }
+      } else {
+        program.outputHelp();
+      }
+      return;
+    }
+    await program.parseAsync(argv);
+  } catch (error) {
+    if (error instanceof CommanderError) {
+      // Commander has already rendered parser errors and help. Preserve normal
+      // help/version success while mapping usage errors to the CLI contract.
+      if (error.exitCode !== 0) process.exitCode = 2;
+      return;
+    }
+    throw error;
   }
-  await program.parseAsync(argv);
 }
