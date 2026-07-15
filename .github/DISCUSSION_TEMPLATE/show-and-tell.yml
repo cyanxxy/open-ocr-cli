@@ -3,7 +3,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Share a preset, workflow, or output you built with Open Gemini OCR.
+        Share a preset, workflow, or output you built with Open OCR CLI.
         This template is picked up when the repository has a Discussions category with the slug `show-and-tell`.
   - type: input
     id: preset

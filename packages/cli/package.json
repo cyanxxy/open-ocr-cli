@@ -1,7 +1,7 @@
 {
   "name": "open-ocr-cli",
-  "version": "1.6.0",
-  "description": "Open-source document extraction CLI for images and PDFs powered by Google Gemini.",
+  "version": "2.0.0",
+  "description": "Provider-neutral multimodal OCR CLI for images, PDFs, URLs, JSON schemas, and agentic extraction with Gemini, Kimi, Muse, and OpenRouter.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -16,7 +16,17 @@
   "keywords": [
     "ocr",
     "gemini",
+    "kimi",
+    "muse",
+    "openrouter",
+    "openai-compatible",
+    "cloudflare-ai-gateway",
+    "multimodal-ocr",
+    "json-schema",
+    "structured-output",
+    "agentic-ocr",
     "cli",
+    "command-line-tool",
     "pdf",
     "document-extraction",
     "batch-ocr"
@@ -43,6 +53,8 @@
     "ajv-formats": "^3.0.1",
     "commander": "^14.0.0",
     "fast-glob": "^3.3.3",
+    "html-to-text": "^10.0.0",
+    "ipaddr.js": "^2.4.0",
     "pdfjs-dist": "^5.6.205",
     "sharp": "^0.35.3"
   },

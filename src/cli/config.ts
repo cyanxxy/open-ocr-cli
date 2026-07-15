@@ -4,7 +4,19 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 
-import type { GeminiModel, ThinkingLevel } from '../lib/gemini';
+import type { ThinkingLevel } from '../lib/gemini';
+import {
+  GATEWAY_IDS,
+  GEMINI_MODELS,
+  PROVIDER_IDS,
+  isLocalBaseUrl,
+  providerDefaultApiKeyEnv,
+  providerDefaultModel,
+  providerTokenPrice,
+  resolveProviderBaseUrl,
+  type GatewayId,
+  type ProviderId,
+} from '../lib/providers';
 import { getExtractionPreset } from '../lib/templates';
 import { asRecord } from './jsonValidation';
 import {
@@ -20,6 +32,8 @@ import {
 
 const DEFAULT_CONFIG: Required<Pick<
   ResolvedCliOptions,
+  | 'provider'
+  | 'gateway'
   | 'model'
   | 'thinking'
   | 'includeThoughts'
@@ -46,6 +60,8 @@ const DEFAULT_CONFIG: Required<Pick<
   | 'confidenceThreshold'
   | 'requestsPerMinute'
 >> = {
+  provider: 'gemini',
+  gateway: 'direct',
   model: 'gemini-3.5-flash',
   thinking: 'MEDIUM',
   includeThoughts: false,
@@ -74,9 +90,20 @@ const DEFAULT_CONFIG: Required<Pick<
 };
 
 function pickConfig(value: Record<string, unknown>, label: string): CliConfigFile {
-  const stringKeys = ['model', 'thinking', 'mode', 'preset', 'format', 'output', 'apiKeyEnv', 'schema'] as const;
-  const numberKeys = ['concurrency', 'retries', 'timeoutSeconds', 'maxFiles', 'maxTotalMb', 'maxTokens', 'maxIterations', 'confidenceThreshold', 'maxCostUsd', 'requestsPerMinute'] as const;
-  const booleanKeys = ['includeThoughts', 'resume', 'overwrite', 'failFast', 'hidden', 'detectImages', 'detectMath'] as const;
+  const stringKeys = [
+    'provider', 'gateway', 'model', 'baseUrl', 'thinking', 'mode', 'preset', 'format', 'output',
+    'apiKeyEnv', 'schema', 'cloudflareAccountId', 'cloudflareGatewayId', 'cloudflareTokenEnv',
+    'cloudflareByokAlias', 'cloudflareProvider',
+  ] as const;
+  const numberKeys = [
+    'concurrency', 'retries', 'timeoutSeconds', 'maxFiles', 'maxTotalMb', 'maxTokens',
+    'maxIterations', 'confidenceThreshold', 'maxCostUsd', 'requestsPerMinute',
+    'inputPricePerMillionUsd', 'outputPricePerMillionUsd',
+  ] as const;
+  const booleanKeys = [
+    'includeThoughts', 'resume', 'overwrite', 'failFast', 'hidden', 'detectImages',
+    'detectMath', 'cloudflareByok',
+  ] as const;
   const arrayKeys = ['exclude', 'instructions'] as const;
   const knownKeys = new Set<string>([...stringKeys, ...numberKeys, ...booleanKeys, ...arrayKeys]);
 
@@ -125,16 +152,20 @@ async function readConfigFile(filePath: string, required: boolean): Promise<CliC
 }
 
 export async function loadCliConfig(cwd: string, explicitPath?: string): Promise<CliConfigFile> {
-  const userPath = path.join(homedir(), '.config', 'gemini-ocr', 'config.json');
-  const projectPath = path.join(cwd, '.gemini-ocr.json');
-  const [user, project] = await Promise.all([
+  const legacyUserPath = path.join(homedir(), '.config', 'gemini-ocr', 'config.json');
+  const userPath = path.join(homedir(), '.config', 'open-ocr-cli', 'config.json');
+  const legacyProjectPath = path.join(cwd, '.gemini-ocr.json');
+  const projectPath = path.join(cwd, '.open-ocr-cli.json');
+  const [legacyUser, user, legacyProject, project] = await Promise.all([
+    readConfigFile(legacyUserPath, false),
     readConfigFile(userPath, false),
+    readConfigFile(legacyProjectPath, false),
     readConfigFile(projectPath, false),
   ]);
   const explicit = explicitPath
     ? await readConfigFile(path.resolve(cwd, explicitPath), true)
     : {};
-  return { ...user, ...project, ...explicit };
+  return { ...legacyUser, ...user, ...legacyProject, ...project, ...explicit };
 }
 
 export function loadLocalEnv(cwd: string): void {
@@ -144,9 +175,9 @@ export function loadLocalEnv(cwd: string): void {
   }
 }
 
-export function credentialSetupGuidance(apiKeyEnv: string, cwd: string): string {
+export function credentialSetupGuidance(apiKeyEnv: string, cwd: string, provider = 'provider'): string {
   return [
-    `Set ${apiKeyEnv} before running extraction:`,
+    `Set ${apiKeyEnv} with your ${provider} API key before running extraction:`,
     `  macOS/Linux: export ${apiKeyEnv}="your-key"`,
     `  PowerShell:   $env:${apiKeyEnv}="your-key"`,
     `  Project:      add ${apiKeyEnv}=your-key to ${path.join(cwd, '.env')} (keep it out of version control)`,
@@ -193,14 +224,44 @@ export function resolveCliOptions(
   fileConfig: CliConfigFile,
   cwd: string,
 ): ResolvedCliOptions {
-  const model = oneOf<GeminiModel>(
-    flags.model ?? process.env.GEMINI_OCR_MODEL ?? fileConfig.model,
-    SUPPORTED_MODELS,
-    '--model',
-    DEFAULT_CONFIG.model,
+  const configuredProvider = fileConfig.provider ?? DEFAULT_CONFIG.provider;
+  const selectedProvider = flags.provider ?? process.env.OPEN_OCR_PROVIDER;
+  const provider = oneOf<ProviderId>(
+    selectedProvider ?? configuredProvider,
+    PROVIDER_IDS,
+    '--provider',
+    DEFAULT_CONFIG.provider,
   );
+  const providerContextMatches = selectedProvider === undefined || selectedProvider === configuredProvider;
+  const configuredGateway = fileConfig.gateway ?? DEFAULT_CONFIG.gateway;
+  const selectedGateway = flags.gateway ?? process.env.OPEN_OCR_GATEWAY;
+  const gateway = oneOf<GatewayId>(
+    selectedGateway ?? configuredGateway,
+    GATEWAY_IDS,
+    '--gateway',
+    DEFAULT_CONFIG.gateway,
+  );
+  const gatewayContextMatches = selectedGateway === undefined || selectedGateway === configuredGateway;
+  const selectedModel = flags.model
+    ?? process.env.OPEN_OCR_MODEL
+    ?? (provider === 'gemini' ? process.env.GEMINI_OCR_MODEL : undefined);
+  const configuredModel = providerContextMatches
+    ? fileConfig.model ?? providerDefaultModel(provider)
+    : providerDefaultModel(provider);
+  const model = selectedModel
+    ?? configuredModel
+    ?? providerDefaultModel(provider);
+  if (!model) throw new Error('--model is required for the openai-compatible provider');
+  if (provider === 'gemini' && !GEMINI_MODELS.includes(model as (typeof GEMINI_MODELS)[number])) {
+    throw new Error(`--model must be one of: ${SUPPORTED_MODELS.join(', ')}`);
+  }
   let thinking = oneOf<ThinkingLevel>(
-    (flags.thinking ?? process.env.GEMINI_OCR_THINKING ?? fileConfig.thinking)?.toUpperCase(),
+    (
+      flags.thinking
+      ?? process.env.OPEN_OCR_THINKING
+      ?? (provider === 'gemini' ? process.env.GEMINI_OCR_THINKING : undefined)
+      ?? fileConfig.thinking
+    )?.toUpperCase(),
     ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'],
     '--thinking',
     DEFAULT_CONFIG.thinking,
@@ -216,7 +277,7 @@ export function resolveCliOptions(
   const preset = flags.preset ?? fileConfig.preset;
   const effectiveMode: CliMode = preset && !flags.mode && !fileConfig.mode ? 'template' : mode;
 
-  if (model === 'gemini-3.1-pro-preview' && thinking === 'MINIMAL') thinking = 'LOW';
+  if (provider === 'gemini' && model === 'gemini-3.1-pro-preview' && thinking === 'MINIMAL') thinking = 'LOW';
   if (effectiveMode === 'agentic' && thinking === 'MINIMAL') thinking = 'MEDIUM';
   if (schemaPath && preset) throw new Error('--schema cannot be combined with --preset');
   if (effectiveMode === 'template' && !preset) throw new Error('--preset is required when --mode template is selected');
@@ -224,16 +285,116 @@ export function resolveCliOptions(
   if (format === 'csv' && effectiveMode !== 'template') throw new Error('--format csv is only available in template mode');
   if (schemaPath && effectiveMode !== 'simple') throw new Error('--schema is only available in simple mode');
   if (schemaPath && format !== 'json') throw new Error('--schema requires --format json');
+  const maxTokens = integer(flags.maxTokens ?? fileConfig.maxTokens, DEFAULT_CONFIG.maxTokens, '--max-tokens', 256, 65536);
+  if (
+    effectiveMode === 'agentic'
+    && thinking !== 'MINIMAL'
+    && model.includes('kimi-k2.6')
+    && maxTokens < 16_000
+  ) {
+    throw new Error('--max-tokens must be at least 16000 for Kimi K2.6 agentic tool use with thinking enabled');
+  }
 
-  const apiKeyEnv = fileConfig.apiKeyEnv || 'GEMINI_API_KEY';
+  const cloudflareAccountId = flags.cloudflareAccountId
+    ?? process.env.CLOUDFLARE_ACCOUNT_ID
+    ?? fileConfig.cloudflareAccountId;
+  const cloudflareGatewayId = flags.cloudflareGatewayId
+    ?? process.env.CLOUDFLARE_AI_GATEWAY_ID
+    ?? fileConfig.cloudflareGatewayId;
+  const cloudflareProvider = flags.cloudflareProvider
+    ?? (providerContextMatches ? fileConfig.cloudflareProvider : undefined);
+  const baseUrl = resolveProviderBaseUrl({
+    provider,
+    gateway,
+    baseUrl: flags.baseUrl
+      ?? (providerContextMatches && gatewayContextMatches ? fileConfig.baseUrl : undefined),
+    cloudflareAccountId,
+    cloudflareGatewayId,
+    cloudflareProvider,
+  });
+  const apiKeyEnv = flags.apiKeyEnv
+    ?? (providerContextMatches ? fileConfig.apiKeyEnv : undefined)
+    ?? providerDefaultApiKeyEnv(provider);
   const apiKey = process.env[apiKeyEnv]?.trim() || '';
-  if (!apiKey && !flags.dryRun) {
-    throw new Error(`Gemini API key is missing.\n${credentialSetupGuidance(apiKeyEnv, cwd)}`);
+  const cloudflareByok = flags.cloudflareByok
+    ?? (gatewayContextMatches ? fileConfig.cloudflareByok : undefined)
+    ?? false;
+  const cloudflareByokAlias = flags.cloudflareByokAlias
+    ?? (gatewayContextMatches ? fileConfig.cloudflareByokAlias : undefined);
+  if (cloudflareByok && gateway !== 'cloudflare') {
+    throw new Error('--cloudflare-byok requires --gateway cloudflare');
+  }
+  if (cloudflareByokAlias && !cloudflareByok) {
+    throw new Error('--cloudflare-byok-alias requires --cloudflare-byok');
+  }
+  const permitsMissingKey = cloudflareByok || (provider === 'openai-compatible' && isLocalBaseUrl(baseUrl));
+  if (!apiKey && !permitsMissingKey && !flags.dryRun) {
+    const providerLabel = provider === 'gemini' ? 'Gemini' : provider === 'kimi' ? 'Kimi' : provider === 'muse' ? 'Muse' : provider;
+    throw new Error(`${providerLabel} API key is missing.\n${credentialSetupGuidance(apiKeyEnv, cwd, providerLabel)}`);
+  }
+  const gatewayTokenEnv = flags.cloudflareTokenEnv
+    ?? fileConfig.cloudflareTokenEnv
+    ?? 'CLOUDFLARE_AI_GATEWAY_TOKEN';
+  const gatewayToken = gateway === 'cloudflare' ? process.env[gatewayTokenEnv]?.trim() : undefined;
+  if (gateway === 'cloudflare' && cloudflareByok && !gatewayToken && !flags.dryRun) {
+    throw new Error(`Cloudflare BYOK requires ${gatewayTokenEnv} for gateway authentication`);
+  }
+  const modelContextMatches = providerContextMatches
+    && (selectedModel === undefined || selectedModel === configuredModel);
+  const hasFlagPrice = flags.inputPrice !== undefined || flags.outputPrice !== undefined;
+  const inputPricePerMillionUsd = optionalNumberInRange(
+    hasFlagPrice
+      ? flags.inputPrice
+      : modelContextMatches ? fileConfig.inputPricePerMillionUsd : undefined,
+    '--input-price',
+    0,
+    1_000_000,
+  );
+  const outputPricePerMillionUsd = optionalNumberInRange(
+    hasFlagPrice
+      ? flags.outputPrice
+      : modelContextMatches ? fileConfig.outputPricePerMillionUsd : undefined,
+    '--output-price',
+    0,
+    1_000_000,
+  );
+  if ((inputPricePerMillionUsd === undefined) !== (outputPricePerMillionUsd === undefined)) {
+    throw new Error('--input-price and --output-price must be supplied together');
+  }
+  const maxCostUsd = optionalNumberInRange(
+    flags.maxCost ?? fileConfig.maxCostUsd,
+    '--max-cost',
+    0.000001,
+    1_000_000,
+  );
+  const canAccountCost = provider === 'openrouter' || Boolean(providerTokenPrice({
+    provider,
+    model,
+    inputPricePerMillionUsd,
+    outputPricePerMillionUsd,
+  }, 0));
+  if (maxCostUsd !== undefined && !canAccountCost) {
+    throw new Error(
+      `--max-cost for ${provider}/${model} requires both --input-price and --output-price because the API does not report a portable cost`,
+    );
   }
 
   return {
+    provider,
+    gateway,
     apiKey,
+    apiKeyEnv,
     model,
+    baseUrl,
+    gatewayToken,
+    gatewayTokenEnv,
+    cloudflareAccountId,
+    cloudflareGatewayId,
+    cloudflareByok,
+    cloudflareByokAlias,
+    cloudflareProvider,
+    inputPricePerMillionUsd,
+    outputPricePerMillionUsd,
     thinking,
     includeThoughts: flags.includeThoughts ?? fileConfig.includeThoughts ?? DEFAULT_CONFIG.includeThoughts,
     mode: effectiveMode,
@@ -260,7 +421,7 @@ export function resolveCliOptions(
     stdinType: flags.stdinType,
     detectImages: flags.detectImages ?? fileConfig.detectImages ?? DEFAULT_CONFIG.detectImages,
     detectMath: flags.detectMath ?? fileConfig.detectMath ?? DEFAULT_CONFIG.detectMath,
-    maxTokens: integer(flags.maxTokens ?? fileConfig.maxTokens, DEFAULT_CONFIG.maxTokens, '--max-tokens', 256, 65536),
+    maxTokens,
     maxIterations: integer(flags.maxIterations ?? fileConfig.maxIterations, DEFAULT_CONFIG.maxIterations, '--max-iterations', 1, 20),
     confidenceThreshold: numberInRange(
       flags.confidenceThreshold ?? fileConfig.confidenceThreshold,
@@ -270,12 +431,7 @@ export function resolveCliOptions(
       1,
     ),
     schemaPath,
-    maxCostUsd: optionalNumberInRange(
-      flags.maxCost ?? fileConfig.maxCostUsd,
-      '--max-cost',
-      0.000001,
-      1_000_000,
-    ),
+    maxCostUsd,
     requestsPerMinute: integer(
       flags.requestsPerMinute ?? fileConfig.requestsPerMinute,
       DEFAULT_CONFIG.requestsPerMinute,

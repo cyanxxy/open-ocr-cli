@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to Open Gemini OCR.
+Thanks for contributing to Open OCR CLI and its companion Gemini web app.
 
 ## Good First Contributions
 
@@ -32,6 +32,8 @@ npm run lint
 npm run test:coverage
 npm run build
 npm run evals:validate
+npm run evals:matrix:check
+npm run cli:install-smoke
 ```
 
 ## Pull Requests
@@ -72,13 +74,15 @@ You can keep your own copies of these locally, but they will never be committed.
 
 ## Releases
 
-Releases are created from version tags:
+Releases are created from matching semantic version tags after the release
+checklist in [docs/releasing.md](docs/releasing.md) is complete:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v2.0.0
+git push origin v2.0.0
 ```
 
-This triggers the release workflow, which builds the app and attaches the production build output to a GitHub Release.
-
-> **Before tagging:** make sure all CI checks (typecheck, lint, tests + coverage, dependency audit, and build) have passed on `main` at the commit you are tagging. The release workflow only runs `npm ci` + `npm run build`; it does **not** re-run the CI quality and security gates, so a tag pushed on a red commit will still publish a build.
+The release workflow repeats the quality and security gates, publishes the npm
+tarball with provenance, builds the container, attaches the Homebrew formula
+and web archive, creates the GitHub Release, and updates the matching major
+GitHub Action tag.

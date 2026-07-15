@@ -15,6 +15,8 @@ jobs:
     if: github.repository == 'cyanxxy/gemini-ocr'
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
     steps:
       - name: Checkout repository
@@ -37,6 +39,20 @@ jobs:
       - name: Skip live evals when Gemini API key is missing
         if: ${{ env.GEMINI_API_KEY == '' }}
         run: echo "GEMINI_API_KEY is not configured; skipping live evals."
+
+      - name: Run Kimi live canary
+        if: ${{ env.MOONSHOT_API_KEY != '' }}
+        run: npm run evals:canary
+        env:
+          EVAL_PROVIDER: kimi
+          OPEN_OCR_MODEL: kimi-k2.6
+
+      - name: Run OpenRouter live canary
+        if: ${{ env.OPENROUTER_API_KEY != '' }}
+        run: npm run evals:canary
+        env:
+          EVAL_PROVIDER: openrouter
+          OPEN_OCR_MODEL: moonshotai/kimi-k2.6
 
       - name: Run live evals
         if: ${{ env.GEMINI_API_KEY != '' }}

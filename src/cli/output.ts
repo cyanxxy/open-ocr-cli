@@ -444,7 +444,7 @@ export class ManifestStore {
 /**
  * Exclusive ownership of a batch output directory. The lock prevents separate
  * CLI processes from racing manifest read-modify-write cycles and losing resume
- * entries after Gemini work has already been paid for.
+ * entries after provider work has already been paid for.
  */
 export class BatchOutputLock {
   private constructor(

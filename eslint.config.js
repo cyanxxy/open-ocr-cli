@@ -73,7 +73,7 @@ export default tseslint.config(
   // app tsconfig project graph; lint them without type information to avoid
   // "file not found by the project service" parsing errors (audit M-08).
   {
-    files: ['*.config.{js,ts}', 'eslint.config.js', 'evals/**/*.{ts,tsx}'],
+    files: ['*.config.{js,ts}', 'eslint.config.js', 'evals/**/*.{ts,tsx}', 'scripts/**/*.{js,mjs,cjs,ts}'],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {
       globals: {

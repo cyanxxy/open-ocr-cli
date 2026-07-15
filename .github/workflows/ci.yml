@@ -30,12 +30,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
@@ -53,7 +53,7 @@ jobs:
         run: npm run test:coverage
 
       - name: Validate AI eval fixtures
-        run: npm run evals:validate
+        run: npm run evals:validate && npm run evals:matrix:check
 
       - name: Run security audit
         run: npm audit --audit-level=high
@@ -81,10 +81,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22.x'
           cache: 'npm'
@@ -95,9 +95,34 @@ jobs:
       - name: Build application
         run: npm run build
 
+      - name: Smoke-test packed CLI installation
+        run: npm run cli:install-smoke
+
+      - name: Smoke-test GitHub Action wrapper
+        run: npm run action:smoke
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: dist-files
           path: dist/
           retention-days: 7
+
+  # Release workflows publish a multi-architecture image. CI performs the
+  # cheaper single-platform smoke on protected main pushes, not on every PR.
+  container:
+    name: Build CLI Container
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [quality]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build CLI container
+        run: docker build --tag open-ocr-cli:ci .
+
+      - name: Verify non-root work directory is writable
+        run: docker run --rm --entrypoint sh open-ocr-cli:ci -c 'test -w /work'

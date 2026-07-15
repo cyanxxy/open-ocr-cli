@@ -1,5 +1,47 @@
 # Changelog
 
+## 2.0.0 - 2026-07-15
+
+### Provider-neutral Open OCR CLI
+
+- Added native profiles for Gemini, Kimi K2.6, Meta Muse Spark 1.1,
+  OpenRouter, and arbitrary OpenAI-compatible endpoints.
+- Added direct and Cloudflare AI Gateway routing, including gateway
+  authentication, stored-key aliases, native Gemini/OpenRouter routes, and
+  custom-provider routes.
+- Ported simple, template, custom-schema, Web, batch, and agentic OCR to the
+  shared provider contract while retaining Gemini's native Interactions API.
+- Added provider-aware usage accounting, exact OpenRouter cost reporting,
+  custom price overrides, shared rate controls, and request-level cost gates.
+- Added provider-specific structured-output strictness, Muse reasoning effort,
+  and built-in cache-aware Kimi and Muse pricing for reliable cost ceilings.
+- Added SSRF-resistant URL retrieval for compatible providers with public-DNS
+  validation, DNS pinning, redirect revalidation, special-use IPv6 rejection,
+  socket inactivity limits, bounded downloads, and structured HTML extraction.
+
+### Distribution and quality
+
+- Made `open-ocr-cli` the primary executable and retained `gemini-ocr` as a
+  backwards-compatible alias.
+- Added a clean-install npm package smoke test, multi-architecture container,
+  composite GitHub Action, generated Homebrew formula, npm trusted-publishing
+  workflow, and synchronized semantic major Action tag.
+- Added provider contract tests and a reproducible direct/Cloudflare evaluation
+  matrix for cross-model quality, latency, usage, and cost comparisons.
+- Made the non-root container work directory writable, aligned GitHub Action
+  output defaults, moved container smoke builds off pull requests, and guarded
+  the moving Action major tag with ancestry and force-with-lease checks.
+- Added new `.open-ocr-cli.json` configuration paths while continuing to read
+  legacy Gemini-named paths at lower precedence.
+
+### Upgrade notes
+
+Existing Gemini commands, configuration, manifests, output directories, and
+the `gemini-ocr` executable continue to work. Provider-neutral support is a CLI
+feature; the bundled React application still uses Gemini.
+
+[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v1.6.0...v2.0.0)
+
 ## 1.6.0 - 2026-07-15
 
 ### Open OCR CLI identity

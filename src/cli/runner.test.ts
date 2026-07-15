@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { resolveCliOptions } from './config';
 import { discoverInputs } from './inputs';
-import { runBatch } from './runner';
+import { modeFingerprint, runBatch } from './runner';
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 let directory: string;
@@ -20,6 +20,20 @@ afterEach(async () => {
 });
 
 describe('CLI batch runner', () => {
+  it('changes the resume fingerprint when the provider or gateway route changes', () => {
+    const gemini = resolveCliOptions({ dryRun: true }, {}, directory);
+    const kimi = resolveCliOptions({ dryRun: true, provider: 'kimi' }, {}, directory);
+    const cloudflare = resolveCliOptions({
+      dryRun: true,
+      gateway: 'cloudflare',
+      cloudflareAccountId: 'account',
+      cloudflareGatewayId: 'gateway',
+    }, {}, directory);
+
+    expect(modeFingerprint(kimi)).not.toBe(modeFingerprint(gemini));
+    expect(modeFingerprint(cloudflare)).not.toBe(modeFingerprint(gemini));
+  });
+
   it('validates every document in a credential-free dry run', async () => {
     await writeFile(path.join(directory, 'one.jpg'), JPEG_BYTES);
     await writeFile(path.join(directory, 'two.jpg'), JPEG_BYTES);

@@ -1,0 +1,12 @@
+.git
+.github
+node_modules
+dist
+coverage
+tmp
+.venv-evals
+.claude
+evals/cache
+evals/reports/runs
+*.tgz
+.env*

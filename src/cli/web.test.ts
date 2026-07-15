@@ -4,7 +4,13 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { assertWebOutputAvailable, renderWebResult, resolveWebUrls, writeWebOutput } from './web';
+import {
+  assertWebOutputAvailable,
+  readableWebText,
+  renderWebResult,
+  resolveWebUrls,
+  writeWebOutput,
+} from './web';
 
 let directory: string;
 
@@ -43,6 +49,24 @@ describe('CLI Web OCR', () => {
     expect(renderWebResult({ comparisonAnalysis: '# Comparison' }, 'comparison', 'markdown')).toBe('# Comparison\n');
     expect(renderWebResult(individual, 'individual', 'json')).toContain('"results"');
     expect(() => renderWebResult({}, 'individual', 'markdown')).toThrow('no results');
+  });
+
+  it('extracts structured HTML text and decodes named and numeric entities', () => {
+    const html = [
+      '<html><body><main>',
+      '<h1>Invoice&nbsp;42</h1>',
+      '<p>Seller: ACME &amp; Co<br>Total: &euro;10 &#x2B; tax</p>',
+      '<ul><li>First item</li><li>Second item</li></ul>',
+      '<script>doNotInclude()</script>',
+      '</main></body></html>',
+    ].join('');
+    const text = readableWebText(new TextEncoder().encode(html), 'text/html');
+
+    expect(text).toContain('INVOICE 42');
+    expect(text).toContain('Seller: ACME & Co');
+    expect(text).toContain('Total: €10 + tax');
+    expect(text).toContain('First item');
+    expect(text).not.toContain('doNotInclude');
   });
 
   it('protects output files unless overwrite is explicit', async () => {

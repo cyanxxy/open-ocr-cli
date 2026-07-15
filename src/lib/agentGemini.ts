@@ -29,6 +29,7 @@ import { applyMemoryUpdate } from './agentMemory';
 import { isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
 import { isGeminiCostLimitError } from './gemini/requestPolicy';
 import { buildAgentSchemaGuidance, getAgentReadiness } from './agentSchema';
+import type { GeminiModel } from './gemini/types';
 
 import {
   executeReOcrRegion,
@@ -98,7 +99,7 @@ export async function executeAgentTurn(
   const generationConfig = createInteractionGenerationConfig({
     maxOutputTokens: config.maxTokens || 16384,
     toolChoice: 'validated',
-  }, clientConfig.model, clientConfig.thinkingConfig);
+  }, clientConfig.model as GeminiModel, clientConfig.thinkingConfig);
   const tools = createInteractionFunctionTools(functions);
   const allSteps: AgentStep[] = [];
   let hasCalledTools = false;
@@ -120,7 +121,9 @@ export async function executeAgentTurn(
     const previousInteractionId = interactionState.previousInteractionId;
     const interaction = await runModelInteraction({
       apiKey: clientConfig.apiKey,
-      model: clientConfig.model,
+      model: clientConfig.model as GeminiModel,
+      baseUrl: clientConfig.baseUrl,
+      headers: clientConfig.headers,
       input: interactionState.pendingInput,
       // previous_interaction_id preserves conversation history only. Tools,
       // system instructions, and generation settings are interaction-scoped,
@@ -387,7 +390,12 @@ export async function executeFunctionCall(
     // terminal ones (bad key, permission) should stop the run, and transient
     // ones (rate limit, 5xx, network) should bubble to the outer loop's backoff
     // instead of letting the model keep hammering the endpoint (audit H-17).
-    if (isFatalGeminiError(error) || isRetryableGeminiError(error) || isGeminiCostLimitError(error)) {
+    if (
+      isFatalGeminiError(error)
+      || isRetryableGeminiError(error)
+      || isGeminiCostLimitError(error)
+      || (error instanceof Error && (error.name === 'ProviderApiError' || error.name === 'ProviderCostLimitError'))
+    ) {
       throw error;
     }
 

@@ -48,6 +48,9 @@ describe('urlValidation', () => {
     it('rejects private IPv6 ranges', () => {
       expect(parseSupportedHttpUrl('http://[fd00::1]/')).toBeNull();
       expect(parseSupportedHttpUrl('http://[fe80::1]/')).toBeNull();
+      expect(parseSupportedHttpUrl('http://[2001:db8::1]/')).toBeNull();
+      expect(parseSupportedHttpUrl('http://[::ffff:7f00:1]/')).toBeNull();
+      expect(parseSupportedHttpUrl('http://[::ffff:127.0.0.1]/')).toBeNull();
     });
 
     it('rejects tunnelling hosts (ngrok/pinggy/localtunnel)', () => {
@@ -61,6 +64,7 @@ describe('urlValidation', () => {
       expect(parseSupportedHttpUrl('https://example.com/path')?.protocol).toBe('https:');
       expect(parseSupportedHttpUrl('http://172.15.0.1/')?.protocol).toBe('http:');
       expect(parseSupportedHttpUrl('http://8.8.8.8/')?.protocol).toBe('http:');
+      expect(parseSupportedHttpUrl('http://[2606:4700:4700::1111]/')?.protocol).toBe('http:');
     });
   });
 

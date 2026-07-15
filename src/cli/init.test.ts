@@ -32,22 +32,22 @@ describe('CLI init', () => {
     const result = await runInit({}, {
       cwd: directory,
       env: { OCR_KEY: 'secret-value' },
-      prompter: answers(['gemini-3.1-flash-lite', 'LOW', '4', '30', '2.50', 'OCR_KEY']),
+      prompter: answers(['gemini', 'direct', 'gemini-3.1-flash-lite', 'LOW', '4', '30', '2.50', 'OCR_KEY']),
       validateCredentials,
       writeOutput: (text) => output.push(text),
     });
 
     expect(result).toMatchObject({ written: true, credentialStatus: 'valid' });
     expect(validateCredentials).toHaveBeenCalledWith('secret-value', 'gemini-3.1-flash-lite');
-    const config = JSON.parse(await readFile(path.join(directory, '.gemini-ocr.json'), 'utf8')) as Record<string, unknown>;
-    expect(config).toMatchObject({ concurrency: 4, requestsPerMinute: 30, maxCostUsd: 2.5, apiKeyEnv: 'OCR_KEY' });
+    const config = JSON.parse(await readFile(path.join(directory, '.open-ocr-cli.json'), 'utf8')) as Record<string, unknown>;
+    expect(config).toMatchObject({ provider: 'gemini', gateway: 'direct', concurrency: 4, requestsPerMinute: 30, maxCostUsd: 2.5, apiKeyEnv: 'OCR_KEY' });
     expect(config).not.toHaveProperty('apiKey');
-    expect(await readFile(path.join(directory, '.gemini-ocr.json'), 'utf8')).not.toContain('secret-value');
+    expect(await readFile(path.join(directory, '.open-ocr-cli.json'), 'utf8')).not.toContain('secret-value');
     expect(output.join('')).toContain('credential validated');
   });
 
   it('does not replace existing configuration when confirmation is declined', async () => {
-    const target = path.join(directory, '.gemini-ocr.json');
+    const target = path.join(directory, '.open-ocr-cli.json');
     const output: string[] = [];
     await writeFile(target, '{"model":"gemini-3.5-flash"}\n');
     const result = await runInit({}, {
@@ -61,7 +61,7 @@ describe('CLI init', () => {
   });
 
   it('reports an existing config in non-interactive mode instead of silently succeeding', async () => {
-    const target = path.join(directory, '.gemini-ocr.json');
+    const target = path.join(directory, '.open-ocr-cli.json');
     const output: string[] = [];
     await writeFile(target, '{"model":"gemini-3.5-flash"}\n');
     const result = await runInit({ yes: true }, {
@@ -77,7 +77,7 @@ describe('CLI init', () => {
   it('uses the same maximum cost bound as extract', async () => {
     await expect(runInit({}, {
       cwd: directory,
-      prompter: answers(['gemini-3.5-flash', 'MEDIUM', '2', '0', '1000001']),
+      prompter: answers(['gemini', 'direct', 'gemini-3.5-flash', 'MEDIUM', '2', '0', '1000001']),
       writeOutput: () => undefined,
     })).rejects.toThrow('at most 1000000');
   });
@@ -93,5 +93,29 @@ describe('CLI init', () => {
     expect(result.credentialStatus).toBe('missing');
     expect(output.join('')).toContain('PowerShell');
     expect(output.join('')).toContain(path.join(directory, '.env'));
+  });
+
+  it('requires an explicit model for non-interactive generic provider setup', async () => {
+    await expect(runInit({ yes: true, provider: 'openai-compatible' }, {
+      cwd: directory,
+      env: {},
+      prompter: answers([]),
+      writeOutput: () => undefined,
+    })).rejects.toThrow('--model is required with --yes');
+
+    const result = await runInit({
+      yes: true,
+      provider: 'openai-compatible',
+      model: 'local-vision-model',
+      skipValidation: true,
+    }, {
+      cwd: directory,
+      env: {},
+      prompter: answers([]),
+      writeOutput: () => undefined,
+    });
+    expect(result.provider).toBe('openai-compatible');
+    const config = JSON.parse(await readFile(result.configPath, 'utf8')) as Record<string, unknown>;
+    expect(config.model).toBe('local-vision-model');
   });
 });

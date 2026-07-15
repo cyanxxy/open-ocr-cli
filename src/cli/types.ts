@@ -1,12 +1,16 @@
 import type { AgentMemory, AgentStep } from '../lib/agentTypes';
 import type {
   ExtractedContent,
-  GeminiModel,
-  GeminiUsageSnapshot,
   JsonValue,
   PresetStructuredOutput,
   ThinkingLevel,
 } from '../lib/gemini';
+import {
+  GEMINI_MODELS,
+  type GatewayId,
+  type ProviderId,
+  type ProviderUsageSnapshot,
+} from '../lib/providers';
 
 export const CLI_MODES = ['simple', 'template', 'agentic'] as const;
 export type CliMode = (typeof CLI_MODES)[number];
@@ -14,15 +18,21 @@ export type CliMode = (typeof CLI_MODES)[number];
 export const CLI_FORMATS = ['markdown', 'json', 'csv', 'all'] as const;
 export type CliFormat = (typeof CLI_FORMATS)[number];
 
-export const SUPPORTED_MODELS: readonly GeminiModel[] = [
-  'gemini-3.5-flash',
-  'gemini-3.1-flash-lite',
-  'gemini-3-flash-preview',
-  'gemini-3.1-pro-preview',
-];
+export const SUPPORTED_MODELS = GEMINI_MODELS;
 
 export interface CliConfigFile {
-  model?: GeminiModel;
+  provider?: ProviderId;
+  gateway?: GatewayId;
+  model?: string;
+  baseUrl?: string;
+  cloudflareAccountId?: string;
+  cloudflareGatewayId?: string;
+  cloudflareTokenEnv?: string;
+  cloudflareByok?: boolean;
+  cloudflareByokAlias?: string;
+  cloudflareProvider?: string;
+  inputPricePerMillionUsd?: number;
+  outputPricePerMillionUsd?: number;
   thinking?: ThinkingLevel;
   includeThoughts?: boolean;
   mode?: CliMode;
@@ -53,6 +63,18 @@ export interface CliConfigFile {
 
 export interface ExtractCommandFlags {
   config?: string;
+  provider?: string;
+  gateway?: string;
+  baseUrl?: string;
+  apiKeyEnv?: string;
+  cloudflareAccountId?: string;
+  cloudflareGatewayId?: string;
+  cloudflareTokenEnv?: string;
+  cloudflareByok?: boolean;
+  cloudflareByokAlias?: string;
+  cloudflareProvider?: string;
+  inputPrice?: string;
+  outputPrice?: string;
   mode?: string;
   preset?: string;
   format?: string;
@@ -89,8 +111,21 @@ export interface ExtractCommandFlags {
 }
 
 export interface ResolvedCliOptions {
+  provider: ProviderId;
+  gateway: GatewayId;
   apiKey: string;
-  model: GeminiModel;
+  apiKeyEnv: string;
+  model: string;
+  baseUrl: string;
+  gatewayToken?: string;
+  gatewayTokenEnv?: string;
+  cloudflareAccountId?: string;
+  cloudflareGatewayId?: string;
+  cloudflareByok: boolean;
+  cloudflareByokAlias?: string;
+  cloudflareProvider?: string;
+  inputPricePerMillionUsd?: number;
+  outputPricePerMillionUsd?: number;
   thinking: ThinkingLevel;
   includeThoughts: boolean;
   mode: CliMode;
@@ -149,7 +184,9 @@ export interface OcrJobResult {
   status: 'succeeded' | 'partial' | 'failed' | 'skipped';
   input: ResolvedInput;
   mode: CliMode;
-  model: GeminiModel;
+  provider?: ProviderId;
+  gateway?: GatewayId;
+  model: string;
   startedAt: string;
   completedAt: string;
   durationMs: number;
@@ -172,8 +209,10 @@ export interface BatchSummary {
   failed: number;
   skipped: number;
   mode: CliMode;
-  model: GeminiModel;
-  usage: GeminiUsageSnapshot;
+  provider?: ProviderId;
+  gateway?: GatewayId;
+  model: string;
+  usage: ProviderUsageSnapshot;
   costLimitUsd?: number;
   costLimitReached: boolean;
   results: OcrJobResult[];

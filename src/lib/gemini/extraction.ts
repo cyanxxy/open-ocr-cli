@@ -115,7 +115,7 @@ export async function extractStructuredDataFromFile(
   instructions?: ExtractionInstruction[],
   options?: Pick<ExtractionOptions, 'abortSignal' | 'maxTokens' | 'detectImages' | 'detectMathEquations'>,
 ): Promise<JsonValue> {
-  const { apiKey, model, thinkingConfig } = clientConfig;
+  const { apiKey, model, thinkingConfig, baseUrl, headers } = clientConfig;
   if (!apiKey) throw new Error('Please configure your Gemini API key in settings');
 
   const prompt = [
@@ -136,7 +136,7 @@ export async function extractStructuredDataFromFile(
   if (options?.abortSignal) generationConfig.abortSignal = options.abortSignal;
   generationConfig = applyThinkingConfig(generationConfig, model, thinkingConfig);
 
-  const genAI = getGenAIClient(apiKey);
+  const genAI = getGenAIClient(apiKey, { baseUrl, headers });
   await waitForGeminiRequestSlot(options?.abortSignal);
   const response = await genAI.models.generateContent({
     model,
@@ -175,7 +175,7 @@ function wantsJsonOutput(options?: ExtractionOptions): boolean {
  * audit G-03). Callers needing more pass `options.maxTokens` explicitly. */
 const DEFAULT_MAX_OUTPUT_TOKENS = 32768;
 
-const EXTRACTED_CONTENT_RESPONSE_SCHEMA: Record<string, unknown> = {
+export const EXTRACTED_CONTENT_RESPONSE_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
   required: ['sections'],
@@ -298,7 +298,7 @@ function parseExtractedContentFromJson(text: string): ExtractedContent | null {
  * contract violation that throws — it is never silently downgraded to Markdown
  * (audit H-02). An empty response always throws (audit G-02/H-03).
  */
-function coerceExtractionResult(text: string, wantsJson: boolean): ExtractedContent {
+export function coerceExtractionResult(text: string, wantsJson: boolean): ExtractedContent {
   const trimmed = text.trim();
   if (!trimmed) {
     throw new Error('Extraction returned an empty response');
@@ -334,7 +334,7 @@ export async function extractTextFromFile(
   callbacks?: StreamingCallbacks
 ): Promise<ExtractedContent> {
   try {
-    const { apiKey, model, thinkingConfig } = clientConfig;
+    const { apiKey, model, thinkingConfig, baseUrl, headers } = clientConfig;
     
     if (!apiKey) {
       throw new Error('Please configure your Gemini API key in settings');
@@ -343,7 +343,7 @@ export async function extractTextFromFile(
     // Reuse the shared (single-entry) client rather than constructing a new
     // GoogleGenAI per call, so credential lifecycle/caching stays centralized
     // (audit H-18).
-    const genAI = getGenAIClient(apiKey);
+    const genAI = getGenAIClient(apiKey, { baseUrl, headers });
     const wantsJson = wantsJsonOutput(options);
 
     // Prepare the file data

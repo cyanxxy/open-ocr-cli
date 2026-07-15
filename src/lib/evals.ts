@@ -78,6 +78,8 @@ export interface EvalMetricStatistics {
 }
 
 export interface EvalRunSummary {
+  provider?: string;
+  gateway?: string;
   model: string;
   suite?: EvalSuiteName;
   totalCases: number;
@@ -528,6 +530,8 @@ function renderMetricTable(
 export function renderEvalSummaryMarkdown(summary: EvalRunSummary): string {
   const lines = [
     '# AI Eval Report', '',
+    ...(summary.provider ? [`- Provider: \`${summary.provider}\``] : []),
+    ...(summary.gateway ? [`- Gateway: \`${summary.gateway}\``] : []),
     `- Model: \`${summary.model}\``,
     `- Suite: \`${summary.suite ?? 'full'}\``,
     `- Run at: ${summary.runAt}`,

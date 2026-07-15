@@ -14,6 +14,11 @@ import { recordGeminiUsage } from './usage';
  */
 const clientCache = new Map<string, GoogleGenAI>();
 
+export interface GeminiTransportOptions {
+  baseUrl?: string;
+  headers?: Record<string, string>;
+}
+
 /**
  * Content part type for the SDK
  */
@@ -84,7 +89,7 @@ export interface GenerativeModel {
  * Get or create a raw GoogleGenAI client for APIs that need direct SDK access
  * such as the Interactions API.
  */
-export function getGenAIClient(apiKey: string): GoogleGenAI {
+export function getGenAIClient(apiKey: string, transport: GeminiTransportOptions = {}): GoogleGenAI {
   if (!apiKey) {
     throw new OcrError(
       OcrErrorType.API_KEY_MISSING,
@@ -92,7 +97,8 @@ export function getGenAIClient(apiKey: string): GoogleGenAI {
     );
   }
 
-  const cached = clientCache.get(apiKey);
+  const cacheKey = JSON.stringify([apiKey, transport.baseUrl ?? '', transport.headers ?? {}]);
+  const cached = clientCache.get(cacheKey);
   if (cached) {
     logger.debug(`Using cached GoogleGenAI client`);
     return cached;
@@ -103,8 +109,16 @@ export function getGenAIClient(apiKey: string): GoogleGenAI {
   // in memory for the page lifetime after a key rotation (audit H-14).
   clientCache.clear();
   try {
-    const genAI = new GoogleGenAI({ apiKey });
-    clientCache.set(apiKey, genAI);
+    const genAI = new GoogleGenAI({
+      apiKey,
+      ...((transport.baseUrl || transport.headers) ? {
+        httpOptions: {
+          ...(transport.baseUrl ? { baseUrl: transport.baseUrl } : {}),
+          ...(transport.headers ? { headers: transport.headers } : {}),
+        },
+      } : {}),
+    });
+    clientCache.set(cacheKey, genAI);
     logger.info(`Created new GoogleGenAI client`);
     return genAI;
   } catch (error) {

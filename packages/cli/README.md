@@ -1,9 +1,9 @@
 # Open OCR CLI
 
-Open-source document extraction for images, PDFs, and public URLs, powered by
-Google Gemini. It supports recursive discovery, globs, binary stdin, structured
-presets, arbitrary JSON schemas, agentic OCR, bounded concurrency, resumable
-manifests, cost/rate controls, and JSONL pipeline output.
+Provider-neutral multimodal OCR for images, PDFs, public URLs, structured
+schemas, and difficult document agents. It supports Gemini, Kimi K2.6, Meta
+Muse Spark 1.1, OpenRouter, generic OpenAI-compatible APIs, and Cloudflare AI
+Gateway.
 
 ## Install
 
@@ -12,173 +12,253 @@ Node.js 20.19+, 22.13+, or 24+ is required.
 ```bash
 npm install --global open-ocr-cli
 export GEMINI_API_KEY="your-key"
-open-ocr-cli extract ./documents --output ./results --concurrency 4
+open-ocr-cli extract invoice.pdf
 ```
 
-`open-ocr-cli` is the primary executable. The existing `gemini-ocr` executable
-remains available as a backwards-compatible alias.
+`open-ocr-cli` is the primary executable. `gemini-ocr` remains an equivalent
+backwards-compatible alias.
 
-## Set the API key
-
-The CLI reads `GEMINI_API_KEY` from the environment or a project-local `.env`
-file. It never accepts secrets as command-line flags, where shell history and
-process listings could expose them.
+## Pick a provider
 
 ```bash
-# macOS / Linux — current shell
+# Gemini (default)
 export GEMINI_API_KEY="your-key"
-
-# PowerShell — current shell
-$env:GEMINI_API_KEY="your-key"
-
-# Or add this line to ./.env (keep the file out of version control)
-GEMINI_API_KEY=your-key
-
-# Confirm the CLI can see it
-open-ocr-cli doctor
-```
-
-Use `apiKeyEnv` in a config file when a different environment variable is
-required. `open-ocr-cli init` prints the exact setup commands when that variable
-is missing.
-
-## Examples
-
-```bash
-# Create a project config and validate credentials
-open-ocr-cli init
-
-# Extract one document to stdout
 open-ocr-cli extract invoice.pdf
 
-# Process a recursive folder while preserving its directory structure
-open-ocr-cli extract ./documents --output ./results --concurrency 4
+# Kimi K2.6
+export MOONSHOT_API_KEY="your-key"
+open-ocr-cli extract invoice.pdf --provider kimi
 
-# Structured invoice extraction with every available artifact
-open-ocr-cli extract ./invoices --preset invoice --format all --output ./results
+# Meta Muse Spark 1.1 public preview
+export META_API_KEY="your-key"
+open-ocr-cli extract invoice.pdf --provider muse
 
-# Arbitrary structured output, validated against the schema before and after the request
-open-ocr-cli extract invoice.pdf --schema invoice.schema.json --output invoice.json
+# Kimi or another multimodal model through OpenRouter
+export OPENROUTER_API_KEY="your-key"
+open-ocr-cli extract invoice.pdf \
+  --provider openrouter \
+  --model moonshotai/kimi-k2.6
 
-# Rate-limit requests and stop scheduling around a $5 paid-tier estimate
-open-ocr-cli extract ./documents --requests-per-minute 60 --max-cost 5 --output ./results
+# A compatible local endpoint (model is required)
+open-ocr-cli extract scan.png \
+  --provider openai-compatible \
+  --base-url http://localhost:11434/v1 \
+  --model qwen3-vl
+```
 
-# Iterative field recovery for a difficult scan
-open-ocr-cli extract scan.pdf --mode agentic --format json --max-iterations 6
+Run `open-ocr-cli providers` for capability metadata and
+`open-ocr-cli models --provider <id>` for recommended IDs. OpenRouter and the
+generic profile accept arbitrary upstream model IDs. Generic PDF support is not
+assumed; use images or a named PDF-capable profile.
 
-# Validate files without credentials, API calls, or output writes
+| Profile | Default model | PDF handling | Structured output |
+| --- | --- | --- | --- |
+| `gemini` | `gemini-3.5-flash` | Native PDF input | Yes |
+| `kimi` | `kimi-k2.6` | Kimi file extraction | Yes |
+| `muse` | `muse-spark-1.1` | Native multimodal input | Yes |
+| `openrouter` | `google/gemini-3.5-flash` | Model-dependent | Model-dependent |
+| `openai-compatible` | Required | Endpoint-dependent | Endpoint-dependent |
+
+The CLI reads secrets only from environment variables or `.env`. It never
+accepts a raw key in arguments or JSON configuration. Defaults are
+`GEMINI_API_KEY`, `MOONSHOT_API_KEY`, `META_API_KEY`, `OPENROUTER_API_KEY`, and
+`OPEN_OCR_API_KEY`; override the variable name with `--api-key-env` or
+`apiKeyEnv`.
+
+## Cloudflare AI Gateway
+
+Cloudflare is a transport route around a provider, not a separate model:
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID="account"
+export CLOUDFLARE_AI_GATEWAY_ID="gateway"
+export CLOUDFLARE_AI_GATEWAY_TOKEN="gateway-token"
+export GEMINI_API_KEY="provider-key"
+
+open-ocr-cli extract invoice.pdf \
+  --provider gemini \
+  --gateway cloudflare
+```
+
+Gemini and OpenRouter use Cloudflare's native provider routes. Kimi, Muse, and
+generic endpoints require the configured custom-provider slug:
+
+```bash
+open-ocr-cli extract invoice.pdf \
+  --provider kimi \
+  --gateway cloudflare \
+  --cloudflare-provider moonshot
+```
+
+Configure the custom provider with the upstream base before `/v1` (for example,
+`https://api.moonshot.ai` for Kimi). The CLI forwards the remaining `/v1/...`
+path through Cloudflare's custom-provider route.
+
+Use `--cloudflare-byok` when Cloudflare stores the provider key, and optionally
+`--cloudflare-byok-alias <alias>`. The account, gateway, token-variable name,
+BYOK mode, alias, and custom-provider slug can all be stored in configuration.
+Unauthenticated gateways need no gateway token. If authentication is enabled in
+Cloudflare, set `CLOUDFLARE_AI_GATEWAY_TOKEN` or select another environment
+variable with `--cloudflare-token-env`. BYOK always requires an authenticated
+gateway and therefore always requires that token.
+
+See Cloudflare's
+[gateway authentication](https://developers.cloudflare.com/ai-gateway/configuration/authentication/)
+and [stored-key documentation](https://developers.cloudflare.com/ai-gateway/configuration/bring-your-own-keys/)
+for the corresponding dashboard setup.
+
+## Common workflows
+
+```bash
+# Guided provider-aware project configuration and credential validation
+open-ocr-cli init
+
+# One document to stdout
+open-ocr-cli extract invoice.pdf
+
+# Recursive, resumable batch
+open-ocr-cli extract ./documents \
+  --output ./results \
+  --concurrency 4 \
+  --resume
+
+# Built-in structured invoice artifacts
+open-ocr-cli extract ./invoices \
+  --preset invoice \
+  --format all \
+  --output ./results
+
+# Arbitrary JSON Schema, validated before and after the provider request
+open-ocr-cli extract invoice.pdf \
+  --schema invoice.schema.json \
+  --output invoice.json
+
+# Iterative tool-based field recovery with targeted region re-OCR
+open-ocr-cli extract scan.pdf \
+  --mode agentic \
+  --format json \
+  --max-iterations 6
+
+# Safe public-URL extraction
+open-ocr-cli web https://example.com/report.pdf --format markdown
+
+# Validate discovery, schemas, limits, and output plans without credentials
 open-ocr-cli extract ./documents --dry-run
 
-# Emit machine-readable document events and a final summary
+# Pipeline events and a final machine-readable summary
 open-ocr-cli extract ./documents --jsonl --quiet --output ./results
 
-# Inspect the last run, failures, usage, and missing artifacts
-open-ocr-cli status ./results
+# Inspect a completed or interrupted batch
 open-ocr-cli status ./results --json
 
-# Read binary image data from stdin
+# Binary stdin
 cat scan.png | open-ocr-cli extract - --stdin-name scan.png --format json
-
-# Grounded extraction from a public URL
-open-ocr-cli web https://example.com/report.pdf --format markdown
 ```
 
 Supported local formats are PNG, JPEG, WebP, HEIC, HEIF, and PDF. PDFs are
-limited to 50 MB and 1,000 pages; images are limited to 70 MB raw. CLI batches
-default to 1,000 files, 5,120 MB total, and concurrency 2. Safety budgets and
-concurrency are configurable.
+limited to 50 MB and 1,000 pages; images are limited to 70 MB raw. Defaults are
+1,000 files, 5,120 MB total, and concurrency 2.
 
-Custom schemas use Gemini's supported JSON Schema subset. `--schema` is limited
-to simple mode, implies JSON output, and rejects unsupported schema keywords or
-responses that fail local validation.
+## Configuration
 
-## Batch behavior
+Precedence from lowest to highest:
 
-The default batch output directory is `./gemini-ocr-output`. It contains one or
-more artifacts per document, `.gemini-ocr-manifest.json`, and
-`batch-summary.json`. Summaries include aggregate tokens and estimated paid-tier
-cost.
+1. `~/.config/gemini-ocr/config.json` (legacy)
+2. `~/.config/open-ocr-cli/config.json`
+3. `./.gemini-ocr.json` (legacy)
+4. `./.open-ocr-cli.json`
+5. `--config <path>`
+6. CLI flags
 
-- Existing output is never replaced without `--overwrite`.
-- Every possible destination for a non-resumed document, including optional
-  `--format all` artifacts, is checked before any worker can call Gemini.
-- A batch takes an exclusive `.gemini-ocr.lock` on its output directory before
-  making API requests, preventing concurrent processes from losing manifest
-  updates. After a forcibly killed local process, `--force-unlock` recovers the
-  lock only when its owner metadata is valid, its hostname matches, and its PID
-  is no longer alive. Cross-host or invalid locks still require manual review.
-- Output path collisions are rejected before an API request is made, and
-  multi-artifact writes are staged with exception rollback. Hard-link commits
-  are atomic where supported; network/FUSE or non-NTFS filesystems fall back to
-  an exclusive no-clobber write. A kill or power loss can still leave `.tmp` or
-  `.bak` recovery files, so this is not a crash-atomic/ACID transaction.
-- Collision checks are case-insensitive on every platform for portable output
-  across Linux, macOS, and Windows filesystems.
-- Resume skips unchanged successful and partial agentic jobs when all recorded
-  artifacts still exist. Manifest JSON and every entry are validated before
-  resume state is trusted.
-- Use `--overwrite` to intentionally rerun and replace a partial result.
-- Dry runs always validate every document regardless of manifest state and show
-  each planned artifact destination (or stdout).
-- Invalid documents are reported individually; other jobs continue unless
-  `--fail-fast` is set.
-- Unstarted fail-fast remainder is represented explicitly as skipped jobs.
-- Progress is written to stderr; extracted content and JSONL are written to
-  stdout.
-- A max-cost limit stops new documents from being scheduled. Concurrent requests
-  already in flight finish, so the final estimate can be slightly higher. Once
-  recorded usage reaches the limit, the next request in an agentic or other
-  multi-request flow is also blocked; a single in-flight request cannot be
-  stopped using token metadata that is only available afterward.
-- Request-rate limits evenly space request starts rather than allowing bursts,
-  and queued waits abort immediately on timeout or Ctrl-C.
-
-`open-ocr-cli status` prefers the latest run totals from `batch-summary.json` and
-marks cost-limited, cancelled, fail-fast, partial, and failed runs as requiring
-attention. It also reports the PID, host, and start time for a live or stale
-batch lock instead of presenting the prior summary as healthy. Missing or moved
-source documents are reported as source drift, but do not make intact successful
-artifacts unhealthy.
-
-`MAX_TOKENS` is a hard failure because truncated OCR must not be persisted as a
-success. For unusually long documents, retry with a larger `--max-tokens` value
-(up to `65536`) or lower `--thinking` to leave more of the output budget for OCR.
-
-Exit status is `0` for successful work, `1` for extraction/Web runtime failures
-or partial document jobs, `2` for command/configuration errors, `130` for
-SIGINT, and `143` for SIGTERM.
-
-## Configuration and discovery
-
-Configuration is merged from:
-
-1. `~/.config/gemini-ocr/config.json`
-2. `./.gemini-ocr.json`
-3. `--config <path>`
-4. CLI flags
-
-Unknown configuration keys are ignored with a warning and are not echoed by
-`doctor --json`.
-
-Use `open-ocr-cli init` for guided project setup or `open-ocr-cli init --global`
-for user-wide defaults. The generated configuration stores an
-environment-variable name, never a raw API key. Configuration supports
-`schema`, `maxCostUsd`, and `requestsPerMinute` in addition to the extraction
-options.
-
-```bash
-open-ocr-cli presets
-open-ocr-cli models
-open-ocr-cli doctor
-open-ocr-cli status ./results
-open-ocr-cli init --help
-open-ocr-cli extract --help
-open-ocr-cli web --help
+```json
+{
+  "provider": "openrouter",
+  "model": "moonshotai/kimi-k2.6",
+  "gateway": "direct",
+  "apiKeyEnv": "OPENROUTER_API_KEY",
+  "thinking": "MEDIUM",
+  "concurrency": 4,
+  "retries": 3,
+  "requestsPerMinute": 60,
+  "maxCostUsd": 5,
+  "resume": true,
+  "format": "markdown"
+}
 ```
 
-The package sends document contents directly to the Gemini API using the key
-supplied through your environment. It does not use an application backend or
-telemetry service.
+Provider fields include `provider`, `gateway`, `model`, `baseUrl`, `apiKeyEnv`,
+`cloudflareAccountId`, `cloudflareGatewayId`, `cloudflareTokenEnv`,
+`cloudflareByok`, `cloudflareByokAlias`, `cloudflareProvider`,
+`inputPricePerMillionUsd`, and `outputPricePerMillionUsd`.
 
-Full source and web-app documentation are available in the
-[project README](https://github.com/cyanxxy/gemini-ocr#command-line-interface).
+Unknown keys are ignored with a warning and do not leak through `doctor --json`.
+`open-ocr-cli init` writes new configuration atomically with mode `0600`.
+
+## Batch and automation contracts
+
+The default output directory remains `./gemini-ocr-output` for backwards
+compatibility. It contains artifacts, `.gemini-ocr-manifest.json`,
+`.gemini-ocr.lock`, and `batch-summary.json`.
+
+- Existing output is never replaced without `--overwrite`.
+- Every discovered input gets a succeeded, partial, failed, or skipped result.
+- All output destinations are preflighted before paid work starts.
+- An exclusive batch lock prevents concurrent manifest races.
+- `--resume` fingerprints every output-affecting option, including provider,
+  gateway route, model, schema, and agent settings.
+- Progress and diagnostics use stderr; artifacts and JSONL use stdout.
+- Request starts are evenly spaced by `--requests-per-minute` across every API
+  surface, including agent continuations and Kimi file extraction.
+- `--max-cost` blocks future requests after recorded or estimated cost reaches
+  the limit. In-flight requests can finish slightly above it.
+- Known Gemini, Kimi K2.6, and Muse Spark 1.1 prices are estimated locally,
+  including Kimi cached-input tokens. OpenRouter-reported cost is recorded when
+  available. Supply both `--input-price` and `--output-price` for unknown models.
+- Truncated, blocked, empty, malformed, and schema-invalid responses fail closed.
+
+Custom structured extraction remains locally validated on every provider.
+Direct Kimi uses Moonshot's optional-property strict schema dialect. Other
+OpenAI-compatible routes receive non-strict schema hints so optional fields are
+not rejected up front, then the CLI validates the result against the complete
+original schema before writing it.
+
+Exit status is `0` for success, `1` for failed/partial/cost-limited work, `2` for
+command or configuration errors, `130` for SIGINT, and `143` for SIGTERM.
+
+## Web and agentic behavior
+
+Gemini Web OCR uses URL Context and verifies retrieval metadata. Other providers
+use a bounded local downloader that rejects unsafe hosts, resolves every DNS
+address as public, covers IPv4, IPv6, and IPv4-mapped IPv6, pins the selected
+address, validates every redirect, and enforces a 30-second socket inactivity
+timeout. Retrieved HTML is converted with a structure-aware text parser before
+being sent to the model.
+
+Gemini agentic OCR uses stored Interactions. Compatible providers keep a local
+OpenAI-style transcript, return a result for every tool call, execute parallel
+requests sequentially, and preserve Kimi `reasoning_content` and OpenRouter
+`reasoning_details`. All providers use the same deterministic field validation,
+confidence/coverage stop criteria, and region cropper.
+
+## Distribution
+
+- npm: `npm install --global open-ocr-cli`
+- container: `ghcr.io/cyanxxy/open-ocr-cli:latest`
+- GitHub Action: `uses: cyanxxy/gemini-ocr@v2`
+- Homebrew: tagged releases attach a generated `open-ocr-cli.rb` formula
+
+The container runs as the non-root `node` user. Mount input and output beneath
+its writable `/work` directory:
+
+```bash
+docker run --rm -v "$PWD:/work" -e GEMINI_API_KEY \
+  ghcr.io/cyanxxy/open-ocr-cli:latest \
+  extract /work/invoice.pdf --output /work/gemini-ocr-output
+```
+
+Release automation runs typechecking, lint, tests, the web build, packed install
+smoke, npm provenance publishing, multi-architecture container publishing, and
+GitHub release generation from the same tag.
+
+Full architecture, security, development, and evaluation documentation lives in
+the [project README](https://github.com/cyanxxy/gemini-ocr#readme).

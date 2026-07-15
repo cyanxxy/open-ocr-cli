@@ -3,11 +3,22 @@ import process from 'node:process';
 import { agentLoop } from '../lib/agentLoop';
 import type { AgentMemory, AgentStep } from '../lib/agentTypes';
 import { isRetryableGeminiError } from '../lib/gemini/client';
-import { extractStructuredDataFromFile, extractTextFromFile } from '../lib/gemini/extraction';
-import { configureGeminiRequestPolicy, resetGeminiRequestPolicy } from '../lib/gemini/requestPolicy';
-import { getGeminiUsage, resetGeminiUsage } from '../lib/gemini/usage';
-import type { ExtractedContent, ExtractionInstruction, GeminiClientConfig } from '../lib/gemini/types';
-import { getExtractionPreset, runExtractionPreset } from '../lib/templates';
+import type { ExtractedContent, ExtractionInstruction } from '../lib/gemini/types';
+import {
+  configureProviderRequestPolicy,
+  extractPresetWithProvider,
+  extractStructuredWithProvider,
+  extractTextWithProvider,
+  getProviderUsage,
+  isRetryableProviderError,
+  providerAgentLoop,
+  providerDefaultBaseUrl,
+  providerRequestHeaders,
+  resetProviderRequestPolicy,
+  resetProviderUsage,
+  type ProviderRuntimeConfig,
+} from '../lib/providers';
+import { getExtractionPreset } from '../lib/templates';
 import { inputFingerprint, readAndValidateInput } from './inputs';
 import { asCliExitError } from './errors';
 import { nodeRegionCropper } from './nodeRegionCropper';
@@ -65,6 +76,27 @@ function agentMemoryToMarkdown(memory: AgentMemory): string {
   return lines.join('\n');
 }
 
+function providerConfig(options: ResolvedCliOptions): ProviderRuntimeConfig {
+  return {
+    provider: options.provider,
+    gateway: options.gateway,
+    apiKey: options.apiKey,
+    apiKeyEnv: options.apiKeyEnv,
+    model: options.model,
+    baseUrl: options.baseUrl,
+    thinkingConfig: { level: options.thinking, includeThoughts: options.includeThoughts },
+    gatewayToken: options.gatewayToken,
+    gatewayTokenEnv: options.gatewayTokenEnv,
+    cloudflareAccountId: options.cloudflareAccountId,
+    cloudflareGatewayId: options.cloudflareGatewayId,
+    cloudflareByok: options.cloudflareByok,
+    cloudflareByokAlias: options.cloudflareByokAlias,
+    cloudflareProvider: options.cloudflareProvider,
+    inputPricePerMillionUsd: options.inputPricePerMillionUsd,
+    outputPricePerMillionUsd: options.outputPricePerMillionUsd,
+  };
+}
+
 async function runAgentic(
   input: ResolvedInput,
   dataUrl: string,
@@ -72,13 +104,18 @@ async function runAgentic(
   signal: AbortSignal,
   onStep: (step: AgentStep) => void,
 ): Promise<OcrArtifacts> {
-  const generator = agentLoop(
+  const config = providerConfig(options);
+  const generator = options.provider === 'gemini' ? agentLoop(
     { name: input.name, type: input.mimeType },
     dataUrl,
     {
-      apiKey: options.apiKey,
+      apiKey: options.apiKey || (options.cloudflareByok ? options.gatewayToken || 'cloudflare-byok' : ''),
       model: options.model,
       thinkingConfig: { level: options.thinking, includeThoughts: options.includeThoughts },
+      baseUrl: options.gateway === 'cloudflare' || options.baseUrl !== providerDefaultBaseUrl('gemini')
+        ? options.baseUrl
+        : undefined,
+      headers: options.gateway === 'cloudflare' ? providerRequestHeaders(config) : undefined,
       abortSignal: signal,
       regionCropper: nodeRegionCropper,
     },
@@ -88,6 +125,18 @@ async function runAgentic(
       maxTokens: options.maxTokens,
       maxDurationMs: options.timeoutSeconds * 1000,
     },
+  ) : providerAgentLoop(
+    { name: input.name, type: input.mimeType },
+    dataUrl,
+    config,
+    {
+      maxIterations: options.maxIterations,
+      confidenceThreshold: options.confidenceThreshold,
+      maxTokens: options.maxTokens,
+      maxDurationMs: options.timeoutSeconds * 1000,
+    },
+    nodeRegionCropper,
+    signal,
   );
   const steps: AgentStep[] = [];
   let state = await generator.next();
@@ -114,19 +163,16 @@ async function extractOnce(
   onStep: (step: AgentStep) => void,
 ): Promise<OcrArtifacts> {
   const { dataUrl } = await readAndValidateInput(input);
-  const clientConfig: GeminiClientConfig = {
-    apiKey: options.apiKey,
-    model: options.model,
-    thinkingConfig: { level: options.thinking, includeThoughts: options.includeThoughts },
-  };
+  const clientConfig = providerConfig(options);
 
   if (options.mode === 'template') {
-    const result = await runExtractionPreset(
+    const result = await extractPresetWithProvider(
       dataUrl,
       input.mimeType,
+      input.name,
       clientConfig,
       getExtractionPreset(options.preset!),
-      { abortSignal: signal },
+      signal,
     );
     return { markdown: result.markdown, json: result.json, csv: result.csv };
   }
@@ -134,9 +180,10 @@ async function extractOnce(
 
   const instructions: ExtractionInstruction[] = options.instructions.map((prompt) => ({ prompt }));
   if (options.customSchema) {
-    const result = await extractStructuredDataFromFile(
+    const result = await extractStructuredWithProvider(
       dataUrl,
       input.mimeType,
+      input.name,
       clientConfig,
       options.customSchema,
       instructions.length > 0 ? instructions : undefined,
@@ -150,9 +197,10 @@ async function extractOnce(
     assertCustomSchemaOutput(options.customSchema, result);
     return { json: result };
   }
-  const result = await extractTextFromFile(
+  const result = await extractTextWithProvider(
     dataUrl,
     input.mimeType,
+    input.name,
     clientConfig,
     instructions.length > 0 ? instructions : undefined,
     {
@@ -178,7 +226,11 @@ async function extractWithRetries(
     try {
       return { artifacts: await extractOnce(input, options, signal, onStep), attempts: attempt };
     } catch (error) {
-      if (signal.aborted || attempt === allowedAttempts || !isRetryableGeminiError(error)) {
+      if (
+        signal.aborted
+        || attempt === allowedAttempts
+        || !(options.provider === 'gemini' ? isRetryableGeminiError(error) : isRetryableProviderError(error))
+      ) {
         throw new ExtractionAttemptsError(error, attempt);
       }
       const delayMs = 750 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
@@ -205,8 +257,14 @@ class ExtractionAttemptsError extends Error {
   }
 }
 
-function modeFingerprint(options: ResolvedCliOptions): string {
+export function modeFingerprint(options: ResolvedCliOptions): string {
   return JSON.stringify({
+    provider: options.provider,
+    gateway: options.gateway,
+    baseUrl: options.baseUrl,
+    cloudflareProvider: options.cloudflareProvider,
+    cloudflareByok: options.cloudflareByok,
+    cloudflareByokAlias: options.cloudflareByokAlias,
     mode: options.mode,
     preset: options.preset,
     model: options.model,
@@ -240,6 +298,12 @@ interface BatchRuntime {
   abortController: AbortController;
   writeStdout?: (text: string) => void;
   writeStderr?: (text: string) => void;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return 'Unknown error';
 }
 
 async function runBatchInternal(
@@ -280,7 +344,7 @@ async function runBatchInternal(
       throw asCliExitError(error, 2);
     }
   }
-  resetGeminiUsage();
+  resetProviderUsage();
 
   const results = new Array<OcrJobResult | undefined>(inputs.length);
   let cursor = 0;
@@ -292,7 +356,7 @@ async function runBatchInternal(
     while (!runtime.abortController.signal.aborted && !failFastTriggered && !costLimitReached) {
       if (
         options.maxCostUsd !== undefined
-        && getGeminiUsage().estimatedCostUsd >= options.maxCostUsd
+        && getProviderUsage().estimatedCostUsd >= options.maxCostUsd
       ) {
         costLimitReached = true;
         return;
@@ -313,14 +377,14 @@ async function runBatchInternal(
           await readAndValidateInput(input);
           const plannedOutputFiles = await plannedArtifactTargets(input, options, inputs.length);
           result = {
-            status: 'skipped', input, mode: options.mode, model: options.model,
+            status: 'skipped', input, provider: options.provider, gateway: options.gateway, mode: options.mode, model: options.model,
             startedAt: jobStartedAt, completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart, attempts: 0,
             plannedOutputFiles,
             skipReason: 'validated',
           };
         } catch (error) {
           result = {
-            status: 'failed', input, mode: options.mode, model: options.model,
+            status: 'failed', input, provider: options.provider, gateway: options.gateway, mode: options.mode, model: options.model,
             startedAt: jobStartedAt, completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart, attempts: 0,
             error: error instanceof Error ? error.message : String(error),
           };
@@ -328,7 +392,7 @@ async function runBatchInternal(
         }
       } else if (completedEntry) {
         result = {
-          status: 'skipped', input, mode: options.mode, model: options.model,
+          status: 'skipped', input, provider: options.provider, gateway: options.gateway, mode: options.mode, model: options.model,
           startedAt: jobStartedAt, completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart, attempts: 0,
           outputFiles: completedEntry.outputFiles,
           skipReason: 'resumed',
@@ -359,7 +423,7 @@ async function runBatchInternal(
             ? 'partial'
             : 'succeeded';
           result = {
-            status: jobStatus, input, mode: options.mode, model: options.model,
+            status: jobStatus, input, provider: options.provider, gateway: options.gateway, mode: options.mode, model: options.model,
             startedAt: jobStartedAt, completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart,
             artifacts, outputFiles, attempts,
           };
@@ -374,7 +438,7 @@ async function runBatchInternal(
             ? `Timed out after ${options.timeoutSeconds}s`
             : error instanceof Error ? error.message : String(error);
           result = {
-            status: 'failed', input, mode: options.mode, model: options.model,
+            status: 'failed', input, provider: options.provider, gateway: options.gateway, mode: options.mode, model: options.model,
             startedAt: jobStartedAt, completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart,
             error: message,
             attempts: error instanceof ExtractionAttemptsError ? error.attempts : 1,
@@ -404,7 +468,7 @@ async function runBatchInternal(
         : result;
       if (
         options.maxCostUsd !== undefined
-        && getGeminiUsage().estimatedCostUsd >= options.maxCostUsd
+        && getProviderUsage().estimatedCostUsd >= options.maxCostUsd
       ) costLimitReached = true;
     }
   };
@@ -424,6 +488,8 @@ async function runBatchInternal(
     const result: OcrJobResult = {
       status: 'skipped',
       input: inputs[index],
+      provider: options.provider,
+      gateway: options.gateway,
       mode: options.mode,
       model: options.model,
       startedAt: timestamp,
@@ -454,8 +520,10 @@ async function runBatchInternal(
     failed: finishedResults.filter((result) => result.status === 'failed').length,
     skipped: finishedResults.filter((result) => result.status === 'skipped').length,
     mode: options.mode,
+    provider: options.provider,
+    gateway: options.gateway,
     model: options.model,
-    usage: getGeminiUsage(),
+    usage: getProviderUsage(),
     costLimitUsd: options.maxCostUsd,
     costLimitReached,
     results: finishedResults,
@@ -497,7 +565,7 @@ export async function runBatch(
   let primaryFailure: unknown;
   let batchFailed = false;
   try {
-    configureGeminiRequestPolicy({
+    configureProviderRequestPolicy({
       requestsPerMinute: options.requestsPerMinute,
       maxCostUsd: options.maxCostUsd,
     });
@@ -506,7 +574,7 @@ export async function runBatch(
     batchFailed = true;
     primaryFailure = error;
   }
-  resetGeminiRequestPolicy();
+  resetProviderRequestPolicy();
 
   let lockFailure: unknown;
   try {
@@ -515,8 +583,8 @@ export async function runBatch(
     lockFailure = error;
   }
   if (batchFailed && lockFailure !== undefined) {
-    const primaryMessage = primaryFailure instanceof Error ? primaryFailure.message : String(primaryFailure);
-    const lockMessage = lockFailure instanceof Error ? lockFailure.message : String(lockFailure);
+    const primaryMessage = errorMessage(primaryFailure);
+    const lockMessage = errorMessage(lockFailure);
     throw new Error(`${primaryMessage}; batch lock cleanup also failed: ${lockMessage}`, {
       cause: primaryFailure,
     });
@@ -525,7 +593,7 @@ export async function runBatch(
     throw primaryFailure instanceof Error ? primaryFailure : new Error(String(primaryFailure));
   }
   if (lockFailure !== undefined) {
-    throw lockFailure instanceof Error ? lockFailure : new Error(String(lockFailure));
+    throw lockFailure instanceof Error ? lockFailure : new Error(errorMessage(lockFailure));
   }
   if (!summary) throw new Error('Internal error: batch completed without a summary');
   return summary;

@@ -96,6 +96,8 @@ export interface UrlContextResultSummary {
 interface InteractionRequest {
   apiKey: string;
   model: GeminiModel;
+  baseUrl?: string;
+  headers?: Record<string, string>;
   input: string | InteractionMediaContent[] | InteractionStep[];
   systemInstruction?: string;
   previousInteractionId?: string;
@@ -427,6 +429,8 @@ function buildResponseFormat(
 export async function runModelInteraction({
   apiKey,
   model,
+  baseUrl,
+  headers,
   input,
   systemInstruction,
   previousInteractionId,
@@ -437,7 +441,7 @@ export async function runModelInteraction({
   abortSignal,
   store,
 }: InteractionRequest): Promise<InteractionResult> {
-  const genAI = getGenAIClient(apiKey);
+  const genAI = getGenAIClient(apiKey, { baseUrl, headers });
   const responseFormat = buildResponseFormat(responseSchema, responseMimeType);
 
   const params: Interactions.CreateModelInteractionParamsNonStreaming = {

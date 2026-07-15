@@ -31,7 +31,7 @@ function assertSupportedSchemaNode(value: unknown, pointer: string, depth: numbe
   if (depth > 32) throw new Error('Schema nesting exceeds the supported depth of 32');
   for (const key of Object.keys(value)) {
     if (!SUPPORTED_KEYWORDS.has(key)) {
-      throw new Error(`${pointer}: JSON Schema keyword "${key}" is not supported by Gemini structured output`);
+      throw new Error(`${pointer}: JSON Schema keyword "${key}" is not supported by the portable structured-output subset`);
     }
   }
   if ('$ref' in value) {
@@ -86,7 +86,7 @@ export async function loadCustomSchema(schemaPath: string, cwd: string): Promise
   }
   if (!isRecord(parsed)) throw new Error('Custom schema must be a JSON object');
   assertSupportedSchemaNode(parsed, '#', 0);
-  // Accept `$schema` as document metadata, but omit it from Gemini's supported
+  // Accept `$schema` as document metadata, but omit it from the portable
   // subset. Local validation consistently uses Draft 2020-12.
   delete parsed.$schema;
   try {

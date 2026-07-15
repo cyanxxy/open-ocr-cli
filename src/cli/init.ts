@@ -7,7 +7,21 @@ import { createInterface } from 'node:readline/promises';
 import { getGenAIClient } from '../lib/gemini/client';
 import { waitForGeminiRequestSlot } from '../lib/gemini/requestPolicy';
 import type { GeminiModel, ThinkingLevel } from '../lib/gemini/types';
-import { SUPPORTED_MODELS, type CliConfigFile } from './types';
+import {
+  GATEWAY_IDS,
+  GEMINI_MODELS,
+  PROVIDER_IDS,
+  createChatCompletion,
+  providerDefaultApiKeyEnv,
+  providerDefaultBaseUrl,
+  providerDefaultModel,
+  providerRequestHeaders,
+  resolveProviderBaseUrl,
+  type GatewayId,
+  type ProviderId,
+  type ProviderRuntimeConfig,
+} from '../lib/providers';
+import type { CliConfigFile } from './types';
 import { credentialSetupGuidance } from './config';
 
 export interface InitFlags {
@@ -15,6 +29,9 @@ export interface InitFlags {
   force?: boolean;
   yes?: boolean;
   skipValidation?: boolean;
+  provider?: ProviderId;
+  gateway?: GatewayId;
+  model?: string;
 }
 
 export interface InitPrompter {
@@ -28,13 +45,15 @@ export interface InitResult {
   written: boolean;
   credentialStatus: 'valid' | 'missing' | 'skipped';
   apiKeyEnvironmentVariable: string;
+  provider: ProviderId;
+  gateway: GatewayId;
 }
 
 interface InitRuntime {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   prompter?: InitPrompter;
-  validateCredentials?: (apiKey: string, model: GeminiModel) => Promise<void>;
+  validateCredentials?: (apiKey: string, model: string) => Promise<void>;
   writeOutput?: (text: string) => void;
 }
 
@@ -101,8 +120,33 @@ export async function validateGeminiCredentials(apiKey: string, model: GeminiMod
 async function writeConfig(configPath: string, config: CliConfigFile): Promise<void> {
   await fs.mkdir(path.dirname(configPath), { recursive: true });
   const temporary = `${configPath}.${process.pid}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await fs.rename(temporary, configPath);
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    await fs.rename(temporary, configPath);
+  } catch (error) {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function validateProviderCredentials(config: ProviderRuntimeConfig): Promise<void> {
+  if (config.provider === 'gemini') {
+    const client = getGenAIClient(config.apiKey || config.gatewayToken || 'cloudflare-byok', {
+      baseUrl: config.gateway === 'cloudflare' ? config.baseUrl : undefined,
+      headers: config.gateway === 'cloudflare' ? providerRequestHeaders(config) : undefined,
+    });
+    await waitForGeminiRequestSlot();
+    await client.models.generateContent({
+      model: config.model,
+      contents: 'Reply with OK.',
+      config: { maxOutputTokens: 8 },
+    });
+    return;
+  }
+  await createChatCompletion(config, {
+    messages: [{ role: 'user', content: 'Reply with OK.' }],
+    maxTokens: 8,
+  });
 }
 
 export async function runInit(flags: InitFlags, runtime: InitRuntime = {}): Promise<InitResult> {
@@ -112,8 +156,8 @@ export async function runInit(flags: InitFlags, runtime: InitRuntime = {}): Prom
   const ownsPrompter = runtime.prompter === undefined;
   const prompter = runtime.prompter ?? terminalPrompter();
   const configPath = flags.global
-    ? path.join(homedir(), '.config', 'gemini-ocr', 'config.json')
-    : path.join(cwd, '.gemini-ocr.json');
+    ? path.join(homedir(), '.config', 'open-ocr-cli', 'config.json')
+    : path.join(cwd, '.open-ocr-cli.json');
 
   try {
     if (await pathExists(configPath) && !flags.force) {
@@ -124,6 +168,8 @@ export async function runInit(flags: InitFlags, runtime: InitRuntime = {}): Prom
           written: false,
           credentialStatus: 'skipped',
           apiKeyEnvironmentVariable: 'GEMINI_API_KEY',
+          provider: 'gemini',
+          gateway: 'direct',
         };
       }
     }
@@ -131,11 +177,25 @@ export async function runInit(flags: InitFlags, runtime: InitRuntime = {}): Prom
     const ask = async (question: string, defaultValue: string): Promise<string> => (
       flags.yes ? defaultValue : prompter.ask(question, defaultValue)
     );
-    const model = choice<GeminiModel>(
-      await ask('Default model', 'gemini-3.5-flash'),
-      SUPPORTED_MODELS,
-      'Default model',
+    const provider = choice<ProviderId>(
+      flags.provider ?? await ask('Provider', 'gemini'),
+      PROVIDER_IDS,
+      'Provider',
     );
+    const gateway = choice<GatewayId>(
+      flags.gateway ?? await ask('Gateway', 'direct'),
+      GATEWAY_IDS,
+      'Gateway',
+    );
+    const defaultModel = providerDefaultModel(provider);
+    if (!defaultModel && flags.yes && !flags.model) {
+      throw new Error('--model is required with --yes for the openai-compatible provider');
+    }
+    const model = flags.model ?? await ask('Default model', defaultModel ?? 'your-model');
+    if (!model.trim()) throw new Error('Default model cannot be empty');
+    if (provider === 'gemini' && !GEMINI_MODELS.includes(model as GeminiModel)) {
+      throw new Error(`Default model must be one of: ${GEMINI_MODELS.join(', ')}`);
+    }
     const thinking = choice<ThinkingLevel>(
       (await ask('Thinking level', 'MEDIUM')).toUpperCase(),
       ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'],
@@ -143,7 +203,7 @@ export async function runInit(flags: InitFlags, runtime: InitRuntime = {}): Prom
     );
     const concurrency = integer(await ask('Concurrent documents', '2'), 'Concurrency', 1, 16);
     const requestsPerMinute = integer(
-      await ask('Gemini requests per minute (0 for unlimited)', '0'),
+      await ask('Provider requests per minute (0 for unlimited)', '0'),
       'Requests per minute',
       0,
       60_000,
@@ -153,42 +213,138 @@ export async function runInit(flags: InitFlags, runtime: InitRuntime = {}): Prom
       'Maximum cost',
       1_000_000,
     );
-    const apiKeyEnv = await ask('API key environment variable', 'GEMINI_API_KEY');
+    const needsCustomPrice = maxCostUsd !== undefined && provider !== 'gemini' && provider !== 'openrouter';
+    const inputPricePerMillionUsd = needsCustomPrice
+      ? optionalPositiveNumber(
+          await ask('Input price per million tokens in USD', ''),
+          'Input price',
+          1_000_000,
+        )
+      : undefined;
+    const outputPricePerMillionUsd = needsCustomPrice
+      ? optionalPositiveNumber(
+          await ask('Output price per million tokens in USD', ''),
+          'Output price',
+          1_000_000,
+        )
+      : undefined;
+    if (needsCustomPrice && (inputPricePerMillionUsd === undefined || outputPricePerMillionUsd === undefined)) {
+      throw new Error('A maximum cost for this provider requires both input and output token prices');
+    }
+    const apiKeyEnv = await ask('API key environment variable', providerDefaultApiKeyEnv(provider));
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(apiKeyEnv)) {
       throw new Error('API key environment variable must be a valid environment-variable name');
     }
 
+    const baseUrl = gateway === 'direct'
+      ? await ask('Provider API base URL', providerDefaultBaseUrl(provider))
+      : undefined;
+    const cloudflareAccountId = gateway === 'cloudflare'
+      ? await ask('Cloudflare account ID', env.CLOUDFLARE_ACCOUNT_ID ?? '')
+      : undefined;
+    const cloudflareGatewayId = gateway === 'cloudflare'
+      ? await ask('Cloudflare AI Gateway ID', env.CLOUDFLARE_AI_GATEWAY_ID ?? '')
+      : undefined;
+    const cloudflareTokenEnv = gateway === 'cloudflare'
+      ? await ask('Cloudflare gateway token environment variable', 'CLOUDFLARE_AI_GATEWAY_TOKEN')
+      : undefined;
+    const cloudflareByok = gateway === 'cloudflare'
+      ? (flags.yes ? false : await prompter.confirm('Use a provider key stored in Cloudflare?', false))
+      : false;
+    const cloudflareByokAlias = cloudflareByok
+      ? await ask('Cloudflare stored-key alias (blank for default)', '')
+      : undefined;
+    const cloudflareProvider = gateway === 'cloudflare' && provider !== 'gemini' && provider !== 'openrouter'
+      ? await ask('Cloudflare custom-provider slug', provider)
+      : undefined;
+    if (gateway === 'cloudflare' && (!cloudflareAccountId || !cloudflareGatewayId)) {
+      throw new Error('Cloudflare account ID and AI Gateway ID are required');
+    }
+
     const config: CliConfigFile = {
+      provider,
+      gateway,
       model,
       thinking,
       concurrency,
       requestsPerMinute,
       ...(maxCostUsd !== undefined ? { maxCostUsd } : {}),
+      ...(inputPricePerMillionUsd !== undefined ? { inputPricePerMillionUsd } : {}),
+      ...(outputPricePerMillionUsd !== undefined ? { outputPricePerMillionUsd } : {}),
       retries: 3,
       timeoutSeconds: 120,
       resume: true,
       format: 'markdown',
       apiKeyEnv,
+      ...(baseUrl ? { baseUrl } : {}),
+      ...(cloudflareAccountId ? { cloudflareAccountId } : {}),
+      ...(cloudflareGatewayId ? { cloudflareGatewayId } : {}),
+      ...(cloudflareTokenEnv ? { cloudflareTokenEnv } : {}),
+      ...(cloudflareByok ? { cloudflareByok: true } : {}),
+      ...(cloudflareByokAlias ? { cloudflareByokAlias } : {}),
+      ...(cloudflareProvider ? { cloudflareProvider } : {}),
     };
 
     let credentialStatus: InitResult['credentialStatus'] = 'skipped';
-    const apiKey = env[apiKeyEnv]?.trim();
+    const apiKey = env[apiKeyEnv]?.trim() ?? '';
+    const gatewayToken = cloudflareTokenEnv ? env[cloudflareTokenEnv]?.trim() : undefined;
+    const credentialEnvironmentVariable = cloudflareByok && cloudflareTokenEnv
+      ? cloudflareTokenEnv
+      : apiKeyEnv;
     if (!flags.skipValidation) {
-      if (!apiKey) credentialStatus = 'missing';
+      if (cloudflareByok ? !gatewayToken : !apiKey) credentialStatus = 'missing';
       else {
-        await (runtime.validateCredentials ?? validateGeminiCredentials)(apiKey, model);
+        const resolvedBaseUrl = resolveProviderBaseUrl({
+          provider,
+          gateway,
+          baseUrl,
+          cloudflareAccountId,
+          cloudflareGatewayId,
+          cloudflareProvider,
+        });
+        if (runtime.validateCredentials) {
+          await runtime.validateCredentials(apiKey, model as GeminiModel);
+        } else {
+          await validateProviderCredentials({
+            provider,
+            gateway,
+            apiKey,
+            apiKeyEnv,
+            model,
+            baseUrl: resolvedBaseUrl,
+            thinkingConfig: { level: thinking },
+            gatewayToken,
+            gatewayTokenEnv: cloudflareTokenEnv,
+            cloudflareAccountId,
+            cloudflareGatewayId,
+            cloudflareByok,
+            cloudflareByokAlias,
+            cloudflareProvider,
+          });
+        }
         credentialStatus = 'valid';
       }
     }
 
     await writeConfig(configPath, config);
     writeOutput(`Created ${configPath}\n`);
-    if (credentialStatus === 'valid') writeOutput(`${apiKeyEnv}: credential validated\n`);
+    if (credentialStatus === 'valid') writeOutput(`${credentialEnvironmentVariable}: credential validated\n`);
     else if (credentialStatus === 'missing') {
-      writeOutput(`${apiKeyEnv}: not set; credential validation skipped\n${credentialSetupGuidance(apiKeyEnv, cwd)}\n`);
+      const credentialProvider = cloudflareByok ? 'Cloudflare AI Gateway' : provider;
+      writeOutput(
+        `${credentialEnvironmentVariable}: not set; credential validation skipped\n`
+        + `${credentialSetupGuidance(credentialEnvironmentVariable, cwd, credentialProvider)}\n`,
+      );
     }
     else writeOutput('Credential validation skipped\n');
-    return { configPath, written: true, credentialStatus, apiKeyEnvironmentVariable: apiKeyEnv };
+    return {
+      configPath,
+      written: true,
+      credentialStatus,
+      apiKeyEnvironmentVariable: credentialEnvironmentVariable,
+      provider,
+      gateway,
+    };
   } finally {
     if (ownsPrompter) prompter.close();
   }

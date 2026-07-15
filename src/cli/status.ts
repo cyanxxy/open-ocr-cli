@@ -1,11 +1,11 @@
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import { GATEWAY_IDS, GEMINI_MODELS, PROVIDER_IDS } from '../lib/providers';
 import { asRecord, isIsoTimestamp, parseBatchLockOwner } from './jsonValidation';
 import { parseCliManifest } from './manifest';
 import {
   CLI_MODES,
-  SUPPORTED_MODELS,
   type BatchSummary,
   type ManifestEntry,
   type OcrJobResult,
@@ -43,6 +43,8 @@ export interface BatchStatusReport {
     | 'completedAt'
     | 'durationMs'
     | 'mode'
+    | 'provider'
+    | 'gateway'
     | 'model'
     | 'usage'
     | 'costLimitReached'
@@ -73,6 +75,8 @@ interface ParsedSummary {
   failed: number;
   skipped: number;
   mode: BatchSummary['mode'];
+  provider: NonNullable<BatchSummary['provider']>;
+  gateway: NonNullable<BatchSummary['gateway']>;
   model: BatchSummary['model'];
   usage: BatchSummary['usage'];
   costLimitReached: boolean;
@@ -176,13 +180,22 @@ function parseSummary(value: unknown, summaryPath: string): ParsedSummary | unde
     'cachedTokens',
     'totalTokens',
   ] as const;
+  const provider = record.provider;
+  const gateway = record.gateway;
+  const hasValidProviderMetadata = provider === undefined && gateway === undefined
+    ? GEMINI_MODELS.includes(record.model as (typeof GEMINI_MODELS)[number])
+    : PROVIDER_IDS.includes(provider as (typeof PROVIDER_IDS)[number])
+      && GATEWAY_IDS.includes(gateway as (typeof GATEWAY_IDS)[number])
+      && (provider !== 'gemini' || GEMINI_MODELS.includes(record.model as (typeof GEMINI_MODELS)[number]));
   if (
     record.version !== 1
     || !isIsoTimestamp(record.startedAt)
     || !isIsoTimestamp(record.completedAt)
     || Date.parse(record.completedAt) < Date.parse(record.startedAt)
     || !CLI_MODES.includes(record.mode as BatchSummary['mode'])
-    || !SUPPORTED_MODELS.includes(record.model as BatchSummary['model'])
+    || typeof record.model !== 'string'
+    || record.model.trim().length === 0
+    || !hasValidProviderMetadata
     || !isNonNegativeNumber(record.durationMs)
     || countKeys.some((key) => !isNonNegativeInteger(record[key]))
     || usageIntegerKeys.some((key) => !isNonNegativeInteger(usage[key]))
@@ -220,7 +233,9 @@ function parseSummary(value: unknown, summaryPath: string): ParsedSummary | unde
     failed,
     skipped,
     mode: record.mode as BatchSummary['mode'],
-    model: record.model as BatchSummary['model'],
+    provider: (provider ?? 'gemini') as NonNullable<BatchSummary['provider']>,
+    gateway: (gateway ?? 'direct') as NonNullable<BatchSummary['gateway']>,
+    model: record.model,
     usage: {
       requests: usage.requests as number,
       inputTokens: usage.inputTokens as number,
@@ -229,7 +244,7 @@ function parseSummary(value: unknown, summaryPath: string): ParsedSummary | unde
       toolTokens: usage.toolTokens as number,
       cachedTokens: usage.cachedTokens as number,
       totalTokens: usage.totalTokens as number,
-      estimatedCostUsd: usage.estimatedCostUsd as number,
+      estimatedCostUsd: usage.estimatedCostUsd,
     },
     costLimitReached: record.costLimitReached,
     results,
@@ -250,7 +265,7 @@ export async function inspectBatchStatus(
     readBatchLockIfPresent(lockPath),
   ]);
   if (manifestValue === undefined && summaryValue === undefined && activeLock === undefined) {
-    throw new Error(`No Gemini OCR batch metadata found in ${outputDirectory}`);
+    throw new Error(`No Open OCR batch metadata found in ${outputDirectory}`);
   }
   const manifest = manifestValue === undefined
     ? undefined
@@ -318,6 +333,8 @@ export async function inspectBatchStatus(
         completedAt: summary.completedAt,
         durationMs: summary.durationMs,
         mode: summary.mode,
+        provider: summary.provider,
+        gateway: summary.gateway,
         model: summary.model,
         usage: summary.usage,
         costLimitReached: summary.costLimitReached,
@@ -346,7 +363,7 @@ export function renderBatchStatus(report: BatchStatusReport): string {
   }
   if (report.lastRun) {
     lines.push(
-      `Last run: ${report.lastRun.completedAt} with ${report.lastRun.model} in ${report.lastRun.mode} mode`,
+      `Last run: ${report.lastRun.completedAt} with ${report.lastRun.provider}/${report.lastRun.model} via ${report.lastRun.gateway} in ${report.lastRun.mode} mode`,
       `Usage: ${report.lastRun.usage.totalTokens} tokens, ${report.lastRun.usage.requests} requests, estimated $${report.lastRun.usage.estimatedCostUsd.toFixed(6)}`,
     );
     if (report.lastRun.costLimitReached) lines.push('Last run stopped at its estimated cost limit.');

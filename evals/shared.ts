@@ -144,7 +144,7 @@ export async function writeEvalArtifacts(summary: EvalRunSummary, artifacts: Eva
 }
 
 export function resolveModelName(): string {
-  return process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+  return process.env.OPEN_OCR_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 }
 
 export function resolveSuiteName(argv: string[] = process.argv.slice(2)): EvalSuiteName {

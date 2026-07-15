@@ -1,0 +1,92 @@
+name: Open OCR CLI
+description: Extract text or structured data from images and PDFs in GitHub Actions.
+author: Open OCR CLI contributors
+branding:
+  icon: file-text
+  color: blue
+inputs:
+  inputs:
+    description: Newline-separated files, directories, or globs to extract.
+    required: true
+  provider:
+    description: gemini, kimi, muse, openrouter, or openai-compatible.
+    default: gemini
+  model:
+    description: Optional provider model ID.
+    required: false
+  api-key-env:
+    description: Optional environment-variable name containing the provider credential.
+    required: false
+  base-url:
+    description: Optional base URL for preview or OpenAI-compatible providers.
+    required: false
+  gateway:
+    description: direct or cloudflare.
+    default: direct
+  cloudflare-account-id:
+    description: Optional Cloudflare account ID; defaults to CLOUDFLARE_ACCOUNT_ID.
+    required: false
+  cloudflare-gateway-id:
+    description: Optional AI Gateway ID; defaults to CLOUDFLARE_AI_GATEWAY_ID.
+    required: false
+  cloudflare-provider:
+    description: Optional Cloudflare custom-provider slug for Kimi, Muse, or compatible APIs.
+    required: false
+  cloudflare-token-env:
+    description: Environment-variable name containing the token for an authenticated AI Gateway.
+    default: CLOUDFLARE_AI_GATEWAY_TOKEN
+  cloudflare-byok:
+    description: Use a provider credential stored by Cloudflare AI Gateway.
+    default: 'false'
+  cloudflare-byok-alias:
+    description: Optional Cloudflare stored-key alias.
+    required: false
+  mode:
+    description: simple, template, or agentic.
+    default: simple
+  preset:
+    description: Optional structured extraction preset.
+    required: false
+  format:
+    description: markdown, json, csv, or all.
+    default: markdown
+  output:
+    description: Output file or directory.
+    default: gemini-ocr-output
+  version:
+    description: open-ocr-cli npm version to execute.
+    default: latest
+  dry-run:
+    description: Validate inputs and planned outputs without credentials, requests, or writes.
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '22.x'
+        package-manager-cache: false
+
+    - name: Run Open OCR CLI
+      shell: bash
+      env:
+        OPEN_OCR_ACTION_INPUTS: ${{ inputs.inputs }}
+        OPEN_OCR_ACTION_PROVIDER: ${{ inputs.provider }}
+        OPEN_OCR_ACTION_MODEL: ${{ inputs.model }}
+        OPEN_OCR_ACTION_API_KEY_ENV: ${{ inputs.api-key-env }}
+        OPEN_OCR_ACTION_BASE_URL: ${{ inputs.base-url }}
+        OPEN_OCR_ACTION_GATEWAY: ${{ inputs.gateway }}
+        OPEN_OCR_ACTION_CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare-account-id }}
+        OPEN_OCR_ACTION_CLOUDFLARE_GATEWAY_ID: ${{ inputs.cloudflare-gateway-id }}
+        OPEN_OCR_ACTION_CLOUDFLARE_PROVIDER: ${{ inputs.cloudflare-provider }}
+        OPEN_OCR_ACTION_CLOUDFLARE_TOKEN_ENV: ${{ inputs.cloudflare-token-env }}
+        OPEN_OCR_ACTION_CLOUDFLARE_BYOK: ${{ inputs.cloudflare-byok }}
+        OPEN_OCR_ACTION_CLOUDFLARE_BYOK_ALIAS: ${{ inputs.cloudflare-byok-alias }}
+        OPEN_OCR_ACTION_MODE: ${{ inputs.mode }}
+        OPEN_OCR_ACTION_PRESET: ${{ inputs.preset }}
+        OPEN_OCR_ACTION_FORMAT: ${{ inputs.format }}
+        OPEN_OCR_ACTION_OUTPUT: ${{ inputs.output }}
+        OPEN_OCR_ACTION_VERSION: ${{ inputs.version }}
+        OPEN_OCR_ACTION_DRY_RUN: ${{ inputs.dry-run }}
+      run: bash "${{ github.action_path }}/scripts/github-action.sh"

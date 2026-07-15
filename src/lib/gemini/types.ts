@@ -238,6 +238,10 @@ export interface GeminiClientConfig {
   model: GeminiModel;
   /** Optional thinking configuration */
   thinkingConfig?: ThinkingConfig;
+  /** Optional compatible base URL, for example Cloudflare AI Gateway. */
+  baseUrl?: string;
+  /** Optional transport headers such as Cloudflare gateway authentication. */
+  headers?: Record<string, string>;
 }
 
 /**

@@ -1,0 +1,50 @@
+{
+  "providers": [
+    {
+      "id": "gemini-direct",
+      "provider": "gemini",
+      "model": "gemini-3.5-flash",
+      "apiKeyEnv": "GEMINI_API_KEY"
+    },
+    {
+      "id": "kimi-direct",
+      "provider": "kimi",
+      "model": "kimi-k2.6",
+      "apiKeyEnv": "MOONSHOT_API_KEY"
+    },
+    {
+      "id": "kimi-openrouter",
+      "provider": "openrouter",
+      "model": "moonshotai/kimi-k2.6",
+      "apiKeyEnv": "OPENROUTER_API_KEY"
+    },
+    {
+      "id": "muse-direct",
+      "provider": "muse",
+      "model": "muse-spark-1.1",
+      "apiKeyEnv": "META_API_KEY"
+    },
+    {
+      "id": "gemini-cloudflare",
+      "provider": "gemini",
+      "model": "gemini-3.5-flash",
+      "gateway": "cloudflare",
+      "apiKeyEnv": "GEMINI_API_KEY"
+    },
+    {
+      "id": "openrouter-cloudflare",
+      "provider": "openrouter",
+      "model": "moonshotai/kimi-k2.6",
+      "gateway": "cloudflare",
+      "apiKeyEnv": "OPENROUTER_API_KEY"
+    },
+    {
+      "id": "kimi-cloudflare",
+      "provider": "kimi",
+      "model": "kimi-k2.6",
+      "gateway": "cloudflare",
+      "apiKeyEnv": "MOONSHOT_API_KEY",
+      "cloudflareProvider": "moonshot"
+    }
+  ]
+}

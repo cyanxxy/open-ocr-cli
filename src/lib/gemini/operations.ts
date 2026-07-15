@@ -97,7 +97,7 @@ export function dedupeRequestedUrls(urls: string[]): { urls: string[]; duplicate
   return { urls: deduped, duplicateCount: urls.length - deduped.length };
 }
 
-function parseIndividualResults(responseText: string, urls: string[]): UrlResult[] {
+export function parseIndividualResults(responseText: string, urls: string[]): UrlResult[] {
   const jsonMatch = responseText.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
     throw createGroundedUrlError('Grounded URL extraction returned an unreadable individual response.');
@@ -267,6 +267,7 @@ export async function extractTextFromUrls(
   model: GeminiModel,
   thinkingConfig?: ThinkingConfig,
   abortSignal?: AbortSignal,
+  transport?: { baseUrl?: string; headers?: Record<string, string> },
 ): Promise<{
   results?: UrlResult[];
   combinedContent?: string;
@@ -369,6 +370,8 @@ Format as a structured comparison analysis.`;
     const interaction = await runModelInteraction({
       apiKey,
       model,
+      baseUrl: transport?.baseUrl,
+      headers: transport?.headers,
       input: prompt,
       tools: [{ type: 'url_context' }],
       generationConfig,

@@ -91,6 +91,24 @@ describe('CLI batch status', () => {
     const report = await inspectBatchStatus('.', directory);
     expect(report).toMatchObject({ healthy: true, summaryPresent: true, manifestPresent: false });
     expect(renderBatchStatus(report)).toContain('120 tokens');
+    expect(renderBatchStatus(report)).toContain('gemini/gemini-3.5-flash via direct');
+  });
+
+  it('reports the provider and gateway for provider-neutral summaries', async () => {
+    await writeFile(path.join(directory, 'batch-summary.json'), JSON.stringify(batchSummary([
+      { status: 'succeeded' },
+    ], {
+      provider: 'openrouter',
+      gateway: 'cloudflare',
+      model: 'moonshotai/kimi-k2.6',
+    })));
+    const report = await inspectBatchStatus('.', directory);
+    expect(report.lastRun).toMatchObject({
+      provider: 'openrouter',
+      gateway: 'cloudflare',
+      model: 'moonshotai/kimi-k2.6',
+    });
+    expect(renderBatchStatus(report)).toContain('openrouter/moonshotai/kimi-k2.6 via cloudflare');
   });
 
   it('prefers last-run totals and marks cost-limited batches unhealthy', async () => {
@@ -192,12 +210,12 @@ describe('CLI batch status', () => {
     await writeFile(path.join(directory, 'batch-summary.json'), JSON.stringify(invalidUsage));
     await expect(inspectBatchStatus('.', directory)).rejects.toThrow('Invalid batch summary');
 
-    const invalidModel = batchSummary([{ status: 'succeeded' }], { model: 'unknown-model' });
+    const invalidModel = batchSummary([{ status: 'succeeded' }], { provider: 'gemini', model: 'unknown-model' });
     await writeFile(path.join(directory, 'batch-summary.json'), JSON.stringify(invalidModel));
     await expect(inspectBatchStatus('.', directory)).rejects.toThrow('Invalid batch summary');
   });
 
   it('rejects directories without batch metadata', async () => {
-    await expect(inspectBatchStatus('.', directory)).rejects.toThrow('No Gemini OCR batch metadata');
+    await expect(inspectBatchStatus('.', directory)).rejects.toThrow('No Open OCR batch metadata');
   });
 });

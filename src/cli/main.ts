@@ -7,10 +7,16 @@ import { Command, Option } from 'commander';
 
 import { listExtractionPresets } from '../lib/templates';
 import {
-  configureGeminiRequestPolicy,
-  resetGeminiRequestPolicy,
-} from '../lib/gemini/requestPolicy';
-import { getGeminiUsage, resetGeminiUsage } from '../lib/gemini/usage';
+  PROVIDER_IDS,
+  PROVIDER_PROFILES,
+  configureProviderRequestPolicy,
+  getProviderUsage,
+  isLocalBaseUrl,
+  providerDefaultApiKeyEnv,
+  resetProviderRequestPolicy,
+  resetProviderUsage,
+  type ProviderId,
+} from '../lib/providers';
 import { credentialSetupGuidance, loadCliConfig, loadLocalEnv, resolveCliOptions } from './config';
 import { asCliExitError, cliSignalExitCode, type CliExitCode } from './errors';
 import { discoverInputs } from './inputs';
@@ -18,7 +24,7 @@ import { runInit, type InitFlags } from './init';
 import { loadCustomSchema } from './schema';
 import { runBatch } from './runner';
 import { inspectBatchStatus, renderBatchStatus } from './status';
-import { SUPPORTED_MODELS, type ExtractCommandFlags } from './types';
+import type { ExtractCommandFlags } from './types';
 import {
   assertWebOutputAvailable,
   renderWebResult,
@@ -62,8 +68,25 @@ function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
-function addExtractOptions(command: Command): Command {
+function addProviderOptions(command: Command): Command {
   return command
+    .addOption(new Option('--provider <provider>', 'model provider').choices([...PROVIDER_IDS]))
+    .addOption(new Option('--gateway <gateway>', 'API route').choices(['direct', 'cloudflare']))
+    .option('--model <model>', 'provider model identifier')
+    .option('--base-url <url>', 'override the provider-compatible API base URL')
+    .option('--api-key-env <name>', 'environment variable containing the provider API key')
+    .option('--cloudflare-account-id <id>', 'Cloudflare account ID for AI Gateway')
+    .option('--cloudflare-gateway-id <id>', 'Cloudflare AI Gateway ID')
+    .option('--cloudflare-token-env <name>', 'environment variable containing the AI Gateway token')
+    .option('--cloudflare-byok', 'use a provider key stored in Cloudflare AI Gateway')
+    .option('--cloudflare-byok-alias <alias>', 'Cloudflare stored-key alias')
+    .option('--cloudflare-provider <slug>', 'Cloudflare custom-provider slug for Kimi, Muse, or compatible APIs')
+    .option('--input-price <usd>', 'custom input price per million tokens (requires --output-price)')
+    .option('--output-price <usd>', 'custom output price per million tokens (requires --input-price)');
+}
+
+function addExtractOptions(command: Command): Command {
+  return addProviderOptions(command)
     .argument('<inputs...>', 'files, directories, globs, or - for stdin')
     .option('--config <path>', 'explicit JSON configuration file')
     .addOption(new Option('--mode <mode>', 'OCR mode').choices(['simple', 'template', 'agentic']))
@@ -71,7 +94,6 @@ function addExtractOptions(command: Command): Command {
     .option('--schema <path>', 'JSON Schema for custom structured extraction')
     .addOption(new Option('--format <format>', 'artifact format').choices(['markdown', 'json', 'csv', 'all']))
     .option('-o, --output <path>', 'output file for one document or directory for batches')
-    .addOption(new Option('--model <model>', 'Gemini model').choices([...SUPPORTED_MODELS]))
     .addOption(new Option('--thinking <level>', 'thinking level').choices(['minimal', 'low', 'medium', 'high']))
     .option('--include-thoughts', 'request thought summaries where supported')
     .option('-c, --concurrency <count>', 'parallel documents (1-16)')
@@ -80,7 +102,7 @@ function addExtractOptions(command: Command): Command {
     .option('--max-files <count>', 'safety limit for matched documents')
     .option('--max-total-mb <megabytes>', 'safety limit for total input size')
     .option('--max-cost <usd>', 'block new requests and documents after estimated paid-tier cost reaches this value')
-    .option('--requests-per-minute <count>', 'maximum Gemini API request starts per minute (0 disables)')
+    .option('--requests-per-minute <count>', 'maximum provider API request starts per minute (0 disables)')
     .option('--exclude <glob>', 'exclude pattern; repeatable', collect, [])
     .option('--instruction <text>', 'custom extraction instruction; repeatable', collect, [])
     .option('--hidden', 'include hidden files when expanding directories and globs')
@@ -90,7 +112,7 @@ function addExtractOptions(command: Command): Command {
     .option('--force-unlock', 'recover a same-host batch lock only when its owner process is dead')
     .option('--fail-fast', 'stop scheduling new documents after the first failure')
     .option('--jsonl', 'emit one machine-readable event per document on stdout')
-    .option('--dry-run', 'resolve and validate the job without calling Gemini or writing files')
+    .option('--dry-run', 'resolve and validate the job without calling a provider or writing files')
     .option('--quiet', 'suppress progress output on stderr')
     .option('--verbose', 'show agent steps and detailed progress on stderr')
     .option('--stdin-name <name>', 'filename used for stdin input', 'stdin.pdf')
@@ -106,13 +128,16 @@ export function createProgram(binaryName = PRIMARY_CLI_NAME): Command {
   const commandName = CLI_BINARY_NAMES.has(binaryName) ? binaryName : PRIMARY_CLI_NAME;
   const program = new Command()
     .name(commandName)
-    .description('Open OCR CLI for files, directories, and document pipelines using Gemini')
+    .description('Provider-neutral multimodal OCR for files, URLs, and document pipelines')
     .version(cliVersion())
     .showHelpAfterError()
     .addHelpText('after', `
 Examples:
   $ ${commandName} init
   $ ${commandName} extract invoice.pdf
+  $ ${commandName} extract invoice.pdf --provider kimi --model kimi-k2.6
+  $ ${commandName} extract invoice.pdf --provider openrouter --model moonshotai/kimi-k2.6
+  $ ${commandName} extract invoice.pdf --provider gemini --gateway cloudflare
   $ ${commandName} extract invoice.pdf --schema invoice.schema.json
   $ ${commandName} extract ./documents --mode template --preset invoice --format all
   $ ${commandName} extract '**/*.pdf' --concurrency 4 --max-cost 5 --output ./results
@@ -122,12 +147,15 @@ Examples:
   $ ${commandName} presets
 
 Environment:
-  GEMINI_API_KEY          Gemini API key (required except for --dry-run)
-  GEMINI_OCR_MODEL        Default model override
-  GEMINI_OCR_THINKING     Default thinking level override
+  GEMINI_API_KEY / MOONSHOT_API_KEY / META_API_KEY / OPENROUTER_API_KEY
+  OPEN_OCR_PROVIDER       Default provider override
+  OPEN_OCR_MODEL          Default model override
+  OPEN_OCR_THINKING       Default thinking level override
+  CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_AI_GATEWAY_ID / CLOUDFLARE_AI_GATEWAY_TOKEN
 
-Configuration is loaded from ~/.config/gemini-ocr/config.json, then
-./.gemini-ocr.json, then --config. CLI flags take precedence.
+Configuration is loaded from the legacy Gemini paths, then
+~/.config/open-ocr-cli/config.json, ./.open-ocr-cli.json, and --config.
+CLI flags take precedence.
 `);
 
   addExtractOptions(program.command('extract').description('extract one or many documents'))
@@ -154,7 +182,8 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
         if (!options.quiet) {
           process.stderr.write(
             `${options.dryRun ? 'Planning' : 'Processing'} ${resolvedInputs.length} document(s) `
-            + `with ${options.model} in ${options.mode} mode (concurrency ${options.concurrency})\n`,
+            + `with ${options.provider}/${options.model} via ${options.gateway} in ${options.mode} mode `
+            + `(concurrency ${options.concurrency})\n`,
           );
         }
         const summary = await runBatch(resolvedInputs, options, { abortController });
@@ -181,7 +210,10 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
 
   program.command('init')
     .description('interactively create a safe CLI configuration and validate credentials')
-    .option('--global', 'write the user configuration instead of ./.gemini-ocr.json')
+    .option('--global', 'write the user configuration instead of ./.open-ocr-cli.json')
+    .addOption(new Option('--provider <provider>', 'model provider').choices([...PROVIDER_IDS]))
+    .addOption(new Option('--gateway <gateway>', 'API route').choices(['direct', 'cloudflare']))
+    .option('--model <model>', 'provider model identifier (required for openai-compatible with --yes)')
     .option('--force', 'replace an existing configuration without confirmation')
     .option('--yes', 'accept recommended defaults without prompting')
     .option('--skip-validation', 'do not make the credential validation request')
@@ -190,7 +222,7 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
       await runInit(flags);
     });
 
-  program.command('web')
+  addProviderOptions(program.command('web'))
     .description('extract grounded content from public URLs')
     .argument('[urls...]', 'up to 20 public HTTP(S) URLs')
     .option('--file <path>', 'read URLs from a text file, one per line')
@@ -198,37 +230,39 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
     .addOption(new Option('--analysis <mode>', 'URL analysis mode').choices([...WEB_ANALYSIS_MODES]).default('individual'))
     .addOption(new Option('--format <format>', 'output format').choices(['markdown', 'json']))
     .option('-o, --output <path>', 'write output to a file instead of stdout')
-    .addOption(new Option('--model <model>', 'Gemini model').choices([...SUPPORTED_MODELS]))
     .addOption(new Option('--thinking <level>', 'thinking level').choices(['minimal', 'low', 'medium', 'high']))
     .option('--include-thoughts', 'request thought summaries where supported')
     .option('--timeout <seconds>', 'request time limit')
     .option('--max-cost <usd>', 'fail if estimated paid-tier cost reaches this value')
-    .option('--requests-per-minute <count>', 'maximum Gemini API request starts per minute (0 disables)')
+    .option('--requests-per-minute <count>', 'maximum provider API request starts per minute (0 disables)')
     .option('--overwrite', 'replace an existing output file')
-    .option('--dry-run', 'validate URLs and configuration without calling Gemini')
+    .option('--dry-run', 'validate URLs and configuration without calling a provider')
     .option('--quiet', 'suppress status output on stderr')
-    .action(async (rawUrls: string[], flags: {
+    .action(async (rawUrls: string[], flags: ExtractCommandFlags & {
       file?: string;
       config?: string;
       analysis: WebAnalysisMode;
       format?: WebOutputFormat;
       output?: string;
-      model?: string;
-      thinking?: string;
-      includeThoughts?: boolean;
-      timeout?: string;
-      maxCost?: string;
-      requestsPerMinute?: string;
-      overwrite?: boolean;
-      dryRun?: boolean;
-      quiet?: boolean;
     }) => {
       const cwd = process.cwd();
       loadLocalEnv(cwd);
       const fileConfig = await loadCliConfig(cwd, flags.config);
       const options = resolveCliOptions(
         {
+          provider: flags.provider,
+          gateway: flags.gateway,
           model: flags.model,
+          baseUrl: flags.baseUrl,
+          apiKeyEnv: flags.apiKeyEnv,
+          cloudflareAccountId: flags.cloudflareAccountId,
+          cloudflareGatewayId: flags.cloudflareGatewayId,
+          cloudflareTokenEnv: flags.cloudflareTokenEnv,
+          cloudflareByok: flags.cloudflareByok,
+          cloudflareByokAlias: flags.cloudflareByokAlias,
+          cloudflareProvider: flags.cloudflareProvider,
+          inputPrice: flags.inputPrice,
+          outputPrice: flags.outputPrice,
           thinking: flags.thinking,
           includeThoughts: flags.includeThoughts,
           format: flags.format,
@@ -269,8 +303,8 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
         () => abortController.abort(new Error(`Timed out after ${options.timeoutSeconds}s`)),
         options.timeoutSeconds * 1000,
       );
-      resetGeminiUsage();
-      configureGeminiRequestPolicy({
+      resetProviderUsage();
+      configureProviderRequestPolicy({
         requestsPerMinute: options.requestsPerMinute,
         maxCostUsd: options.maxCostUsd,
       });
@@ -279,7 +313,7 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
         const content = renderWebResult(result, flags.analysis, options.format);
         if (options.output) await writeWebOutput(content, options.output, cwd, options.overwrite);
         else process.stdout.write(content);
-        const usage = getGeminiUsage();
+        const usage = getProviderUsage();
         if (!options.quiet) process.stderr.write(
           `Extracted ${urls.length} URL(s); ${usage.totalTokens} tokens across ${usage.requests} request(s); `
           + `estimated cost $${usage.estimatedCostUsd.toFixed(6)}\n`,
@@ -298,7 +332,7 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
         throw asCliExitError(error, 1);
       } finally {
         clearTimeout(timeout);
-        resetGeminiRequestPolicy();
+        resetProviderRequestPolicy();
         process.removeListener('SIGINT', onSigint);
         process.removeListener('SIGTERM', onSigterm);
       }
@@ -319,11 +353,25 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
     });
 
   program.command('models')
-    .description('list supported Gemini models')
+    .description('list recommended models for a provider; arbitrary IDs are accepted where supported')
+    .addOption(new Option('--provider <provider>', 'model provider').choices([...PROVIDER_IDS]).default('gemini'))
+    .option('--json', 'emit machine-readable JSON')
+    .action((flags: { provider: ProviderId; json?: boolean }) => {
+      const profile = PROVIDER_PROFILES[flags.provider];
+      if (flags.json) process.stdout.write(`${JSON.stringify(profile, null, 2)}\n`);
+      else if (profile.models.length === 0) process.stdout.write('No fixed model list; pass the upstream model ID with --model.\n');
+      else for (const model of profile.models) process.stdout.write(`${model}\n`);
+    });
+
+  program.command('providers')
+    .description('list provider profiles and multimodal capabilities')
     .option('--json', 'emit machine-readable JSON')
     .action((flags: { json?: boolean }) => {
-      if (flags.json) process.stdout.write(`${JSON.stringify(SUPPORTED_MODELS, null, 2)}\n`);
-      else for (const model of SUPPORTED_MODELS) process.stdout.write(`${model}\n`);
+      const profiles = Object.values(PROVIDER_PROFILES);
+      if (flags.json) process.stdout.write(`${JSON.stringify(profiles, null, 2)}\n`);
+      else for (const profile of profiles) {
+        process.stdout.write(`${profile.id.padEnd(20)} ${profile.label} — default ${profile.defaultModel ?? 'model required'}\n`);
+      }
     });
 
   program.command('doctor')
@@ -334,21 +382,56 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
       const cwd = process.cwd();
       loadLocalEnv(cwd);
       const config = await loadCliConfig(cwd, flags.config);
-      const apiKeyEnv = config.apiKeyEnv || 'GEMINI_API_KEY';
+      let resolvedConfig: ReturnType<typeof resolveCliOptions> | undefined;
+      let configurationError: string | undefined;
+      try {
+        resolvedConfig = resolveCliOptions({ dryRun: true }, config, cwd);
+      } catch (error) {
+        configurationError = error instanceof Error ? error.message : String(error);
+      }
+      const configuredProvider = config.provider && PROVIDER_IDS.includes(config.provider)
+        ? config.provider
+        : 'gemini';
+      const provider = resolvedConfig?.provider ?? configuredProvider;
+      const apiKeyEnv = resolvedConfig?.apiKeyEnv ?? config.apiKeyEnv ?? providerDefaultApiKeyEnv(provider);
+      const gatewayTokenEnv = config.cloudflareTokenEnv || 'CLOUDFLARE_AI_GATEWAY_TOKEN';
+      const providerKeyOptional = Boolean(resolvedConfig?.cloudflareByok)
+        || (provider === 'openai-compatible' && Boolean(
+          resolvedConfig?.baseUrl && isLocalBaseUrl(resolvedConfig.baseUrl),
+        ));
+      const gatewayTokenRequired = resolvedConfig?.gateway === 'cloudflare'
+        && resolvedConfig.cloudflareByok;
+      const gatewayTokenConfigured = Boolean(process.env[gatewayTokenEnv]);
       const checks = {
         node: { ok: isSupportedNode(process.versions.node), version: process.versions.node },
-        apiKey: { ok: Boolean(process.env[apiKeyEnv]), environmentVariable: apiKeyEnv },
-        projectConfig: path.join(cwd, '.gemini-ocr.json'),
+        configuration: { ok: !configurationError, error: configurationError },
+        provider,
+        gateway: resolvedConfig?.gateway ?? config.gateway ?? 'direct',
+        apiKey: { ok: providerKeyOptional || Boolean(process.env[apiKeyEnv]), environmentVariable: apiKeyEnv },
+        gatewayToken: {
+          ok: !gatewayTokenRequired || gatewayTokenConfigured,
+          required: gatewayTokenRequired,
+          configured: gatewayTokenConfigured,
+          environmentVariable: gatewayTokenEnv,
+        },
+        projectConfig: path.join(cwd, '.open-ocr-cli.json'),
+        legacyProjectConfig: path.join(cwd, '.gemini-ocr.json'),
         effectiveConfig: config,
       };
       if (flags.json) process.stdout.write(`${JSON.stringify(checks, null, 2)}\n`);
       else {
         process.stdout.write(`Node.js ${checks.node.version}: ${checks.node.ok ? 'ok' : 'use Node 20.19+, 22.13+, or 24+'}\n`);
+        process.stdout.write(`Configuration: ${checks.configuration.ok ? 'ok' : checks.configuration.error}\n`);
         process.stdout.write(`${apiKeyEnv}: ${checks.apiKey.ok ? 'configured' : 'missing'}\n`);
+        if (checks.gatewayToken.required) {
+          process.stdout.write(`${gatewayTokenEnv}: ${checks.gatewayToken.ok ? 'configured' : 'missing'}\n`);
+        }
         process.stdout.write(`Project config: ${checks.projectConfig}\n`);
-        if (!checks.apiKey.ok) process.stdout.write(`${credentialSetupGuidance(apiKeyEnv, cwd)}\n`);
+        if (!checks.apiKey.ok) process.stdout.write(`${credentialSetupGuidance(apiKeyEnv, cwd, provider)}\n`);
       }
-      if (!checks.node.ok || !checks.apiKey.ok) process.exitCode = 1;
+      if (!checks.node.ok || !checks.configuration.ok || !checks.apiKey.ok || !checks.gatewayToken.ok) {
+        process.exitCode = 1;
+      }
     });
 
   program.command('status')

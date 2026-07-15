@@ -15,6 +15,7 @@ import {
   isFatalGeminiError,
   isRetryableGeminiError,
 } from './gemini/client';
+import type { GeminiModel } from './gemini/types';
 import { parseJsonPayload } from './gemini/structured';
 import { recordGeminiUsage } from './gemini/usage';
 import { waitForGeminiRequestSlot } from './gemini/requestPolicy';
@@ -253,45 +254,44 @@ export async function executeReOcrRegion(
     if (!base64Data) {
       throw new Error('Failed to generate cropped region image for refinement');
     }
-    const genAI = getGenAIClient(clientConfig.apiKey);
-
-    let generationConfig: Record<string, unknown> = {
-      maxOutputTokens: 8192,
-      responseMimeType: 'application/json',
-      responseJsonSchema: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['fields'],
-        properties: {
-          fields: {
-            type: 'array',
-            items: {
-              type: 'object',
-              additionalProperties: false,
-              required: ['field_name', 'field_value', 'confidence'],
-              properties: {
-                field_name: { type: 'string' },
-                field_value: { type: 'string' },
-                confidence: { type: 'number', minimum: 0, maximum: 1 },
-                validation_rule: { type: 'string' },
-                location: {
-                  type: 'object',
-                  additionalProperties: false,
-                  required: ['page', 'x', 'y', 'width', 'height', 'units'],
-                  properties: {
-                    page: { type: 'integer', minimum: 1 },
-                    x: { type: 'number', minimum: 0, maximum: 1 },
-                    y: { type: 'number', minimum: 0, maximum: 1 },
-                    width: { type: 'number', minimum: 0, maximum: 1 },
-                    height: { type: 'number', minimum: 0, maximum: 1 },
-                    units: { type: 'string', enum: ['normalized'] },
-                  },
+    const responseSchema: Record<string, unknown> = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['fields'],
+      properties: {
+        fields: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['field_name', 'field_value', 'confidence'],
+            properties: {
+              field_name: { type: 'string' },
+              field_value: { type: 'string' },
+              confidence: { type: 'number', minimum: 0, maximum: 1 },
+              validation_rule: { type: 'string' },
+              location: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['page', 'x', 'y', 'width', 'height', 'units'],
+                properties: {
+                  page: { type: 'integer', minimum: 1 },
+                  x: { type: 'number', minimum: 0, maximum: 1 },
+                  y: { type: 'number', minimum: 0, maximum: 1 },
+                  width: { type: 'number', minimum: 0, maximum: 1 },
+                  height: { type: 'number', minimum: 0, maximum: 1 },
+                  units: { type: 'string', enum: ['normalized'] },
                 },
               },
             },
           },
         },
       },
+    };
+    let generationConfig: Record<string, unknown> = {
+      maxOutputTokens: 8192,
+      responseMimeType: 'application/json',
+      responseJsonSchema: responseSchema,
       mediaResolution: generateContentMediaResolution(croppedRegion.mimeType),
     };
 
@@ -299,7 +299,11 @@ export async function executeReOcrRegion(
       generationConfig.abortSignal = clientConfig.abortSignal;
     }
 
-    generationConfig = applyThinkingConfig(generationConfig, clientConfig.model, clientConfig.thinkingConfig);
+    generationConfig = applyThinkingConfig(
+      generationConfig,
+      clientConfig.model as GeminiModel,
+      clientConfig.thinkingConfig,
+    );
 
     const prompt = [
       'Return valid JSON only.',
@@ -321,27 +325,44 @@ export async function executeReOcrRegion(
       'If no useful structured fields are visible, return {"fields":[]}.',
     ].join(' ');
 
-    await waitForGeminiRequestSlot(clientConfig.abortSignal);
-    const response = await genAI.models.generateContent({
-      model: clientConfig.model,
-      contents: [{
-        role: 'user',
-        parts: [
-          { text: prompt },
-          {
-            inlineData: {
-              mimeType: croppedRegion.mimeType,
-              data: base64Data,
+    let rawResponseText: string;
+    if (clientConfig.regionStructuredExtractor) {
+      const value = await clientConfig.regionStructuredExtractor(
+        croppedRegion.dataUrl,
+        croppedRegion.mimeType,
+        responseSchema,
+        prompt,
+        clientConfig.abortSignal,
+      );
+      rawResponseText = typeof value === 'string' ? value : JSON.stringify(value);
+    } else {
+      const genAI = getGenAIClient(clientConfig.apiKey, {
+        baseUrl: clientConfig.baseUrl,
+        headers: clientConfig.headers,
+      });
+      await waitForGeminiRequestSlot(clientConfig.abortSignal);
+      const response = await genAI.models.generateContent({
+        model: clientConfig.model,
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: prompt },
+            {
+              inlineData: {
+                mimeType: croppedRegion.mimeType,
+                data: base64Data,
+              },
             },
-          },
-        ],
-      }],
-      config: generationConfig,
-    });
-    recordGeminiUsage(response, clientConfig.model);
-    assertCompleteGeminiResponse(response, 'Region re-OCR');
+          ],
+        }],
+        config: generationConfig,
+      });
+      recordGeminiUsage(response, clientConfig.model as GeminiModel);
+      assertCompleteGeminiResponse(response, 'Region re-OCR');
+      rawResponseText = response.text || '';
+    }
 
-    const rawFields = parseRegionFieldPayload(response.text || '');
+    const rawFields = parseRegionFieldPayload(rawResponseText);
     const filteredFields = rawFields.filter((entry) => {
       const entryConfidence = typeof entry.confidence === 'number' ? entry.confidence : 0;
       return entryConfidence >= confidence_threshold;

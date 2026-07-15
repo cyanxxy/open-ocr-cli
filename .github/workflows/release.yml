@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  packages: write
 
 jobs:
   release:
@@ -18,16 +20,22 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22.x'
           cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Use current npm for trusted publishing
+        run: npm install --global npm@latest
 
       # Gate the release on the same quality checks CI enforces so a broken tag
       # never produces a published release (audit O-11).
@@ -40,11 +48,59 @@ jobs:
       - name: Run tests
         run: npm run test:run
 
+      - name: Validate AI eval fixtures and provider matrix
+        run: npm run evals:validate && npm run evals:matrix:check
+
       - name: Security audit
         run: npx audit-ci --config audit-ci.json
 
       - name: Build application
         run: npm run build
+
+      - name: Verify release versions
+        run: node scripts/assert-release-version.mjs
+
+      - name: Smoke-test packed CLI installation
+        run: npm run cli:install-smoke
+
+      - name: Smoke-test GitHub Action wrapper
+        run: npm run action:smoke
+
+      - name: Pack publishable CLI
+        id: pack
+        shell: bash
+        run: |
+          tarball=$(npm pack ./packages/cli --pack-destination . | tail -n 1)
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Publish CLI to npm with provenance
+        run: npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance
+
+      - name: Generate Homebrew formula
+        run: node scripts/render-homebrew-formula.mjs "${{ steps.pack.outputs.tarball }}" open-ocr-cli.rb
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish container
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/cyanxxy/open-ocr-cli:${{ github.ref_name }}
+            ghcr.io/cyanxxy/open-ocr-cli:latest
 
       # Archive the whole dist tree into a single artifact instead of attaching
       # every font/worker/css file individually (audit O-11).
@@ -58,3 +114,32 @@ jobs:
           generate_release_notes: true
           files: |
             open-gemini-ocr-*-dist.tar.gz
+            open-ocr-cli-*.tgz
+            open-ocr-cli.rb
+
+      # GitHub recommends keeping a moving major tag for Marketplace actions.
+      # The immutable v2.x.y release tag remains untouched.
+      - name: Update GitHub Action major tag
+        shell: bash
+        run: |
+          major="${GITHUB_REF_NAME%%.*}"
+          if [[ ! "$major" =~ ^v[0-9]+$ ]]; then
+            echo "Cannot derive a semantic major tag from $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          old=$(git ls-remote --refs origin "refs/tags/$major" | awk '{print $1}')
+          if [[ -n "$old" ]]; then
+            previous_ref="refs/tags/${major}-previous"
+            git fetch --force origin "refs/tags/$major:$previous_ref"
+            previous_commit=$(git rev-parse "$previous_ref^{}")
+            if ! git merge-base --is-ancestor "$previous_commit" "$GITHUB_SHA"; then
+              echo "Refusing to move $major backwards or to an unrelated history" >&2
+              exit 1
+            fi
+          fi
+          git tag --force "$major" "$GITHUB_SHA"
+          if [[ -n "$old" ]]; then
+            git push origin "refs/tags/$major" --force-with-lease="refs/tags/$major:$old"
+          else
+            git push origin "refs/tags/$major"
+          fi

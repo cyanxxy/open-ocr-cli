@@ -1,7 +1,7 @@
 import process from 'node:process';
 import path from 'node:path';
 
-import { extractTextFromFile, type ExtractedContent, type GeminiModel, type ThinkingLevel } from '../src/lib/gemini';
+import { type ExtractedContent, type ThinkingLevel } from '../src/lib/gemini';
 import { agentLoop } from '../src/lib/agentLoop';
 import { getAgentReadiness, normalizeAgentDocumentType, normalizeAgentFieldName } from '../src/lib/agentSchema';
 import {
@@ -13,16 +13,34 @@ import {
   type EvalRunOutput,
   toEvalRunOutput,
 } from '../src/lib/evals';
-import type { AgentClientConfig, AgentMemory } from '../src/lib/agentTypes';
-import { getGeminiUsage, resetGeminiUsage, type GeminiUsageSnapshot } from '../src/lib/gemini/usage';
-import { getExtractionPreset, runExtractionPreset } from '../src/lib/templates';
+import type { AgentMemory } from '../src/lib/agentTypes';
+import {
+  GATEWAY_IDS,
+  PROVIDER_IDS,
+  extractPresetWithProvider,
+  extractTextWithProvider,
+  getProviderUsage,
+  isLocalBaseUrl,
+  providerAgentLoop,
+  providerDefaultApiKeyEnv,
+  providerDefaultBaseUrl,
+  providerDefaultModel,
+  providerRequestHeaders,
+  resetProviderUsage,
+  resolveProviderBaseUrl,
+  type GatewayId,
+  type ProviderId,
+  type ProviderRuntimeConfig,
+  type ProviderUsageSnapshot,
+} from '../src/lib/providers';
+import { getExtractionPreset } from '../src/lib/templates';
+import { nodeRegionCropper } from '../src/cli/nodeRegionCropper';
 import {
   assertEvalInputsExist,
   fileToDataUrl,
   loadEvalCases,
   loadEvalGroundTruth,
   loadEvalSuiteConfig,
-  resolveModelName,
   resolveRepeatCount,
   resolveSuiteName,
   writeEvalArtifacts,
@@ -102,11 +120,12 @@ function agentMemoryToEvalOutput(memory: AgentMemory) {
   };
 }
 
-async function runSimpleEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig): Promise<EvalRunOutput> {
+async function runSimpleEvalCase(evalCase: EvalCase, clientConfig: ProviderRuntimeConfig): Promise<EvalRunOutput> {
   const { dataUrl, mimeType } = await fileToDataUrl(evalCase.inputPath);
-  const result = await extractTextFromFile(
+  const result = await extractTextWithProvider(
     dataUrl,
     mimeType,
+    path.basename(evalCase.inputPath),
     clientConfig,
     undefined,
     {
@@ -120,11 +139,12 @@ async function runSimpleEvalCase(evalCase: EvalCase, clientConfig: AgentClientCo
   };
 }
 
-async function runTemplateEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig): Promise<EvalRunOutput> {
+async function runTemplateEvalCase(evalCase: EvalCase, clientConfig: ProviderRuntimeConfig): Promise<EvalRunOutput> {
   const { dataUrl, mimeType } = await fileToDataUrl(evalCase.inputPath);
-  const result = await runExtractionPreset(
+  const result = await extractPresetWithProvider(
     dataUrl,
     mimeType,
+    path.basename(evalCase.inputPath),
     clientConfig,
     getExtractionPreset(evalCase.presetId || ''),
   );
@@ -138,19 +158,32 @@ interface AgenticEvalOutput {
   toolCalls: number;
 }
 
-async function runAgenticEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig): Promise<AgenticEvalOutput> {
+async function runAgenticEvalCase(evalCase: EvalCase, clientConfig: ProviderRuntimeConfig): Promise<AgenticEvalOutput> {
   const { dataUrl, mimeType } = await fileToDataUrl(evalCase.inputPath);
-  const file = new File(['eval fixture'], path.basename(evalCase.inputPath), { type: mimeType });
-  const generator = agentLoop(
+  const file = { name: path.basename(evalCase.inputPath), type: mimeType };
+  const loopConfig = {
+    maxIterations: evalCase.agentConfig?.maxIterations ?? 4,
+    confidenceThreshold: evalCase.agentConfig?.confidenceThreshold ?? 0.65,
+    maxTokens: clientConfig.model.includes('kimi-k2.6') ? 16384 : 4096,
+  };
+  const generator = clientConfig.provider === 'gemini' ? agentLoop(
     file,
     dataUrl,
-    clientConfig,
     {
-      maxIterations: evalCase.agentConfig?.maxIterations ?? 4,
-      confidenceThreshold: evalCase.agentConfig?.confidenceThreshold ?? 0.65,
-      maxTokens: 4096,
+      apiKey: clientConfig.apiKey || (clientConfig.cloudflareByok
+        ? clientConfig.gatewayToken || 'cloudflare-byok'
+        : ''),
+      model: clientConfig.model,
+      thinkingConfig: clientConfig.thinkingConfig,
+      baseUrl: clientConfig.gateway === 'cloudflare'
+        || clientConfig.baseUrl !== providerDefaultBaseUrl('gemini')
+        ? clientConfig.baseUrl
+        : undefined,
+      headers: clientConfig.gateway === 'cloudflare' ? providerRequestHeaders(clientConfig) : undefined,
+      regionCropper: nodeRegionCropper,
     },
-  );
+    loopConfig,
+  ) : providerAgentLoop(file, dataUrl, clientConfig, loopConfig, nodeRegionCropper);
 
   let current = await generator.next();
   while (!current.done) {
@@ -170,13 +203,8 @@ interface CompletedEvalCase {
   artifact: EvalArtifact;
 }
 
-function estimateCost(usage: GeminiUsageSnapshot): number | undefined {
-  const inputRate = Number(process.env.EVAL_INPUT_USD_PER_MILLION);
-  const outputRate = Number(process.env.EVAL_OUTPUT_USD_PER_MILLION);
-  if (!Number.isFinite(inputRate) || !Number.isFinite(outputRate) || inputRate < 0 || outputRate < 0) return undefined;
-  const billableInput = usage.inputTokens + usage.toolTokens;
-  const billableOutput = usage.outputTokens + usage.thoughtTokens;
-  return ((billableInput * inputRate) + (billableOutput * outputRate)) / 1_000_000;
+function estimateCost(usage: ProviderUsageSnapshot): number | undefined {
+  return usage.estimatedCostUsd || undefined;
 }
 
 function executionMetadata(
@@ -185,7 +213,7 @@ function executionMetadata(
   runtimeError?: string,
   repeatIndex?: number,
 ): EvalExecutionMetadata {
-  const usage = getGeminiUsage();
+  const usage = getProviderUsage();
   return {
     durationMs: performance.now() - startedAt,
     repeatIndex,
@@ -200,8 +228,8 @@ function executionMetadata(
   };
 }
 
-async function runEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig, repeatIndex: number): Promise<CompletedEvalCase> {
-  resetGeminiUsage();
+async function runEvalCase(evalCase: EvalCase, clientConfig: ProviderRuntimeConfig, repeatIndex: number): Promise<CompletedEvalCase> {
+  resetProviderUsage();
   const startedAt = performance.now();
   let output: EvalRunOutput = { markdown: '' };
   let executionExtras: Pick<EvalExecutionMetadata, 'iterations' | 'toolCalls'> = {};
@@ -238,14 +266,14 @@ async function runEvalCase(evalCase: EvalCase, clientConfig: AgentClientConfig, 
   }
 }
 
-function resolveThinkingLevel(model: GeminiModel): ThinkingLevel {
+function resolveThinkingLevel(model: string): ThinkingLevel {
   const isFlashFamily = model === 'gemini-3-flash-preview'
     || model === 'gemini-3.5-flash'
     || model === 'gemini-3.1-flash-lite';
   const allowedLevels: ThinkingLevel[] = isFlashFamily
     ? ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH']
     : ['LOW', 'MEDIUM', 'HIGH'];
-  const envLevel = process.env.GEMINI_THINKING_LEVEL?.toUpperCase();
+  const envLevel = (process.env.OPEN_OCR_THINKING ?? process.env.GEMINI_THINKING_LEVEL)?.toUpperCase();
 
   if (envLevel && allowedLevels.includes(envLevel as ThinkingLevel)) {
     return envLevel as ThinkingLevel;
@@ -257,12 +285,32 @@ function resolveThinkingLevel(model: GeminiModel): ThinkingLevel {
 }
 
 async function main() {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is required to run live evals.');
+  const providerValue = process.env.EVAL_PROVIDER ?? process.env.OPEN_OCR_PROVIDER ?? 'gemini';
+  if (!PROVIDER_IDS.includes(providerValue as ProviderId)) throw new Error(`Unsupported EVAL_PROVIDER: ${providerValue}`);
+  const provider = providerValue as ProviderId;
+  const gatewayValue = process.env.EVAL_GATEWAY ?? process.env.OPEN_OCR_GATEWAY ?? 'direct';
+  if (!GATEWAY_IDS.includes(gatewayValue as GatewayId)) throw new Error(`Unsupported EVAL_GATEWAY: ${gatewayValue}`);
+  const gateway = gatewayValue as GatewayId;
+  const defaultModel = providerDefaultModel(provider);
+  const model = process.env.OPEN_OCR_MODEL ?? process.env.GEMINI_MODEL ?? defaultModel;
+  if (!model) throw new Error('OPEN_OCR_MODEL is required for this provider.');
+  const apiKeyEnv = process.env.EVAL_API_KEY_ENV ?? providerDefaultApiKeyEnv(provider);
+  const apiKey = process.env[apiKeyEnv]?.trim() ?? '';
+  const cloudflareByok = process.env.CLOUDFLARE_AI_GATEWAY_BYOK === '1';
+  if (gateway === 'cloudflare' && cloudflareByok && !process.env.CLOUDFLARE_AI_GATEWAY_TOKEN) {
+    throw new Error('CLOUDFLARE_AI_GATEWAY_TOKEN is required for Cloudflare BYOK evals.');
   }
-
-  const model = resolveModelName() as GeminiModel;
+  const baseUrl = resolveProviderBaseUrl({
+    provider,
+    gateway,
+    baseUrl: process.env.OPEN_OCR_BASE_URL,
+    cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+    cloudflareGatewayId: process.env.CLOUDFLARE_AI_GATEWAY_ID,
+    cloudflareProvider: process.env.CLOUDFLARE_AI_GATEWAY_PROVIDER,
+  });
+  if (!apiKey && !cloudflareByok && !(provider === 'openai-compatible' && isLocalBaseUrl(baseUrl))) {
+    throw new Error(`${apiKeyEnv} is required to run live ${provider} evals.`);
+  }
   const suite = resolveSuiteName();
   const repeatCount = resolveRepeatCount();
   const thinkingLevel = resolveThinkingLevel(model);
@@ -272,13 +320,28 @@ async function main() {
     throw new Error(`No eval cases are installed for the "${suite}" suite.${setupHint}`);
   }
   const suiteConfig = await loadEvalSuiteConfig();
-  const clientConfig: AgentClientConfig = {
+  const inputPrice = Number(process.env.EVAL_INPUT_USD_PER_MILLION);
+  const outputPrice = Number(process.env.EVAL_OUTPUT_USD_PER_MILLION);
+  const clientConfig: ProviderRuntimeConfig = {
+    provider,
+    gateway,
     apiKey,
+    apiKeyEnv,
     model,
+    baseUrl,
     thinkingConfig: {
       level: thinkingLevel,
       includeThoughts: false,
     },
+    gatewayToken: process.env.CLOUDFLARE_AI_GATEWAY_TOKEN,
+    gatewayTokenEnv: 'CLOUDFLARE_AI_GATEWAY_TOKEN',
+    cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+    cloudflareGatewayId: process.env.CLOUDFLARE_AI_GATEWAY_ID,
+    cloudflareByok,
+    cloudflareByokAlias: process.env.CLOUDFLARE_AI_GATEWAY_BYOK_ALIAS,
+    cloudflareProvider: process.env.CLOUDFLARE_AI_GATEWAY_PROVIDER,
+    inputPricePerMillionUsd: Number.isFinite(inputPrice) ? inputPrice : undefined,
+    outputPricePerMillionUsd: Number.isFinite(outputPrice) ? outputPrice : undefined,
   };
 
   await assertEvalInputsExist(evalCases);
@@ -295,6 +358,8 @@ async function main() {
   }
 
   const summary = buildEvalSummary(model, caseResults, suiteConfig, suite);
+  summary.provider = provider;
+  summary.gateway = gateway;
   if (repeatCount > 1) {
     summary.notes = [...(summary.notes ?? []), `Each case was run ${repeatCount} times; aggregate metrics include all repetitions.`];
   }

@@ -1,0 +1,11 @@
+{
+  "provider": "gemini",
+  "model": "gemini-3.5-flash",
+  "apiKeyEnv": "GEMINI_API_KEY",
+  "gateway": "cloudflare",
+  "cloudflareAccountId": "replace-with-account-id",
+  "cloudflareGatewayId": "replace-with-gateway-id",
+  "cloudflareTokenEnv": "CLOUDFLARE_AI_GATEWAY_TOKEN",
+  "format": "all",
+  "resume": true
+}

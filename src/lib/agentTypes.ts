@@ -1,4 +1,4 @@
-import type { GeminiModel, ThinkingConfig } from './gemini/types';
+import type { ThinkingConfig } from './gemini/types';
 import type { InteractionStep } from './gemini/interactions';
 
 /**
@@ -62,6 +62,14 @@ export type RegionCropper = (
   region: NormalizedRegion,
 ) => Promise<RegionCropResult>;
 
+export type RegionStructuredExtractor = (
+  dataUrl: string,
+  mimeType: string,
+  responseSchema: Record<string, unknown>,
+  prompt: string,
+  abortSignal?: AbortSignal,
+) => Promise<unknown>;
+
 /** Minimal document descriptor required by the agent loop. */
 export interface AgentDocumentInput {
   name: string;
@@ -85,11 +93,15 @@ export interface AgentStep {
  */
 export interface AgentClientConfig {
   apiKey: string;
-  model: GeminiModel;
+  model: string;
   thinkingConfig?: ThinkingConfig;
+  baseUrl?: string;
+  headers?: Record<string, string>;
   abortSignal?: AbortSignal;
   /** Runtime-specific rasterizer for the re_ocr_region tool. */
   regionCropper?: RegionCropper;
+  /** Optional provider-neutral structured extraction adapter for region re-OCR. */
+  regionStructuredExtractor?: RegionStructuredExtractor;
 }
 
 /**

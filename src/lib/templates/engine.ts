@@ -232,7 +232,7 @@ function validateRule(rule: ExtractionRule, value: PrimitiveFieldValue, errors: 
   }
 }
 
-function normalizePresetPayload(
+export function normalizePresetPayload(
   rawPayload: RawPresetPayload,
   preset: ExtractionPreset,
 ): PresetStructuredOutput {
@@ -437,7 +437,7 @@ function fieldValueSchema(rule: ExtractionRule): Record<string, unknown> {
   return { anyOf: [{ type: 'string' }, nullSchema] };
 }
 
-function buildPresetResponseSchema(preset: ExtractionPreset): Record<string, unknown> {
+export function buildPresetResponseSchema(preset: ExtractionPreset): Record<string, unknown> {
   const fieldProperties = Object.fromEntries(
     preset.rules.map((rule) => [
       rule.field,
@@ -483,6 +483,16 @@ function buildPresetResponseSchema(preset: ExtractionPreset): Record<string, unk
   };
 }
 
+export function presetRunResultFromText(rawText: string, preset: ExtractionPreset): PresetRunResult {
+  const normalized = normalizePresetPayload(parsePresetPayload(rawText), preset);
+  return {
+    presetId: preset.id,
+    markdown: buildPresetMarkdown(normalized, preset),
+    json: normalized,
+    csv: buildPresetCsv(normalized, preset),
+  };
+}
+
 export async function runExtractionPreset(
   fileData: string,
   mimeType: string,
@@ -492,7 +502,7 @@ export async function runExtractionPreset(
   callbacks?: PresetStreamingCallbacks,
 ): Promise<PresetRunResult> {
   try {
-    const { apiKey, model, thinkingConfig } = clientConfig;
+    const { apiKey, model, thinkingConfig, baseUrl, headers } = clientConfig;
 
     if (!apiKey) {
       throw new Error('Please configure your Gemini API key in settings');
@@ -503,7 +513,7 @@ export async function runExtractionPreset(
     }
 
     // Shared client cache so key rotation clears credentials (audit H-18).
-    const genAI = getGenAIClient(apiKey);
+    const genAI = getGenAIClient(apiKey, { baseUrl, headers });
     const base64Data = fileData.split(',')[1] || fileData;
 
     // Gemini 3.x: omit temperature/topP/topK; use media resolution for OCR fidelity.
@@ -571,14 +581,7 @@ export async function runExtractionPreset(
       rawText = response.text || '';
     }
 
-    const parsedPayload = parsePresetPayload(rawText);
-    const normalized = normalizePresetPayload(parsedPayload, preset);
-    const result: PresetRunResult = {
-      presetId: preset.id,
-      markdown: buildPresetMarkdown(normalized, preset),
-      json: normalized,
-      csv: buildPresetCsv(normalized, preset),
-    };
+    const result = presetRunResultFromText(rawText, preset);
 
     callbacks?.onComplete?.(result);
     return result;
