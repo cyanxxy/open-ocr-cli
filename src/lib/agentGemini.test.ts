@@ -440,4 +440,47 @@ describe('executeAgentTurn', () => {
     }));
     expect(transcript.filter((step) => step.type === 'user_input')).toHaveLength(1);
   });
+
+  it.each(['incomplete', 'budget_exceeded', 'in_progress'])(
+    'rejects the unsuccessful interaction status %s',
+    async (status) => {
+      mockRunModelInteraction.mockResolvedValueOnce({ id: 'interaction-bad-status', status, steps: [] });
+
+      await expect(executeAgentTurn(
+        'system prompt',
+        createInputContent(),
+        [],
+        {},
+        functions,
+        '[PDF attachment removed — 0 KB]',
+        'application/pdf',
+        createMemory(),
+        { apiKey: 'test-key', model: 'gemini-3.5-flash' },
+        { maxIterations: 4, confidenceThreshold: 0.8, maxTokens: 1024 },
+        vi.fn(),
+      )).rejects.toThrow(`unsuccessful status "${status}"`);
+    },
+  );
+
+  it('rejects requires_action without a function call', async () => {
+    mockRunModelInteraction.mockResolvedValueOnce({
+      id: 'interaction-missing-call',
+      status: 'requires_action',
+      steps: [{ type: 'model_output', content: [{ type: 'text', text: 'No call' }] }],
+    });
+
+    await expect(executeAgentTurn(
+      'system prompt',
+      createInputContent(),
+      [],
+      {},
+      functions,
+      '[PDF attachment removed — 0 KB]',
+      'application/pdf',
+      createMemory(),
+      { apiKey: 'test-key', model: 'gemini-3.5-flash' },
+      { maxIterations: 4, confidenceThreshold: 0.8, maxTokens: 1024 },
+      vi.fn(),
+    )).rejects.toThrow(/requires action but returned no function call/i);
+  });
 });

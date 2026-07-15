@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { renderWebResult, resolveWebUrls, writeWebOutput } from './web';
+import { assertWebOutputAvailable, renderWebResult, resolveWebUrls, writeWebOutput } from './web';
 
 let directory: string;
 
@@ -50,5 +50,17 @@ describe('CLI Web OCR', () => {
     await expect(writeWebOutput('second', 'result.md', directory, false)).rejects.toMatchObject({ code: 'EEXIST' });
     await writeWebOutput('second', 'result.md', directory, true);
     expect(await readFile(target, 'utf8')).toBe('second');
+  });
+
+  it('preflights an existing destination before Web OCR can spend API tokens', async () => {
+    const target = path.join(directory, 'result.md');
+    await writeFile(target, 'existing');
+    await expect(assertWebOutputAvailable('result.md', directory, false)).rejects.toThrow(
+      `Output already exists: ${target} (use --overwrite)`,
+    );
+    await expect(assertWebOutputAvailable('result.md', directory, true)).resolves.toBe(target);
+    await expect(assertWebOutputAvailable('new.md', directory, false)).resolves.toBe(
+      path.join(directory, 'new.md'),
+    );
   });
 });

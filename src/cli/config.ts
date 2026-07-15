@@ -6,6 +6,7 @@ import process from 'node:process';
 
 import type { GeminiModel, ThinkingLevel } from '../lib/gemini';
 import { getExtractionPreset } from '../lib/templates';
+import { asRecord } from './jsonValidation';
 import {
   CLI_FORMATS,
   CLI_MODES,
@@ -71,13 +72,6 @@ const DEFAULT_CONFIG: Required<Pick<
   confidenceThreshold: 0.8,
   requestsPerMinute: 0,
 };
-
-function asRecord(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error(`${label} must contain a JSON object`);
-  }
-  return value as Record<string, unknown>;
-}
 
 function pickConfig(value: Record<string, unknown>, label: string): CliConfigFile {
   const stringKeys = ['model', 'thinking', 'mode', 'preset', 'format', 'output', 'apiKeyEnv', 'schema'] as const;
@@ -148,6 +142,16 @@ export function loadLocalEnv(cwd: string): void {
   if (existsSync(envPath) && typeof process.loadEnvFile === 'function') {
     process.loadEnvFile(envPath);
   }
+}
+
+export function credentialSetupGuidance(apiKeyEnv: string, cwd: string): string {
+  return [
+    `Set ${apiKeyEnv} before running extraction:`,
+    `  macOS/Linux: export ${apiKeyEnv}="your-key"`,
+    `  PowerShell:   $env:${apiKeyEnv}="your-key"`,
+    `  Project:      add ${apiKeyEnv}=your-key to ${path.join(cwd, '.env')} (keep it out of version control)`,
+    'Then run: open-ocr-cli doctor',
+  ].join('\n');
 }
 
 function integer(value: string | number | undefined, fallback: number, label: string, min: number, max: number): number {
@@ -224,7 +228,7 @@ export function resolveCliOptions(
   const apiKeyEnv = fileConfig.apiKeyEnv || 'GEMINI_API_KEY';
   const apiKey = process.env[apiKeyEnv]?.trim() || '';
   if (!apiKey && !flags.dryRun) {
-    throw new Error(`Gemini API key is missing. Set ${apiKeyEnv} or use apiKeyEnv in the config file.`);
+    throw new Error(`Gemini API key is missing.\n${credentialSetupGuidance(apiKeyEnv, cwd)}`);
   }
 
   return {
@@ -246,6 +250,7 @@ export function resolveCliOptions(
     hidden: flags.hidden ?? fileConfig.hidden ?? DEFAULT_CONFIG.hidden,
     resume: flags.resume ?? fileConfig.resume ?? DEFAULT_CONFIG.resume,
     overwrite: flags.overwrite ?? fileConfig.overwrite ?? DEFAULT_CONFIG.overwrite,
+    forceUnlock: flags.forceUnlock ?? false,
     failFast: flags.failFast ?? fileConfig.failFast ?? DEFAULT_CONFIG.failFast,
     jsonl: flags.jsonl ?? DEFAULT_CONFIG.jsonl,
     dryRun: flags.dryRun ?? DEFAULT_CONFIG.dryRun,

@@ -1,5 +1,6 @@
 import {
   createInteractionGenerationConfig,
+  extractInteractionModelErrors,
   extractInteractionText,
   getInteractionSteps,
   runModelInteraction,
@@ -377,15 +378,15 @@ Format as a structured comparison analysis.`;
       store: false,
     });
 
-    if (
-      interaction.status
-      && interaction.status !== 'completed'
-      && interaction.status !== 'requires_action'
-    ) {
+    if (interaction.status !== 'completed') {
       throw createGroundedUrlError(`URL-context interaction ended with status "${interaction.status}".`);
     }
 
     const steps = getInteractionSteps(interaction);
+    const modelErrors = extractInteractionModelErrors(steps);
+    if (modelErrors.length > 0) {
+      throw createGroundedUrlError(`URL-context model output failed: ${modelErrors.join('; ')}.`);
+    }
     validateUrlContextResults(urls, steps);
 
     const responseText = extractInteractionText(steps, interaction.output_text);

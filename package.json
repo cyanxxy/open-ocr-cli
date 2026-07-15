@@ -1,7 +1,7 @@
 {
   "name": "open-gemini-ocr",
   "private": true,
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Open-source OCR web app and batch CLI for extracting text and structured data from images, PDFs, and URLs using Google Gemini.",
   "license": "MIT",
   "type": "module",

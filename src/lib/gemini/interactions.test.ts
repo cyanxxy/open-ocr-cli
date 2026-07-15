@@ -17,6 +17,7 @@ vi.mock('./client', async () => {
 import {
   createInteractionGenerationConfig,
   extractInteractionFunctionCalls,
+  extractInteractionModelErrors,
   extractInteractionText,
   getInteractionSteps,
   runModelInteraction,
@@ -97,6 +98,16 @@ describe('extractInteractionText', () => {
 
   it('falls back to output_text sugar', () => {
     expect(extractInteractionText([], '  sdk sugar  ')).toBe('sdk sugar');
+  });
+});
+
+describe('extractInteractionModelErrors', () => {
+  it('surfaces model_output status errors', () => {
+    expect(extractInteractionModelErrors([{
+      type: 'model_output',
+      content: [],
+      error: { code: 13, message: 'generation failed internally' },
+    }])).toEqual(['generation failed internally']);
   });
 });
 

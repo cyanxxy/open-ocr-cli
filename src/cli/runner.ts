@@ -9,18 +9,24 @@ import { getGeminiUsage, resetGeminiUsage } from '../lib/gemini/usage';
 import type { ExtractedContent, ExtractionInstruction, GeminiClientConfig } from '../lib/gemini/types';
 import { getExtractionPreset, runExtractionPreset } from '../lib/templates';
 import { inputFingerprint, readAndValidateInput } from './inputs';
+import { asCliExitError } from './errors';
 import { nodeRegionCropper } from './nodeRegionCropper';
 import { assertCustomSchemaOutput } from './schema';
 import {
+  assertArtifactTargetsAvailable,
+  assertNoOutputCollisions,
+  BatchOutputLock,
   defaultOutputDirectory,
   jsonlResult,
   ManifestStore,
   primaryArtifact,
+  plannedArtifactTargets,
   writeArtifacts,
   writeBatchSummary,
 } from './output';
 import type {
   BatchSummary,
+  ManifestEntry,
   OcrArtifacts,
   OcrJobResult,
   ResolvedCliOptions,
@@ -219,9 +225,15 @@ function modeFingerprint(options: ResolvedCliOptions): string {
 function statusLine(index: number, total: number, result: OcrJobResult): string {
   const seconds = (result.durationMs / 1000).toFixed(1);
   const icon = result.status === 'succeeded' ? '✓' : result.status === 'partial' ? '~' : result.status === 'skipped' ? '↷' : '✗';
-  const destination = result.outputFiles?.length ? ` → ${result.outputFiles.join(', ')}` : '';
+  const destinations = result.outputFiles ?? result.plannedOutputFiles;
+  const destination = destinations?.length
+    ? ` → ${destinations.join(', ')}`
+    : result.skipReason === 'validated' ? ' → stdout' : '';
+  const reason = result.skipReason === 'validated'
+    ? ' — validated (dry run)'
+    : result.skipReason === 'resumed' ? ' — unchanged (resume)' : '';
   const error = result.error ? ` — ${result.error}` : '';
-  return `[${index}/${total}] ${icon} ${result.input.displayPath}${destination} (${seconds}s)${error}`;
+  return `[${index}/${total}] ${icon} ${result.input.displayPath}${destination} (${seconds}s)${reason}${error}`;
 }
 
 interface BatchRuntime {
@@ -240,8 +252,34 @@ async function runBatchInternal(
   const started = performance.now();
   const startedAt = new Date().toISOString();
   const shouldWriteFiles = inputs.length > 1 || Boolean(options.output) || options.format === 'all';
+  try {
+    await assertNoOutputCollisions(inputs, options);
+  } catch (error) {
+    throw asCliExitError(error, 2);
+  }
   const manifest = inputs.length > 1 ? new ManifestStore(defaultOutputDirectory(options)) : undefined;
-  await manifest?.load();
+  try {
+    await manifest?.load();
+  } catch (error) {
+    throw asCliExitError(error, 2);
+  }
+  const fingerprintMode = modeFingerprint(options);
+  const resumableEntries = new Map<number, ManifestEntry>();
+  if (!options.dryRun && !options.overwrite) {
+    try {
+      await Promise.all(inputs.map(async (input, index) => {
+        const key = input.absolutePath ?? '<stdin>';
+        const fingerprint = inputFingerprint(input, fingerprintMode);
+        const completedEntry = options.resume && manifest
+          ? await manifest.completedEntry(key, fingerprint)
+          : undefined;
+        if (completedEntry) resumableEntries.set(index, completedEntry);
+        else await assertArtifactTargetsAvailable(input, options, inputs.length);
+      }));
+    } catch (error) {
+      throw asCliExitError(error, 2);
+    }
+  }
   resetGeminiUsage();
 
   const results = new Array<OcrJobResult | undefined>(inputs.length);
@@ -249,7 +287,6 @@ async function runBatchInternal(
   let completed = 0;
   let failFastTriggered = false;
   let costLimitReached = false;
-  const fingerprintMode = modeFingerprint(options);
 
   const worker = async (): Promise<void> => {
     while (!runtime.abortController.signal.aborted && !failFastTriggered && !costLimitReached) {
@@ -270,12 +307,16 @@ async function runBatchInternal(
       const fingerprint = inputFingerprint(input, fingerprintMode);
 
       let result: OcrJobResult;
+      const completedEntry = resumableEntries.get(index);
       if (options.dryRun) {
         try {
           await readAndValidateInput(input);
+          const plannedOutputFiles = await plannedArtifactTargets(input, options, inputs.length);
           result = {
             status: 'skipped', input, mode: options.mode, model: options.model,
             startedAt: jobStartedAt, completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart, attempts: 0,
+            plannedOutputFiles,
+            skipReason: 'validated',
           };
         } catch (error) {
           result = {
@@ -285,10 +326,12 @@ async function runBatchInternal(
           };
           if (options.failFast) failFastTriggered = true;
         }
-      } else if (options.resume && !options.overwrite && manifest && await manifest.completed(key, fingerprint)) {
+      } else if (completedEntry) {
         result = {
           status: 'skipped', input, mode: options.mode, model: options.model,
           startedAt: jobStartedAt, completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart, attempts: 0,
+          outputFiles: completedEntry.outputFiles,
+          skipReason: 'resumed',
         };
       } else {
         const timeoutController = new AbortController();
@@ -372,6 +415,9 @@ async function runBatchInternal(
     : costLimitReached
       ? `Not started because the estimated cost reached --max-cost $${options.maxCostUsd?.toFixed(4)}`
     : 'Not started because --fail-fast stopped the batch';
+  const unscheduledSkipReason: OcrJobResult['skipReason'] = runtime.abortController.signal.aborted
+    ? 'cancelled'
+    : costLimitReached ? 'cost-limit' : 'fail-fast';
   for (let index = 0; index < inputs.length; index += 1) {
     if (results[index]) continue;
     const timestamp = new Date().toISOString();
@@ -384,6 +430,7 @@ async function runBatchInternal(
       completedAt: timestamp,
       durationMs: 0,
       attempts: 0,
+      skipReason: unscheduledSkipReason,
       error: unscheduledReason,
     };
     results[index] = result;
@@ -434,13 +481,52 @@ export async function runBatch(
   options: ResolvedCliOptions,
   runtime: BatchRuntime,
 ): Promise<BatchSummary> {
-  configureGeminiRequestPolicy({
-    requestsPerMinute: options.requestsPerMinute,
-    maxCostUsd: options.maxCostUsd,
-  });
-  try {
-    return await runBatchInternal(inputs, options, runtime);
-  } finally {
-    resetGeminiRequestPolicy();
+  let batchLock: BatchOutputLock | undefined;
+  if (inputs.length > 1 && !options.dryRun) {
+    try {
+      const writeStderr = runtime.writeStderr ?? ((text: string) => process.stderr.write(text));
+      batchLock = await BatchOutputLock.acquire(defaultOutputDirectory(options), {
+        forceUnlock: options.forceUnlock,
+        onWarning: (message) => writeStderr(`${message}\n`),
+      });
+    } catch (error) {
+      throw asCliExitError(error, 2);
+    }
   }
+  let summary: BatchSummary | undefined;
+  let primaryFailure: unknown;
+  let batchFailed = false;
+  try {
+    configureGeminiRequestPolicy({
+      requestsPerMinute: options.requestsPerMinute,
+      maxCostUsd: options.maxCostUsd,
+    });
+    summary = await runBatchInternal(inputs, options, runtime);
+  } catch (error) {
+    batchFailed = true;
+    primaryFailure = error;
+  }
+  resetGeminiRequestPolicy();
+
+  let lockFailure: unknown;
+  try {
+    await batchLock?.release();
+  } catch (error) {
+    lockFailure = error;
+  }
+  if (batchFailed && lockFailure !== undefined) {
+    const primaryMessage = primaryFailure instanceof Error ? primaryFailure.message : String(primaryFailure);
+    const lockMessage = lockFailure instanceof Error ? lockFailure.message : String(lockFailure);
+    throw new Error(`${primaryMessage}; batch lock cleanup also failed: ${lockMessage}`, {
+      cause: primaryFailure,
+    });
+  }
+  if (batchFailed) {
+    throw primaryFailure instanceof Error ? primaryFailure : new Error(String(primaryFailure));
+  }
+  if (lockFailure !== undefined) {
+    throw lockFailure instanceof Error ? lockFailure : new Error(String(lockFailure));
+  }
+  if (!summary) throw new Error('Internal error: batch completed without a summary');
+  return summary;
 }

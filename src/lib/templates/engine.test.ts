@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { mockTemplateGenerateContent } = vi.hoisted(() => ({
+const { mockTemplateGenerateContent, mockTemplateGenerateContentStream } = vi.hoisted(() => ({
   mockTemplateGenerateContent: vi.fn(),
+  mockTemplateGenerateContentStream: vi.fn(),
 }));
 
 import type { ExtractionPreset, PresetStructuredOutput } from '../gemini/types';
@@ -29,6 +30,7 @@ vi.mock('@google/genai', () => ({
   GoogleGenAI: class {
     models = {
       generateContent: mockTemplateGenerateContent,
+      generateContentStream: mockTemplateGenerateContentStream,
     };
   },
 }));
@@ -308,6 +310,38 @@ describe('preset normalization contract and validation', () => {
     expect(result.json.validationErrors?.some((msg) => msg.includes('total'))).toBe(true);
     // The validation report is surfaced in the markdown artifact.
     expect(result.markdown).toContain('## Validation');
+  });
+
+  it('rejects a valid-looking structured response that stopped at MAX_TOKENS', async () => {
+    const preset = getExtractionPreset('invoice');
+    mockTemplateGenerateContent.mockResolvedValueOnce({
+      text: JSON.stringify(mockModelPayload),
+      candidates: [{ finishReason: 'MAX_TOKENS' }],
+    });
+
+    await expect(runExtractionPreset(
+      'data:application/pdf;base64,ZmFrZQ==',
+      'application/pdf',
+      testClientConfig,
+      preset,
+    )).rejects.toThrow(/incomplete output/i);
+  });
+
+  it('rejects a preset stream that ends without terminal STOP', async () => {
+    const preset = getExtractionPreset('invoice');
+    async function* chunks() {
+      yield { text: JSON.stringify(mockModelPayload), candidates: [{}] };
+    }
+    mockTemplateGenerateContentStream.mockResolvedValueOnce(chunks());
+
+    await expect(runExtractionPreset(
+      'data:application/pdf;base64,ZmFrZQ==',
+      'application/pdf',
+      testClientConfig,
+      preset,
+      undefined,
+      { onProgress: vi.fn() },
+    )).rejects.toThrow(/without a terminal STOP/i);
   });
 
   it('caps rows at the limit and reports truncation (T-09)', async () => {

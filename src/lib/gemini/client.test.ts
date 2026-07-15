@@ -55,7 +55,7 @@ describe('getModelClient', () => {
   it('generates content from a prompt and maps maxTokens to maxOutputTokens', async () => {
     mockGenerateContent.mockResolvedValueOnce({
       text: 'extracted text',
-      candidates: [{ index: 0 }],
+      candidates: [{ index: 0, finishReason: 'STOP' }],
     });
 
     const model = getModelClient('model-test-key', 'gemini-3-flash-preview');
@@ -75,7 +75,7 @@ describe('getModelClient', () => {
       },
     });
     expect(result.response.text()).toBe('extracted text');
-    expect(result.response.candidates).toEqual([{ index: 0 }]);
+    expect(result.response.candidates).toEqual([{ index: 0, finishReason: 'STOP' }]);
   });
 
   it('returns an empty string when the response has no text', async () => {
@@ -94,9 +94,9 @@ describe('getModelClient', () => {
 
   it('streams chunks that expose their text', async () => {
     async function* fakeSdkStream() {
-      yield { text: 'first ' };
-      yield { text: undefined };
-      yield { text: 'second' };
+      yield { text: 'first ', candidates: [{}] };
+      yield { text: 'second', candidates: [{ finishReason: 'STOP' }] };
+      yield { text: undefined, usageMetadata: { totalTokenCount: 3 } };
     }
     mockGenerateContentStream.mockResolvedValueOnce(fakeSdkStream());
 
@@ -111,12 +111,41 @@ describe('getModelClient', () => {
       chunks.push(chunk.text());
     }
 
-    expect(chunks).toEqual(['first ', '', 'second']);
+    expect(chunks).toEqual(['first ', 'second', '']);
     expect(mockGenerateContentStream).toHaveBeenCalledWith({
       model: 'gemini-3-flash-preview',
       contents: 'stream this',
       config: { maxOutputTokens: 1024 },
     });
+  });
+
+  it('rejects a wrapped stream that reaches MAX_TOKENS', async () => {
+    async function* fakeSdkStream() {
+      yield { text: 'partial', candidates: [{}] };
+      yield { text: ' truncated', candidates: [{ finishReason: 'MAX_TOKENS' }] };
+    }
+    mockGenerateContentStream.mockResolvedValueOnce(fakeSdkStream());
+    const model = getModelClient('model-test-key');
+    const { stream } = await model.generateContentStream({ prompt: 'stream this' });
+
+    const consume = async (): Promise<void> => {
+      for await (const chunk of stream) chunk.text();
+    };
+    await expect(consume()).rejects.toThrow(/incomplete output/i);
+  });
+
+  it('rejects a wrapped stream that ends without terminal STOP', async () => {
+    async function* fakeSdkStream() {
+      yield { text: 'possibly truncated', candidates: [{}] };
+    }
+    mockGenerateContentStream.mockResolvedValueOnce(fakeSdkStream());
+    const model = getModelClient('model-test-key');
+    const { stream } = await model.generateContentStream({ prompt: 'stream this' });
+
+    const consume = async (): Promise<void> => {
+      for await (const chunk of stream) chunk.text();
+    };
+    await expect(consume()).rejects.toThrow(/without a terminal STOP/i);
   });
 });
 

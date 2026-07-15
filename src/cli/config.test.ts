@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { loadCliConfig, resolveCliOptions } from './config';
+import { credentialSetupGuidance, loadCliConfig, loadLocalEnv, resolveCliOptions } from './config';
 
 const originalApiKey = process.env.GEMINI_API_KEY;
 
@@ -62,6 +62,10 @@ describe('CLI configuration', () => {
     delete process.env.GEMINI_API_KEY;
     expect(resolveCliOptions({ dryRun: true }, {}, '/workspace').apiKey).toBe('');
     expect(() => resolveCliOptions({}, {}, '/workspace')).toThrow('Gemini API key is missing');
+    expect(() => resolveCliOptions({}, {}, '/workspace')).toThrow('PowerShell');
+    expect(credentialSetupGuidance('CUSTOM_GEMINI_KEY', '/workspace')).toContain(
+      'CUSTOM_GEMINI_KEY=your-key',
+    );
   });
 
   it('validates modes, formats, numeric bounds, and presets', () => {
@@ -114,6 +118,19 @@ describe('CLI configuration', () => {
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('apiKey, concurreny'));
     } finally {
       warning.mockRestore();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('loads a project-local .env file for first-run credential setup', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-env-'));
+    delete process.env.PROJECT_GEMINI_KEY;
+    try {
+      await writeFile(path.join(directory, '.env'), 'PROJECT_GEMINI_KEY=from-project-env\n');
+      loadLocalEnv(directory);
+      expect(process.env.PROJECT_GEMINI_KEY).toBe('from-project-env');
+    } finally {
+      delete process.env.PROJECT_GEMINI_KEY;
       await rm(directory, { recursive: true, force: true });
     }
   });

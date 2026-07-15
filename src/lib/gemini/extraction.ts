@@ -4,7 +4,13 @@
  */
 
 import { logger } from '../logger';
-import { applyThinkingConfig, generateContentMediaResolution, getGenAIClient } from './client';
+import {
+  applyThinkingConfig,
+  assertCompleteGeminiResponse,
+  createGeminiStreamCompletionTracker,
+  generateContentMediaResolution,
+  getGenAIClient,
+} from './client';
 import type {
   ExtractedContent,
   StreamingCallbacks,
@@ -144,7 +150,7 @@ export async function extractStructuredDataFromFile(
     config: generationConfig,
   });
   recordGeminiUsage(response, model);
-  assertUsableResponse(response);
+  assertCompleteGeminiResponse(response, 'Schema extraction');
   const text = response.text?.trim() ?? '';
   if (!text) throw new Error('Schema extraction returned an empty response');
   try {
@@ -286,23 +292,6 @@ function parseExtractedContentFromJson(text: string): ExtractedContent | null {
  * or an empty/malformed candidate) instead of silently treating them as a
  * successful empty extraction (audit G-02).
  */
-function assertUsableResponse(response: {
-  candidates?: Array<{ finishReason?: string }>;
-  promptFeedback?: { blockReason?: string };
-}): void {
-  const blockReason = response.promptFeedback?.blockReason;
-  if (blockReason) {
-    throw new Error(`Extraction was blocked by safety filters (${blockReason})`);
-  }
-  const finishReason = response.candidates?.[0]?.finishReason;
-  if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
-    throw new Error(`Extraction did not complete normally (finishReason: ${finishReason})`);
-  }
-  if (finishReason === 'MAX_TOKENS') {
-    logger.warn('Extraction hit the output token limit and may be truncated.');
-  }
-}
-
 /**
  * Turn raw model output into an ExtractedContent according to the requested
  * contract. When JSON was explicitly requested, an unparseable response is a
@@ -421,6 +410,7 @@ export async function extractTextFromFile(
       });
 
       let fullText = '';
+      const completion = createGeminiStreamCompletionTracker('Extraction');
       let lastChunk: {
         candidates?: Array<{ finishReason?: string }>;
         promptFeedback?: { blockReason?: string };
@@ -430,17 +420,23 @@ export async function extractTextFromFile(
           candidates?: Array<{ finishReason?: string }>;
           promptFeedback?: { blockReason?: string };
         };
+        try {
+          completion.observe(lastChunk);
+        } catch (error) {
+          recordGeminiUsage(lastChunk, model);
+          throw error;
+        }
         const chunkText = chunk.text || '';
         fullText += chunkText;
         callbacks.onProgress?.(chunkText);
       }
 
-      // Streaming does not always attach finish metadata on the final chunk;
-      // still reject obvious safety blocks when present.
+      // STOP can appear before a final usage-only chunk, so completion is
+      // tracked across the stream rather than inferred from the last event.
       if (lastChunk) {
         recordGeminiUsage(lastChunk, model);
-        assertUsableResponse(lastChunk);
       }
+      completion.assertComplete();
       const finalContent = coerceExtractionResult(fullText, wantsJson);
       callbacks.onComplete?.(finalContent);
       return finalContent;
@@ -454,7 +450,7 @@ export async function extractTextFromFile(
       });
 
       recordGeminiUsage(response, model);
-      assertUsableResponse(response);
+      assertCompleteGeminiResponse(response, 'Extraction');
       return coerceExtractionResult(response.text || '', wantsJson);
     }
 

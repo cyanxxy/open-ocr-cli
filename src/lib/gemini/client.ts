@@ -7,6 +7,7 @@ import { GoogleGenAI } from '@google/genai';
 import { logger } from '../logger';
 import { waitForGeminiRequestSlot } from './requestPolicy';
 import { GeminiModel, OcrError, OcrErrorType, ThinkingLevel } from './types';
+import { recordGeminiUsage } from './usage';
 
 /**
  * Cache for GoogleGenAI instances to avoid recreating them
@@ -124,6 +125,81 @@ export function clearGeminiClientCache(): void {
   clientCache.clear();
 }
 
+interface GeminiResponseStatus {
+  candidates?: Array<{ finishReason?: string }>;
+  promptFeedback?: { blockReason?: string };
+}
+
+function assertNotFailedFinishReason(finishReason: string | undefined, operation: string): void {
+  if (!finishReason || finishReason === 'STOP') return;
+  if (finishReason === 'MAX_TOKENS') {
+    throw new Error(
+      `${operation} reached the output token limit and returned incomplete output. `
+      + 'Increase the output-token limit or lower the thinking level and retry.',
+    );
+  }
+  throw new Error(`${operation} did not complete normally (finishReason: ${finishReason})`);
+}
+
+function assertPromptNotBlocked(response: GeminiResponseStatus, operation: string): void {
+  const blockReason = response.promptFeedback?.blockReason;
+  if (blockReason) {
+    throw new Error(`${operation} was blocked by safety filters (${blockReason})`);
+  }
+}
+
+/**
+ * Reject blocked or incomplete generateContent responses before callers parse
+ * or persist them. A MAX_TOKENS response can contain plausible-looking text or
+ * even valid JSON, but it is still truncated and must not be reported as a
+ * successful OCR result.
+ */
+export function assertCompleteGeminiResponse(
+  response: GeminiResponseStatus,
+  operation = 'Gemini request',
+): void {
+  assertPromptNotBlocked(response, operation);
+  const candidate = response.candidates?.[0];
+  if (!candidate) return;
+  if (!candidate.finishReason) {
+    throw new Error(`${operation} returned a candidate without a terminal finish reason and may be incomplete`);
+  }
+  assertNotFailedFinishReason(candidate.finishReason, operation);
+}
+
+export interface GeminiStreamCompletionTracker {
+  observe: (chunk: GeminiResponseStatus) => void;
+  assertComplete: () => void;
+}
+
+/**
+ * Track completion across a generateContent stream. In-progress chunks may
+ * have candidates without finishReason; the stream is successful only after a
+ * candidate reports STOP. Later usage-only chunks do not erase that terminal
+ * state.
+ */
+export function createGeminiStreamCompletionTracker(
+  operation = 'Gemini request',
+): GeminiStreamCompletionTracker {
+  let sawCandidate = false;
+  let lastCandidateFinishReason: string | undefined;
+  return {
+    observe: (chunk: GeminiResponseStatus): void => {
+      assertPromptNotBlocked(chunk, operation);
+      const candidate = chunk.candidates?.[0];
+      if (!candidate) return;
+      sawCandidate = true;
+      lastCandidateFinishReason = candidate.finishReason;
+      assertNotFailedFinishReason(lastCandidateFinishReason, operation);
+    },
+    assertComplete: (): void => {
+      if (!sawCandidate || lastCandidateFinishReason !== 'STOP') {
+        throw new Error(`${operation} stream ended without a terminal STOP and may be incomplete`);
+      }
+    },
+  };
+}
+
 /**
  * Get or create a Gemini model client
  * @param apiKey - The Google AI API key
@@ -168,6 +244,8 @@ export function getModelClient(
         contents,
         ...(Object.keys(config).length > 0 ? { config } : {})
       });
+      recordGeminiUsage(response, modelName);
+      assertCompleteGeminiResponse(response);
 
       return {
         response: {
@@ -212,11 +290,22 @@ export function getModelClient(
 
       // Create and return the generator immediately (not a function)
       async function* createStreamGenerator() {
+        const completion = createGeminiStreamCompletionTracker();
+        let lastChunk: unknown;
         for await (const chunk of stream) {
+          lastChunk = chunk;
+          try {
+            completion.observe(chunk);
+          } catch (error) {
+            recordGeminiUsage(chunk, modelName);
+            throw error;
+          }
           yield {
             text: () => chunk.text || ''
           };
         }
+        recordGeminiUsage(lastChunk, modelName);
+        completion.assertComplete();
       }
 
       return {

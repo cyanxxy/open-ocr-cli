@@ -45,6 +45,11 @@ export type InteractionFunctionResultStep = {
 export type InteractionModelOutputStep = {
   type: 'model_output';
   content: Array<{ type: 'text'; text: string }>;
+  error?: {
+    code?: number;
+    message?: string;
+    details?: unknown[];
+  };
 };
 
 export type InteractionUrlContextResultStep = {
@@ -316,6 +321,19 @@ export function extractInteractionText(
   }
 
   return typeof fallbackOutputText === 'string' ? fallbackOutputText.trim() : '';
+}
+
+/** Surface model-output errors that may accompany an otherwise terminal interaction. */
+export function extractInteractionModelErrors(steps?: InteractionStep[]): string[] {
+  if (!steps) return [];
+  return steps.flatMap((step) => {
+    if (step?.type !== 'model_output') return [];
+    const error = (step as InteractionModelOutputStep).error;
+    if (!error) return [];
+    if (typeof error.message === 'string' && error.message.trim()) return [error.message.trim()];
+    if (typeof error.code === 'number') return [`model output error ${error.code}`];
+    return ['unknown model output error'];
+  });
 }
 
 export function extractInteractionThoughtSummaries(steps?: InteractionStep[]): string[] {

@@ -70,6 +70,7 @@ export interface ExtractCommandFlags {
   hidden?: boolean;
   resume?: boolean;
   overwrite?: boolean;
+  forceUnlock?: boolean;
   failFast?: boolean;
   jsonl?: boolean;
   dryRun?: boolean;
@@ -106,6 +107,7 @@ export interface ResolvedCliOptions {
   hidden: boolean;
   resume: boolean;
   overwrite: boolean;
+  forceUnlock: boolean;
   failFast: boolean;
   jsonl: boolean;
   dryRun: boolean;
@@ -153,6 +155,8 @@ export interface OcrJobResult {
   durationMs: number;
   artifacts?: OcrArtifacts;
   outputFiles?: string[];
+  plannedOutputFiles?: string[];
+  skipReason?: 'validated' | 'resumed' | 'cancelled' | 'cost-limit' | 'fail-fast';
   error?: string;
   attempts: number;
 }

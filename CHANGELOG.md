@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.6.0 - 2026-07-15
+
+### Open OCR CLI identity
+
+- Added `open-ocr-cli` as the primary executable so the npm package, install
+  command, help output, and documented command share one identity.
+- Retained `gemini-ocr` as a backwards-compatible executable alias, including
+  alias-aware usage and error output.
+
+### Gemini response correctness
+
+- Reject incomplete, budget-exceeded, or otherwise unsuccessful Agentic
+  Interactions instead of treating them as completed OCR turns.
+- Reject `MAX_TOKENS` output across plain, structured-template, streaming, and
+  region re-OCR paths so truncated content cannot be persisted as a success.
+- Require streamed generateContent paths to observe a terminal `STOP` across
+  the full stream, while allowing a later usage-only chunk.
+- Require Web OCR's server-side URL-context interaction to complete, surface
+  model-output errors, and document the stored-interaction retention behavior
+  required by Agent mode.
+
+### Safer CLI batch operations
+
+- Added `open-ocr-cli status` for human-readable and JSON audits of batch health,
+  failures, usage, source availability, and missing artifacts. Status now uses
+  last-run summary totals and flags cost-limited or incomplete runs.
+- Made dry runs report planned destinations and skip reasons, and reject
+  same-stem output collisions before paid extraction begins.
+- Preflight every possible non-resumed artifact destination before starting
+  workers, while retaining race-safe no-clobber commits as a backstop.
+- Stage multi-artifact writes with exception rollback, preserving prior output
+  if a commit fails and surfacing rollback failures. Crash/power-loss recovery
+  remains best-effort rather than ACID.
+- Fall back from atomic hard-link commits to portable exclusive no-clobber writes
+  on filesystems that report hard links as unsupported.
+- Made collision detection portably case-insensitive and resume events retain
+  their manifest-recorded artifact paths.
+- Reserved manifest, summary, and lock destinations so document stems cannot
+  collide with or be replaced by batch metadata.
+- Made batch-summary replacement atomic, staged Web outputs with portable
+  no-clobber behavior, preflighted Web destinations before API spend, and
+  distinguished runtime failures and SIGTERM exit codes.
+- Added exclusive batch-output ownership before API spend and strict shared
+  manifest validation so concurrent or malformed resume state cannot lose or
+  corrupt completed-work records.
+- Report live or stale batch-lock ownership in `status`, add guarded same-host
+  dead-PID recovery through `--force-unlock`, and treat archived sources as
+  non-fatal drift when artifacts remain intact.
+- Added clear macOS/Linux, PowerShell, and project `.env` API-key setup guidance
+  to CLI errors, `init`, `doctor`, and documentation.
+
+[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v1.5.0...v1.6.0)
+
 ## 1.5.0 - 2026-07-13
 
 ### CLI extraction controls

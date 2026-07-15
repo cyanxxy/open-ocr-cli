@@ -82,6 +82,42 @@ describe('extractTextFromUrls', () => {
     );
   });
 
+  it('rejects requires_action because URL context is a server-side tool', async () => {
+    mockRunModelInteraction.mockResolvedValueOnce({
+      id: 'interaction-requires-action',
+      status: 'requires_action',
+      steps: [
+        urlContextResult(['https://example.com']),
+        { type: 'model_output', content: [{ type: 'text', text: 'Not terminal' }] },
+      ],
+    });
+
+    await expect(extractTextFromUrls(
+      ['https://example.com'],
+      'test-api-key',
+      'combined',
+      'gemini-3.5-flash',
+    )).rejects.toThrow(/ended with status "requires_action"/i);
+  });
+
+  it('surfaces an error attached to a completed model_output step', async () => {
+    mockRunModelInteraction.mockResolvedValueOnce({
+      id: 'interaction-model-error',
+      status: 'completed',
+      steps: [
+        urlContextResult(['https://example.com']),
+        { type: 'model_output', content: [], error: { code: 13, message: 'generation failed' } },
+      ],
+    });
+
+    await expect(extractTextFromUrls(
+      ['https://example.com'],
+      'test-api-key',
+      'combined',
+      'gemini-3.5-flash',
+    )).rejects.toThrow(/model output failed: generation failed/i);
+  });
+
   it('fails closed when any URL retrieval reports an error status', async () => {
     mockRunModelInteraction.mockResolvedValueOnce({
       id: 'interaction-3',

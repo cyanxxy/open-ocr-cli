@@ -81,4 +81,17 @@ describe('CLI init', () => {
       writeOutput: () => undefined,
     })).rejects.toThrow('at most 1000000');
   });
+
+  it('shows platform and project setup instructions when the API key is missing', async () => {
+    const output: string[] = [];
+    const result = await runInit({ yes: true }, {
+      cwd: directory,
+      env: {},
+      prompter: answers([]),
+      writeOutput: (text) => output.push(text),
+    });
+    expect(result.credentialStatus).toBe('missing');
+    expect(output.join('')).toContain('PowerShell');
+    expect(output.join('')).toContain(path.join(directory, '.env'));
+  });
 });

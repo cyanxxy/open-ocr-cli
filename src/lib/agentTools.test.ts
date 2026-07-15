@@ -255,6 +255,28 @@ describe('agentTools', () => {
     expect(result.memoryUpdate?.extractedFields?.total_amount?.location).toEqual(totalRegion);
   });
 
+  it('does not accept truncated re-OCR JSON as a successful tool result', async () => {
+    mockGenerateContent.mockResolvedValue({
+      text: JSON.stringify({ fields: [] }),
+      candidates: [{ finishReason: 'MAX_TOKENS' }],
+    });
+
+    const result = await executeReOcrRegion(
+      { region: totalRegion, focus: 'invoice total' },
+      'data:application/pdf;base64,ZmFrZQ==',
+      'application/pdf',
+      createMemory('invoice'),
+      {
+        apiKey: 'test-key',
+        model: 'gemini-3-flash-preview',
+        regionCropper: mockRegionCropper,
+      },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/incomplete output/i);
+  });
+
   it('fails closed when re_ocr_region is called without valid normalized coordinates', async () => {
     const result = await executeReOcrRegion(
       {

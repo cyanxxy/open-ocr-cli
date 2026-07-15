@@ -23,17 +23,22 @@ describe('CLI batch runner', () => {
   it('validates every document in a credential-free dry run', async () => {
     await writeFile(path.join(directory, 'one.jpg'), JPEG_BYTES);
     await writeFile(path.join(directory, 'two.jpg'), JPEG_BYTES);
-    const options = resolveCliOptions({ dryRun: true, quiet: true }, {}, directory);
+    const options = resolveCliOptions({ dryRun: true }, {}, directory);
     const inputs = await discoverInputs(['.'], options);
     const stdout: string[] = [];
+    const stderr: string[] = [];
     const summary = await runBatch(inputs, options, {
       abortController: new AbortController(),
       writeStdout: (text) => stdout.push(text),
-      writeStderr: () => undefined,
+      writeStderr: (text) => stderr.push(text),
     });
     expect(summary).toMatchObject({ total: 2, failed: 0, skipped: 2 });
+    expect(summary.results.every((result) => result.skipReason === 'validated')).toBe(true);
+    expect(summary.results.every((result) => result.plannedOutputFiles?.length === 1)).toBe(true);
     expect(summary.usage.requests).toBe(0);
     expect(stdout).toEqual([]);
+    expect(stderr.join('')).toContain('validated (dry run)');
+    expect(stderr.join('')).toContain(path.join(directory, 'gemini-ocr-output', 'one.md'));
   });
 
   it('reports invalid documents individually during dry runs', async () => {

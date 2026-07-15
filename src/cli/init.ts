@@ -8,6 +8,7 @@ import { getGenAIClient } from '../lib/gemini/client';
 import { waitForGeminiRequestSlot } from '../lib/gemini/requestPolicy';
 import type { GeminiModel, ThinkingLevel } from '../lib/gemini/types';
 import { SUPPORTED_MODELS, type CliConfigFile } from './types';
+import { credentialSetupGuidance } from './config';
 
 export interface InitFlags {
   global?: boolean;
@@ -183,7 +184,9 @@ export async function runInit(flags: InitFlags, runtime: InitRuntime = {}): Prom
     await writeConfig(configPath, config);
     writeOutput(`Created ${configPath}\n`);
     if (credentialStatus === 'valid') writeOutput(`${apiKeyEnv}: credential validated\n`);
-    else if (credentialStatus === 'missing') writeOutput(`${apiKeyEnv}: not set; credential validation skipped\n`);
+    else if (credentialStatus === 'missing') {
+      writeOutput(`${apiKeyEnv}: not set; credential validation skipped\n${credentialSetupGuidance(apiKeyEnv, cwd)}\n`);
+    }
     else writeOutput('Credential validation skipped\n');
     return { configPath, written: true, credentialStatus, apiKeyEnvironmentVariable: apiKeyEnv };
   } finally {

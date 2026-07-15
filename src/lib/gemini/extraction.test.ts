@@ -101,6 +101,14 @@ describe('extractTextFromFile — output contract', () => {
     await expect(extractTextFromFile(FILE_DATA, 'image/png', CLIENT)).rejects.toThrow(/empty/i);
   });
 
+  it('rejects plausible-looking output when generation stops at MAX_TOKENS', async () => {
+    mockGenerate({
+      text: '# Partial document\nThis looks usable but is truncated.',
+      candidates: [{ finishReason: 'MAX_TOKENS' }],
+    });
+    await expect(extractTextFromFile(FILE_DATA, 'image/png', CLIENT)).rejects.toThrow(/incomplete output/i);
+  });
+
   it('H-03: with streaming callbacks, a failure rejects AND notifies onError (never empty success)', async () => {
     const generateContentStream = vi.fn().mockRejectedValue(new Error('network down'));
     mockGetClient.mockReturnValue({ models: { generateContentStream } });
@@ -146,5 +154,42 @@ describe('extractTextFromFile — output contract', () => {
       outputTokens: 5,
       totalTokens: 15,
     }));
+  });
+
+  it('rejects a streaming result whose final chunk reports MAX_TOKENS', async () => {
+    async function* chunks() {
+      yield { text: '# Partial document' };
+      yield { text: '\ntruncated', candidates: [{ finishReason: 'MAX_TOKENS' }] };
+    }
+    mockGetClient.mockReturnValue({
+      models: { generateContentStream: vi.fn().mockResolvedValue(chunks()) },
+    });
+
+    await expect(extractTextFromFile(
+      FILE_DATA,
+      'image/png',
+      CLIENT,
+      undefined,
+      undefined,
+      { onProgress: vi.fn() },
+    )).rejects.toThrow(/incomplete output/i);
+  });
+
+  it('rejects a streaming result that ends without a terminal finish reason', async () => {
+    async function* chunks() {
+      yield { text: '# Possibly truncated', candidates: [{}] };
+    }
+    mockGetClient.mockReturnValue({
+      models: { generateContentStream: vi.fn().mockResolvedValue(chunks()) },
+    });
+
+    await expect(extractTextFromFile(
+      FILE_DATA,
+      'image/png',
+      CLIENT,
+      undefined,
+      undefined,
+      { onProgress: vi.fn() },
+    )).rejects.toThrow(/without a terminal STOP/i);
   });
 });

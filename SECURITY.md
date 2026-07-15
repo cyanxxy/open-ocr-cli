@@ -57,6 +57,7 @@ The application stores your API key in the browser's localStorage using XOR encr
 ### Content Security
 
 - The application processes images and PDFs locally before sending to the Gemini API
+- Agent mode requires Gemini's stored Interactions chaining (`previous_interaction_id`); its requests and responses are therefore subject to Google's Interactions data-retention policy. One-shot Web OCR sends `store: false`.
 - File size is limited by MIME type: 70MB raw for inline images (safe below the 100MB payload ceiling after base64), 50MB and 1,000 pages for PDFs
 - Only supported file types (images, PDFs) are accepted
 

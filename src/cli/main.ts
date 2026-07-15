@@ -11,13 +11,16 @@ import {
   resetGeminiRequestPolicy,
 } from '../lib/gemini/requestPolicy';
 import { getGeminiUsage, resetGeminiUsage } from '../lib/gemini/usage';
-import { loadCliConfig, loadLocalEnv, resolveCliOptions } from './config';
+import { credentialSetupGuidance, loadCliConfig, loadLocalEnv, resolveCliOptions } from './config';
+import { asCliExitError, cliSignalExitCode, type CliExitCode } from './errors';
 import { discoverInputs } from './inputs';
 import { runInit, type InitFlags } from './init';
 import { loadCustomSchema } from './schema';
 import { runBatch } from './runner';
+import { inspectBatchStatus, renderBatchStatus } from './status';
 import { SUPPORTED_MODELS, type ExtractCommandFlags } from './types';
 import {
+  assertWebOutputAvailable,
   renderWebResult,
   resolveWebUrls,
   runWebExtraction,
@@ -26,6 +29,14 @@ import {
   type WebAnalysisMode,
   type WebOutputFormat,
 } from './web';
+
+export const PRIMARY_CLI_NAME = 'open-ocr-cli';
+const CLI_BINARY_NAMES = new Set([PRIMARY_CLI_NAME, 'gemini-ocr']);
+
+export function cliBinaryName(argv: string[] = process.argv): string {
+  const invoked = path.basename(argv[1] ?? '');
+  return CLI_BINARY_NAMES.has(invoked) ? invoked : PRIMARY_CLI_NAME;
+}
 
 function cliVersion(): string {
   const candidates = [new URL('../package.json', import.meta.url), new URL('../../package.json', import.meta.url)];
@@ -76,6 +87,7 @@ function addExtractOptions(command: Command): Command {
     .option('--resume', 'skip unchanged documents recorded in the batch manifest')
     .option('--no-resume', 'process documents even when the manifest marks them complete')
     .option('--overwrite', 'replace existing output artifacts')
+    .option('--force-unlock', 'recover a same-host batch lock only when its owner process is dead')
     .option('--fail-fast', 'stop scheduling new documents after the first failure')
     .option('--jsonl', 'emit one machine-readable event per document on stdout')
     .option('--dry-run', 'resolve and validate the job without calling Gemini or writing files')
@@ -90,22 +102,24 @@ function addExtractOptions(command: Command): Command {
     .option('--confidence-threshold <number>', 'agentic completion threshold from 0 to 1');
 }
 
-export function createProgram(): Command {
+export function createProgram(binaryName = PRIMARY_CLI_NAME): Command {
+  const commandName = CLI_BINARY_NAMES.has(binaryName) ? binaryName : PRIMARY_CLI_NAME;
   const program = new Command()
-    .name('gemini-ocr')
-    .description('Production OCR for files, directories, and document pipelines using Gemini')
+    .name(commandName)
+    .description('Open OCR CLI for files, directories, and document pipelines using Gemini')
     .version(cliVersion())
     .showHelpAfterError()
     .addHelpText('after', `
 Examples:
-  $ gemini-ocr init
-  $ gemini-ocr extract invoice.pdf
-  $ gemini-ocr extract invoice.pdf --schema invoice.schema.json
-  $ gemini-ocr extract ./documents --mode template --preset invoice --format all
-  $ gemini-ocr extract '**/*.pdf' --concurrency 4 --max-cost 5 --output ./results
-  $ cat scan.png | gemini-ocr extract - --stdin-name scan.png --format json
-  $ gemini-ocr web https://example.com/report.pdf --format markdown
-  $ gemini-ocr presets
+  $ ${commandName} init
+  $ ${commandName} extract invoice.pdf
+  $ ${commandName} extract invoice.pdf --schema invoice.schema.json
+  $ ${commandName} extract ./documents --mode template --preset invoice --format all
+  $ ${commandName} extract '**/*.pdf' --concurrency 4 --max-cost 5 --output ./results
+  $ cat scan.png | ${commandName} extract - --stdin-name scan.png --format json
+  $ ${commandName} web https://example.com/report.pdf --format markdown
+  $ ${commandName} status ./results
+  $ ${commandName} presets
 
 Environment:
   GEMINI_API_KEY          Gemini API key (required except for --dry-run)
@@ -127,9 +141,15 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
         : resolvedOptions;
       const resolvedInputs = await discoverInputs(inputs, options);
       const abortController = new AbortController();
-      const onInterrupt = (): void => abortController.abort(new Error('Interrupted'));
-      process.once('SIGINT', onInterrupt);
-      process.once('SIGTERM', onInterrupt);
+      let interruptedExitCode: CliExitCode | undefined;
+      const interrupt = (exitCode: CliExitCode): void => {
+        interruptedExitCode = exitCode;
+        abortController.abort(new Error('Interrupted'));
+      };
+      const onSigint = (): void => interrupt(cliSignalExitCode('SIGINT'));
+      const onSigterm = (): void => interrupt(cliSignalExitCode('SIGTERM'));
+      process.once('SIGINT', onSigint);
+      process.once('SIGTERM', onSigterm);
       try {
         if (!options.quiet) {
           process.stderr.write(
@@ -145,11 +165,17 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
             + `estimated cost $${summary.usage.estimatedCostUsd.toFixed(6)}\n`,
           );
         }
-        if (abortController.signal.aborted) process.exitCode = 130;
+        if (abortController.signal.aborted) process.exitCode = interruptedExitCode ?? 1;
         else if (summary.failed > 0 || summary.partial > 0 || summary.costLimitReached) process.exitCode = 1;
+      } catch (error) {
+        if (interruptedExitCode !== undefined) {
+          process.exitCode = interruptedExitCode;
+          return;
+        }
+        throw asCliExitError(error, 1);
       } finally {
-        process.removeListener('SIGINT', onInterrupt);
-        process.removeListener('SIGTERM', onInterrupt);
+        process.removeListener('SIGINT', onSigint);
+        process.removeListener('SIGTERM', onSigterm);
       }
     });
 
@@ -160,6 +186,7 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
     .option('--yes', 'accept recommended defaults without prompting')
     .option('--skip-validation', 'do not make the credential validation request')
     .action(async (flags: InitFlags) => {
+      loadLocalEnv(process.cwd());
       await runInit(flags);
     });
 
@@ -220,19 +247,24 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
         throw new Error('Web OCR format must be markdown or json');
       }
       const urls = await resolveWebUrls(rawUrls, flags.file, cwd);
+      const outputTarget = options.output
+        ? await assertWebOutputAvailable(options.output, cwd, options.overwrite)
+        : undefined;
       if (options.dryRun) {
-        process.stdout.write(`${JSON.stringify({ valid: true, urls }, null, 2)}\n`);
+        process.stdout.write(`${JSON.stringify({ valid: true, urls, output: outputTarget }, null, 2)}\n`);
         return;
       }
 
       const abortController = new AbortController();
-      let interrupted = false;
-      const onInterrupt = (): void => {
-        interrupted = true;
+      let interruptedExitCode: CliExitCode | undefined;
+      const interrupt = (exitCode: CliExitCode): void => {
+        interruptedExitCode = exitCode;
         abortController.abort(new Error('Interrupted'));
       };
-      process.once('SIGINT', onInterrupt);
-      process.once('SIGTERM', onInterrupt);
+      const onSigint = (): void => interrupt(cliSignalExitCode('SIGINT'));
+      const onSigterm = (): void => interrupt(cliSignalExitCode('SIGTERM'));
+      process.once('SIGINT', onSigint);
+      process.once('SIGTERM', onSigterm);
       const timeout = setTimeout(
         () => abortController.abort(new Error(`Timed out after ${options.timeoutSeconds}s`)),
         options.timeoutSeconds * 1000,
@@ -256,19 +288,19 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
           process.exitCode = 1;
         }
       } catch (error) {
-        if (interrupted) {
-          process.exitCode = 130;
+        if (interruptedExitCode !== undefined) {
+          process.exitCode = interruptedExitCode;
           return;
         }
         if (abortController.signal.aborted && abortController.signal.reason instanceof Error) {
-          throw abortController.signal.reason;
+          throw asCliExitError(abortController.signal.reason, 1);
         }
-        throw error;
+        throw asCliExitError(error, 1);
       } finally {
         clearTimeout(timeout);
         resetGeminiRequestPolicy();
-        process.removeListener('SIGINT', onInterrupt);
-        process.removeListener('SIGTERM', onInterrupt);
+        process.removeListener('SIGINT', onSigint);
+        process.removeListener('SIGTERM', onSigterm);
       }
     });
 
@@ -314,15 +346,26 @@ Configuration is loaded from ~/.config/gemini-ocr/config.json, then
         process.stdout.write(`Node.js ${checks.node.version}: ${checks.node.ok ? 'ok' : 'use Node 20.19+, 22.13+, or 24+'}\n`);
         process.stdout.write(`${apiKeyEnv}: ${checks.apiKey.ok ? 'configured' : 'missing'}\n`);
         process.stdout.write(`Project config: ${checks.projectConfig}\n`);
+        if (!checks.apiKey.ok) process.stdout.write(`${credentialSetupGuidance(apiKeyEnv, cwd)}\n`);
       }
       if (!checks.node.ok || !checks.apiKey.ok) process.exitCode = 1;
+    });
+
+  program.command('status')
+    .description('inspect a batch manifest, artifacts, failures, and usage')
+    .argument('[output]', 'batch output directory', 'gemini-ocr-output')
+    .option('--json', 'emit machine-readable JSON')
+    .action(async (output: string, flags: { json?: boolean }) => {
+      const report = await inspectBatchStatus(output, process.cwd());
+      process.stdout.write(flags.json ? `${JSON.stringify(report, null, 2)}\n` : renderBatchStatus(report));
+      if (!report.healthy) process.exitCode = 1;
     });
 
   return program;
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {
-  const program = createProgram();
+  const program = createProgram(cliBinaryName(argv));
   if (argv.length <= 2) {
     program.outputHelp();
     return;

@@ -6,7 +6,7 @@ export interface GeminiTokenPrice {
 }
 
 /**
- * Paid-tier standard prices published by Google on 2026-07-13. Output prices
+ * Paid-tier standard prices verified against Google's pricing page on 2026-07-15. Output prices
  * include thinking tokens. Pro pricing changes when one request exceeds 200k
  * input tokens, so the request-level input count is required here.
  */

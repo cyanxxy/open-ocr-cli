@@ -1,4 +1,10 @@
-import { applyThinkingConfig, generateContentMediaResolution, getGenAIClient } from '../gemini/client';
+import {
+  applyThinkingConfig,
+  assertCompleteGeminiResponse,
+  createGeminiStreamCompletionTracker,
+  generateContentMediaResolution,
+  getGenAIClient,
+} from '../gemini/client';
 import { parseJsonPayload } from '../gemini/structured';
 import { logger } from '../logger';
 import { recordGeminiUsage } from '../gemini/usage';
@@ -537,14 +543,22 @@ export async function runExtractionPreset(
         config: generationConfig,
       });
 
+      const completion = createGeminiStreamCompletionTracker('Preset extraction');
       let lastChunk: unknown;
       for await (const chunk of stream) {
         lastChunk = chunk;
+        try {
+          completion.observe(chunk);
+        } catch (error) {
+          recordGeminiUsage(chunk, model);
+          throw error;
+        }
         const chunkText = chunk.text || '';
         rawText += chunkText;
         callbacks.onProgress?.(chunkText);
       }
       recordGeminiUsage(lastChunk, model);
+      completion.assertComplete();
     } else {
       await waitForGeminiRequestSlot(options?.abortSignal);
       const response = await genAI.models.generateContent({
@@ -553,6 +567,7 @@ export async function runExtractionPreset(
         config: generationConfig,
       });
       recordGeminiUsage(response, model);
+      assertCompleteGeminiResponse(response, 'Preset extraction');
       rawText = response.text || '';
     }
 

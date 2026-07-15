@@ -8,6 +8,7 @@ import {
 } from '../lib/gemini/operations';
 import { getUnsupportedUrls } from '../lib/urlValidation';
 import type { ResolvedCliOptions } from './types';
+import { writeTextFileAtomically } from './output';
 
 export const WEB_ANALYSIS_MODES = ['individual', 'combined', 'comparison'] as const;
 export type WebAnalysisMode = (typeof WEB_ANALYSIS_MODES)[number];
@@ -75,6 +76,25 @@ export async function runWebExtraction(
   );
 }
 
+/** Resolve and preflight a Web OCR destination before any paid API request. */
+export async function assertWebOutputAvailable(
+  outputPath: string,
+  cwd: string,
+  overwrite: boolean,
+): Promise<string> {
+  const target = path.resolve(cwd, outputPath);
+  if (overwrite) return target;
+  try {
+    // A dangling symlink still occupies the destination and must be rejected
+    // before the URL-context request spends tokens.
+    await fs.lstat(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return target;
+    throw error;
+  }
+  throw new Error(`Output already exists: ${target} (use --overwrite)`);
+}
+
 export async function writeWebOutput(
   content: string,
   outputPath: string,
@@ -82,7 +102,6 @@ export async function writeWebOutput(
   overwrite: boolean,
 ): Promise<string> {
   const target = path.resolve(cwd, outputPath);
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(target, content, { encoding: 'utf8', flag: overwrite ? 'w' : 'wx' });
+  await writeTextFileAtomically(target, content, overwrite);
   return target;
 }

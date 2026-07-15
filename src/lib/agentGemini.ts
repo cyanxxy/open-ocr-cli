@@ -6,6 +6,7 @@ import {
   createInteractionFunctionTools,
   createInteractionGenerationConfig,
   extractInteractionFunctionCalls,
+  extractInteractionModelErrors,
   extractInteractionText,
   extractInteractionThoughtSummaries,
   getInteractionSteps,
@@ -133,8 +134,8 @@ export async function executeAgentTurn(
       store: true,
     });
 
-    if (interaction.status === 'failed' || interaction.status === 'cancelled') {
-      throw new Error(`Agent interaction ended with status "${interaction.status}"`);
+    if (interaction.status !== 'completed' && interaction.status !== 'requires_action') {
+      throw new Error(`Agent interaction ended with unsuccessful status "${interaction.status ?? 'unknown'}"`);
     }
     if (!interaction.id) {
       throw new Error('Agent interaction returned no interaction ID');
@@ -143,12 +144,22 @@ export async function executeAgentTurn(
     interactionState.previousInteractionId = interaction.id;
     interactionState.pendingInput = undefined;
 
-      const steps = getInteractionSteps(interaction);
-      // Keep every returned step object untouched in the local transcript.
-      const replaySteps = selectModelStepsForReplay(steps);
-      if (replaySteps.length > 0) {
-        transcript.push(...replaySteps);
-      }
+    const steps = getInteractionSteps(interaction);
+    const modelErrors = extractInteractionModelErrors(steps);
+    if (modelErrors.length > 0) {
+      throw new Error(`Agent model output failed: ${modelErrors.join('; ')}`);
+    }
+
+    const functionCalls = extractInteractionFunctionCalls(steps);
+    if (interaction.status === 'requires_action' && functionCalls.length === 0) {
+      throw new Error('Agent interaction requires action but returned no function call');
+    }
+
+    // Keep every returned step object untouched in the local transcript.
+    const replaySteps = selectModelStepsForReplay(steps);
+    if (replaySteps.length > 0) {
+      transcript.push(...replaySteps);
+    }
 
       for (const thoughtSummary of extractInteractionThoughtSummaries(steps)) {
         const thinkingStep: AgentStep = {
@@ -160,7 +171,6 @@ export async function executeAgentTurn(
         allSteps.push(thinkingStep);
       }
 
-      const functionCalls = extractInteractionFunctionCalls(steps);
       if (functionCalls.length === 0) {
         // Closing prose (no tool call) is surfaced here as activity; prose that
         // merely precedes a tool call is not (audit A-09).

@@ -1,6 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { constants as fsConstants, promises as fs } from 'node:fs';
+import { hostname } from 'node:os';
 import path from 'node:path';
 
+import { parseBatchLockOwner, type BatchLockOwner } from './jsonValidation';
+import { parseCliManifest } from './manifest';
 import type {
   BatchSummary,
   CliManifest,
@@ -13,12 +17,31 @@ import type {
 
 const EMPTY_MANIFEST: CliManifest = { version: 1, entries: {} };
 
+export interface BatchLockAcquireOptions {
+  forceUnlock?: boolean;
+  onWarning?: (message: string) => void;
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
+    throw error;
+  }
+}
+
 async function pathExists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath, fsConstants.F_OK);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+    throw error;
   }
 }
 
@@ -61,8 +84,293 @@ function safeOutputRelative(input: ResolvedInput): string {
   return path.join(safeDirectory, parsed.name);
 }
 
+function plannedArtifactExtensions(options: ResolvedCliOptions): string[] {
+  if (options.format === 'markdown') return ['md'];
+  if (options.format === 'json') return ['json'];
+  if (options.format === 'csv') return ['csv'];
+  // Plan only guaranteed artifacts. Template CSV depends on the model returning
+  // at least one table row, so `--format all` cannot promise it before extraction.
+  // Agentic runs always retain a steps array (including an empty one).
+  if (options.mode === 'agentic') return ['md', 'json', 'steps.json'];
+  return ['md', 'json'];
+}
+
+function possibleArtifactExtensions(options: ResolvedCliOptions): string[] {
+  if (options.format !== 'all') return plannedArtifactExtensions(options);
+  if (options.mode === 'template') return ['md', 'json', 'csv'];
+  if (options.mode === 'agentic') return ['md', 'json', 'steps.json'];
+  return ['md', 'json'];
+}
+
 export function defaultOutputDirectory(options: ResolvedCliOptions): string {
   return path.resolve(options.cwd, options.output ?? 'gemini-ocr-output');
+}
+
+async function resolveArtifactTargets(
+  input: ResolvedInput,
+  extensions: string[],
+  options: ResolvedCliOptions,
+  totalInputs: number,
+): Promise<string[]> {
+  const explicitOutput = options.output ? path.resolve(options.cwd, options.output) : undefined;
+  const explicitSingleFile = totalInputs === 1
+    && Boolean(explicitOutput)
+    && options.format !== 'all'
+    && Boolean(path.extname(options.output!))
+    && !(await pathExists(explicitOutput!) && (await fs.stat(explicitOutput!)).isDirectory());
+
+  return explicitSingleFile
+    ? [explicitOutput!]
+    : extensions.map((extension) => (
+        path.join(defaultOutputDirectory(options), `${safeOutputRelative(input)}.${extension}`)
+      ));
+}
+
+export async function plannedArtifactTargets(
+  input: ResolvedInput,
+  options: ResolvedCliOptions,
+  totalInputs: number,
+): Promise<string[]> {
+  const writesFiles = totalInputs > 1 || Boolean(options.output) || options.format === 'all';
+  if (!writesFiles) return [];
+  return resolveArtifactTargets(input, plannedArtifactExtensions(options), options, totalInputs);
+}
+
+/** Reject every destination this extraction could write before paid work starts. */
+export async function assertArtifactTargetsAvailable(
+  input: ResolvedInput,
+  options: ResolvedCliOptions,
+  totalInputs: number,
+): Promise<void> {
+  const writesFiles = totalInputs > 1 || Boolean(options.output) || options.format === 'all';
+  if (!writesFiles || options.overwrite) return;
+  const targets = await resolveArtifactTargets(
+    input,
+    possibleArtifactExtensions(options),
+    options,
+    totalInputs,
+  );
+  const existing = (await Promise.all(targets.map(async (target): Promise<string | undefined> => {
+    try {
+      // lstat treats a dangling symlink as occupied; access() would follow it,
+      // report ENOENT, and allow paid extraction before the final EEXIST.
+      await fs.lstat(target);
+      return target;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+  }))).filter((target): target is string => target !== undefined);
+  if (existing.length > 0) {
+    throw new Error(
+      `Output already exists before extraction: ${existing.join(', ')} (use --overwrite to replace it)`,
+    );
+  }
+}
+
+export async function assertNoOutputCollisions(
+  inputs: ResolvedInput[],
+  options: ResolvedCliOptions,
+): Promise<void> {
+  const owners = new Map<string, string[]>();
+  if (inputs.length > 1) {
+    const outputDirectory = defaultOutputDirectory(options);
+    for (const metadataPath of [
+      path.join(outputDirectory, '.gemini-ocr-manifest.json'),
+      path.join(outputDirectory, 'batch-summary.json'),
+      path.join(outputDirectory, '.gemini-ocr.lock'),
+    ]) {
+      const key = path.normalize(metadataPath).normalize('NFC').toLowerCase();
+      owners.set(key, ['reserved batch metadata']);
+    }
+  }
+  await Promise.all(inputs.map(async (input) => {
+    const targets = await plannedArtifactTargets(input, options, inputs.length);
+    for (const target of targets) {
+      // Use a portable case-folded key on every platform. This deliberately
+      // rejects names that are distinct on some Linux filesystems but collide
+      // on default macOS/Windows volumes or when outputs are moved between them.
+      const key = path.normalize(target).normalize('NFC').toLowerCase();
+      owners.set(key, [...(owners.get(key) ?? []), input.displayPath]);
+    }
+  }));
+  const collisions = [...owners.entries()].filter(([, sources]) => sources.length > 1);
+  if (collisions.length === 0) return;
+  const details = collisions
+    .slice(0, 5)
+    .map(([target, sources]) => `${target} <= ${sources.join(', ')}`)
+    .join('; ');
+  const remainder = collisions.length > 5 ? `; and ${collisions.length - 5} more` : '';
+  throw new Error(
+    `Output path collision detected before extraction: ${details}${remainder}. `
+    + 'Rename same-stem inputs or process them into separate output directories.',
+  );
+}
+
+const HARD_LINK_FALLBACK_CODES = new Set([
+  'ENOTSUP',
+  'EOPNOTSUPP',
+  'ENOSYS',
+  'EPERM',
+  'EXDEV',
+]);
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function writeExclusiveFallback(target: string, content: string): Promise<void> {
+  // Some network/FUSE and non-NTFS filesystems do not support hard links. An
+  // exclusive open preserves the no-clobber guarantee there. Unlike a hard
+  // link, the target is visible while it is written; failures are cleaned up
+  // best-effort and the staged source remains available to the caller.
+  const handle = await fs.open(target, 'wx');
+  let failure: unknown;
+  try {
+    await handle.writeFile(content, { encoding: 'utf8' });
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    await handle.close();
+  } catch (error) {
+    failure = failure === undefined
+      ? error
+      : new Error(`${errorMessage(failure)}; close also failed: ${errorMessage(error)}`, { cause: failure });
+  }
+  if (failure === undefined) return;
+
+  try {
+    await fs.rm(target, { force: true });
+  } catch (cleanupError) {
+    throw new Error(
+      `${errorMessage(failure)}; exclusive-write cleanup also failed: ${errorMessage(cleanupError)}`,
+      { cause: failure },
+    );
+  }
+  throw failure instanceof Error ? failure : new Error(String(failure));
+}
+
+async function commitStagedNoClobber(
+  temporary: string,
+  target: string,
+  content: string,
+): Promise<void> {
+  try {
+    // Preferred path: an atomic create-if-absent directory entry that exposes
+    // the already-complete staged inode.
+    await fs.link(temporary, target);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (!code || !HARD_LINK_FALLBACK_CODES.has(code)) throw error;
+    await writeExclusiveFallback(target, content);
+  }
+}
+
+async function commitArtifacts(
+  targets: ReadonlyArray<readonly [string, string]>,
+  overwrite: boolean,
+): Promise<void> {
+  const transactionId = `${process.pid}-${randomUUID()}`;
+  const staged: Array<{
+    target: string;
+    temporary: string;
+    content: string;
+    backup?: string;
+    committed: boolean;
+  }> = [];
+  try {
+    for (const [target, content] of targets) {
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      if (!overwrite && await pathExists(target)) {
+        throw new Error(`Output already exists: ${target} (use --overwrite)`);
+      }
+      const temporary = `${target}.${transactionId}.tmp`;
+      await fs.writeFile(temporary, content, { encoding: 'utf8', flag: 'wx' });
+      staged.push({ target, temporary, content, committed: false });
+    }
+
+    for (const entry of staged) {
+      if (overwrite && await pathExists(entry.target)) {
+        entry.backup = `${entry.target}.${transactionId}.bak`;
+        await fs.rename(entry.target, entry.backup);
+      } else if (!overwrite && await pathExists(entry.target)) {
+        throw new Error(`Output already exists: ${entry.target} (use --overwrite)`);
+      }
+      if (overwrite) {
+        await fs.rename(entry.temporary, entry.target);
+      } else {
+        await commitStagedNoClobber(entry.temporary, entry.target, entry.content);
+      }
+      entry.committed = true;
+      if (!overwrite) await fs.rm(entry.temporary, { force: true });
+    }
+    await Promise.all(staged.map(async (entry) => {
+      if (entry.backup) await fs.rm(entry.backup, { force: true }).catch(() => undefined);
+    }));
+  } catch (error) {
+    const rollbackFailures: string[] = [];
+    const attemptRollback = async (operation: string, action: () => Promise<void>): Promise<void> => {
+      try {
+        await action();
+      } catch (rollbackError) {
+        const message = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+        rollbackFailures.push(`${operation}: ${message}`);
+      }
+    };
+    for (const entry of [...staged].reverse()) {
+      if (entry.committed) {
+        await attemptRollback(`remove committed ${entry.target}`, () => fs.rm(entry.target, { force: true }));
+      }
+      if (entry.backup) {
+        await attemptRollback(`restore backup ${entry.target}`, () => fs.rename(entry.backup!, entry.target));
+      }
+      await attemptRollback(`remove staged ${entry.temporary}`, () => fs.rm(entry.temporary, { force: true }));
+    }
+    if (rollbackFailures.length > 0) {
+      const originalMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `${originalMessage}; artifact rollback also failed: ${rollbackFailures.join('; ')}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * Commit one complete text file safely. Overwrite uses an atomic replacement.
+ * No-overwrite prefers an atomic hard-link commit and falls back to a portable
+ * exclusive write on filesystems that do not support hard links.
+ */
+export async function writeTextFileAtomically(
+  target: string,
+  content: string,
+  overwrite: boolean,
+): Promise<void> {
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}-${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporary, content, { encoding: 'utf8', flag: 'wx' });
+    if (overwrite) {
+      await fs.rename(temporary, target);
+    } else {
+      await commitStagedNoClobber(temporary, target, content);
+      // The target is now complete, either through the staged inode or the
+      // exclusive-write fallback. Failure to remove the staging name must not
+      // turn a valid committed output into a false extraction failure.
+      await fs.rm(temporary, { force: true }).catch(() => undefined);
+    }
+  } catch (error) {
+    try {
+      await fs.rm(temporary, { force: true });
+    } catch (cleanupError) {
+      const originalMessage = error instanceof Error ? error.message : String(error);
+      const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      throw new Error(`${originalMessage}; staged-file cleanup also failed: ${cleanupMessage}`, { cause: error });
+    }
+    throw error;
+  }
 }
 
 export async function writeArtifacts(
@@ -72,28 +380,15 @@ export async function writeArtifacts(
   totalInputs: number,
 ): Promise<string[]> {
   const entries = artifactEntries(artifacts, options.format);
-  const explicitSingleFile = totalInputs === 1
-    && Boolean(options.output)
-    && options.format !== 'all'
-    && Boolean(path.extname(options.output!))
-    && !(await pathExists(path.resolve(options.cwd, options.output!))
-      && (await fs.stat(path.resolve(options.cwd, options.output!))).isDirectory());
-
-  const targets = explicitSingleFile
-    ? [[path.resolve(options.cwd, options.output!), entries[0][1]] as const]
-    : entries.map(([extension, content]) => [
-        path.join(defaultOutputDirectory(options), `${safeOutputRelative(input)}.${extension}`),
-        content,
-      ] as const);
-
-  for (const [target] of targets) {
-    if (!options.overwrite && await pathExists(target)) throw new Error(`Output already exists: ${target} (use --overwrite)`);
-  }
-  for (const [target, content] of targets) {
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, content, { encoding: 'utf8', flag: options.overwrite ? 'w' : 'wx' });
-  }
-  return targets.map(([target]) => target);
+  const targetPaths = await resolveArtifactTargets(
+    input,
+    entries.map(([extension]) => extension),
+    options,
+    totalInputs,
+  );
+  const targets = targetPaths.map((target, index) => [target, entries[index][1]] as const);
+  await commitArtifacts(targets, options.overwrite);
+  return targetPaths;
 }
 
 export class ManifestStore {
@@ -108,41 +403,143 @@ export class ManifestStore {
   async load(): Promise<void> {
     try {
       const raw = await fs.readFile(this.manifestPath, 'utf8');
-      const parsed = JSON.parse(raw) as Partial<CliManifest>;
-      if (parsed.version === 1 && parsed.entries && typeof parsed.entries === 'object') {
-        this.manifest = { version: 1, entries: parsed.entries };
-      }
+      this.manifest = parseCliManifest(JSON.parse(raw) as unknown, this.manifestPath);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      if (error instanceof SyntaxError) {
+        throw new Error(`Invalid JSON in ${this.manifestPath}: ${error.message}`);
+      }
+      throw error;
     }
   }
 
   async completed(key: string, fingerprint: string): Promise<boolean> {
+    return (await this.completedEntry(key, fingerprint)) !== undefined;
+  }
+
+  async completedEntry(key: string, fingerprint: string): Promise<ManifestEntry | undefined> {
     const entry = this.manifest.entries[key];
     if (
       !entry
       || (entry.status !== 'succeeded' && entry.status !== 'partial')
       || entry.fingerprint !== fingerprint
-    ) return false;
-    return (await Promise.all(entry.outputFiles.map(pathExists))).every(Boolean);
+    ) return undefined;
+    if (!(await Promise.all(entry.outputFiles.map(pathExists))).every(Boolean)) return undefined;
+    return { ...entry, outputFiles: [...entry.outputFiles] };
   }
 
   update(key: string, entry: ManifestEntry): Promise<void> {
     this.manifest.entries[key] = entry;
     this.pendingWrite = this.pendingWrite.then(async () => {
-      await fs.mkdir(path.dirname(this.manifestPath), { recursive: true });
-      const temporary = `${this.manifestPath}.${process.pid}.tmp`;
-      await fs.writeFile(temporary, `${JSON.stringify(this.manifest, null, 2)}\n`, 'utf8');
-      await fs.rename(temporary, this.manifestPath);
+      await writeTextFileAtomically(
+        this.manifestPath,
+        `${JSON.stringify(this.manifest, null, 2)}\n`,
+        true,
+      );
     });
     return this.pendingWrite;
   }
 }
 
+/**
+ * Exclusive ownership of a batch output directory. The lock prevents separate
+ * CLI processes from racing manifest read-modify-write cycles and losing resume
+ * entries after Gemini work has already been paid for.
+ */
+export class BatchOutputLock {
+  private constructor(
+    readonly lockPath: string,
+    private readonly owner: BatchLockOwner,
+  ) {}
+
+  static async acquire(
+    outputDirectory: string,
+    options: BatchLockAcquireOptions = {},
+  ): Promise<BatchOutputLock> {
+    await fs.mkdir(outputDirectory, { recursive: true });
+    const lockPath = path.join(outputDirectory, '.gemini-ocr.lock');
+    const owner: BatchLockOwner = {
+      version: 1,
+      token: randomUUID(),
+      pid: process.pid,
+      hostname: hostname(),
+      startedAt: new Date().toISOString(),
+    };
+    try {
+      await writeTextFileAtomically(lockPath, `${JSON.stringify(owner, null, 2)}\n`, false);
+      return new BatchOutputLock(lockPath, owner);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      let existingOwner: BatchLockOwner | undefined;
+      try {
+        existingOwner = parseBatchLockOwner(JSON.parse(await fs.readFile(lockPath, 'utf8')) as unknown);
+      } catch {
+        // Invalid owner data is handled below without guessing that it is stale.
+      }
+      const ownership = existingOwner
+        ? `PID ${existingOwner.pid} on ${existingOwner.hostname}, started ${existingOwner.startedAt}`
+        : 'owner details unavailable';
+
+      if (options.forceUnlock) {
+        if (!existingOwner) {
+          throw new Error(
+            `Cannot force-unlock ${lockPath}: owner metadata is invalid. Remove it manually only after verifying no batch is running.`,
+            { cause: error },
+          );
+        }
+        const localHostname = hostname();
+        if (existingOwner.hostname !== localHostname) {
+          throw new Error(
+            `Cannot force-unlock ${lockPath}: it belongs to host ${existingOwner.hostname}, not ${localHostname}.`,
+            { cause: error },
+          );
+        }
+        if (processIsAlive(existingOwner.pid)) {
+          throw new Error(
+            `Cannot force-unlock ${lockPath}: owner PID ${existingOwner.pid} is still running on ${localHostname}.`,
+            { cause: error },
+          );
+        }
+
+        const currentOwner = parseBatchLockOwner(
+          JSON.parse(await fs.readFile(lockPath, 'utf8')) as unknown,
+        );
+        if (currentOwner?.token !== existingOwner.token) {
+          throw new Error(`Cannot force-unlock ${lockPath}: lock ownership changed during recovery.`);
+        }
+        await fs.rm(lockPath);
+        options.onWarning?.(
+          `Removed stale batch lock for dead PID ${existingOwner.pid} on ${localHostname}: ${lockPath}`,
+        );
+        return BatchOutputLock.acquire(outputDirectory, { onWarning: options.onWarning });
+      }
+      throw new Error(
+        `Batch output directory is already in use (${ownership}): ${outputDirectory}. `
+        + 'If that same-host process is no longer running, retry with --force-unlock. '
+        + `Review ${lockPath} manually for cross-host or invalid lock metadata.`,
+        { cause: error },
+      );
+    }
+  }
+
+  async release(): Promise<void> {
+    let current: Partial<BatchLockOwner>;
+    try {
+      current = JSON.parse(await fs.readFile(this.lockPath, 'utf8')) as Partial<BatchLockOwner>;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    if (current.token !== this.owner.token) {
+      throw new Error(`Batch lock ownership changed unexpectedly; refusing to remove ${this.lockPath}`);
+    }
+    await fs.rm(this.lockPath);
+  }
+}
+
 export async function writeBatchSummary(summary: BatchSummary, outputDirectory: string): Promise<string> {
-  await fs.mkdir(outputDirectory, { recursive: true });
   const target = path.join(outputDirectory, 'batch-summary.json');
-  await fs.writeFile(target, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
+  await writeTextFileAtomically(target, `${JSON.stringify(summary, null, 2)}\n`, true);
   return target;
 }
 
@@ -156,6 +553,8 @@ export function jsonlResult(result: OcrJobResult): string {
     durationMs: result.durationMs,
     attempts: result.attempts,
     outputFiles: result.outputFiles,
+    plannedOutputFiles: result.plannedOutputFiles,
+    skipReason: result.skipReason,
     output: result.artifacts
       ? {
           markdown: result.artifacts.markdown,

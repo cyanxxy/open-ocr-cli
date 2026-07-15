@@ -1,7 +1,7 @@
 {
   "name": "open-ocr-cli",
-  "version": "1.5.0",
-  "description": "Batch OCR CLI for images and PDFs using Google Gemini.",
+  "version": "1.6.0",
+  "description": "Open-source document extraction CLI for images and PDFs powered by Google Gemini.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -25,6 +25,7 @@
     "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
   },
   "bin": {
+    "open-ocr-cli": "dist/index.js",
     "gemini-ocr": "dist/index.js"
   },
   "files": [

@@ -7,7 +7,14 @@ import {
   normalizeAgentDocumentType,
   normalizeAgentFieldName,
 } from './agentSchema';
-import { applyThinkingConfig, generateContentMediaResolution, getGenAIClient, isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
+import {
+  applyThinkingConfig,
+  assertCompleteGeminiResponse,
+  generateContentMediaResolution,
+  getGenAIClient,
+  isFatalGeminiError,
+  isRetryableGeminiError,
+} from './gemini/client';
 import { parseJsonPayload } from './gemini/structured';
 import { recordGeminiUsage } from './gemini/usage';
 import { waitForGeminiRequestSlot } from './gemini/requestPolicy';
@@ -332,6 +339,7 @@ export async function executeReOcrRegion(
       config: generationConfig,
     });
     recordGeminiUsage(response, clientConfig.model);
+    assertCompleteGeminiResponse(response, 'Region re-OCR');
 
     const rawFields = parseRegionFieldPayload(response.text || '');
     const filteredFields = rawFields.filter((entry) => {

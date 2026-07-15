@@ -1,12 +1,22 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { promises as fs } from 'node:fs';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveCliOptions } from './config';
-import { ManifestStore, primaryArtifact, writeArtifacts } from './output';
-import type { OcrArtifacts, ResolvedCliOptions, ResolvedInput } from './types';
+import {
+  assertArtifactTargetsAvailable,
+  assertNoOutputCollisions,
+  BatchOutputLock,
+  ManifestStore,
+  plannedArtifactTargets,
+  primaryArtifact,
+  writeArtifacts,
+  writeBatchSummary,
+} from './output';
+import type { BatchSummary, OcrArtifacts, ResolvedCliOptions, ResolvedInput } from './types';
 
 let directory: string;
 let options: ResolvedCliOptions;
@@ -57,6 +67,188 @@ describe('CLI output', () => {
     await expect(writeArtifacts(input, artifacts, { ...options, overwrite: true }, 2)).resolves.toHaveLength(3);
   });
 
+  it('cannot clobber an output created by another process during commit', async () => {
+    const markdownTarget = path.join(directory, 'invoice.md');
+    const originalLink = fs.link.bind(fs);
+    const link = vi.spyOn(fs, 'link').mockImplementation(async (...args: Parameters<typeof fs.link>) => {
+      const destination = args[1].toString();
+      if (destination === markdownTarget) await writeFile(markdownTarget, 'concurrent writer\n');
+      return originalLink(...args);
+    });
+    try {
+      await expect(writeArtifacts(
+        { ...input, relativePath: 'invoice.pdf' },
+        { markdown: '# Replacement', json: { replacement: true } },
+        { ...options, format: 'all', overwrite: false },
+        2,
+      )).rejects.toMatchObject({ code: 'EEXIST' });
+      await expect(readFile(markdownTarget, 'utf8')).resolves.toBe('concurrent writer\n');
+    } finally {
+      link.mockRestore();
+    }
+  });
+
+  it('falls back to exclusive no-clobber writes when hard links are unsupported', async () => {
+    const unsupported = Object.assign(new Error('hard links unavailable'), { code: 'ENOTSUP' });
+    const link = vi.spyOn(fs, 'link').mockRejectedValue(unsupported);
+    try {
+      const files = await writeArtifacts(
+        { ...input, relativePath: 'invoice.pdf' },
+        { markdown: '# Portable', json: { portable: true } },
+        { ...options, format: 'all', overwrite: false },
+        2,
+      );
+      expect(files).toHaveLength(2);
+      await expect(readFile(path.join(directory, 'invoice.md'), 'utf8')).resolves.toBe('# Portable\n');
+      await expect(readFile(path.join(directory, 'invoice.json'), 'utf8')).resolves.toContain('"portable": true');
+    } finally {
+      link.mockRestore();
+    }
+  });
+
+  it('plans dry-run targets and rejects same-stem batch collisions before extraction', async () => {
+    const first = { ...input, absolutePath: '/workspace/invoice.pdf', relativePath: 'invoice.pdf', displayPath: 'invoice.pdf' };
+    const second = {
+      ...input,
+      absolutePath: '/workspace/invoice.png',
+      relativePath: 'invoice.png',
+      displayPath: 'invoice.png',
+      name: 'invoice.png',
+      mimeType: 'image/png',
+    };
+    await expect(plannedArtifactTargets(first, options, 2)).resolves.toEqual([
+      path.join(directory, 'invoice.md'),
+      path.join(directory, 'invoice.json'),
+    ]);
+    await expect(assertNoOutputCollisions([first, second], options)).rejects.toThrow(
+      'Output path collision detected before extraction',
+    );
+  });
+
+  it('rejects mixed-case collisions portably on every platform', async () => {
+    const first = { ...input, relativePath: 'Invoice.pdf', displayPath: 'Invoice.pdf' };
+    const second = {
+      ...input,
+      absolutePath: '/workspace/invoice.png',
+      relativePath: 'invoice.png',
+      displayPath: 'invoice.png',
+      name: 'invoice.png',
+      mimeType: 'image/png',
+    };
+    await expect(assertNoOutputCollisions([first, second], options)).rejects.toThrow(
+      'Output path collision detected before extraction',
+    );
+  });
+
+  it('reserves batch metadata filenames before extraction', async () => {
+    const metadataCollision = {
+      ...input,
+      absolutePath: '/workspace/batch-summary.pdf',
+      relativePath: 'batch-summary.pdf',
+      displayPath: 'batch-summary.pdf',
+      name: 'batch-summary.pdf',
+    };
+    const other = {
+      ...input,
+      absolutePath: '/workspace/other.pdf',
+      relativePath: 'other.pdf',
+      displayPath: 'other.pdf',
+      name: 'other.pdf',
+    };
+    await expect(assertNoOutputCollisions(
+      [metadataCollision, other],
+      { ...options, format: 'json' },
+    )).rejects.toThrow('reserved batch metadata');
+  });
+
+  it('plans only the artifact set guaranteed by each all-format mode', async () => {
+    const templateOptions = resolveCliOptions(
+      { output: directory, format: 'all', preset: 'invoice' },
+      {},
+      '/workspace',
+    );
+    const agenticOptions = resolveCliOptions(
+      { output: directory, format: 'all', mode: 'agentic' },
+      {},
+      '/workspace',
+    );
+    await expect(plannedArtifactTargets(input, templateOptions, 2)).resolves.toEqual([
+      path.join(directory, 'nested', 'invoice.md'),
+      path.join(directory, 'nested', 'invoice.json'),
+    ]);
+    await expect(plannedArtifactTargets(input, agenticOptions, 2)).resolves.toEqual([
+      path.join(directory, 'nested', 'invoice.md'),
+      path.join(directory, 'nested', 'invoice.json'),
+      path.join(directory, 'nested', 'invoice.steps.json'),
+    ]);
+  });
+
+  it('preflights optional all-format artifacts that extraction could produce', async () => {
+    const templateOptions = resolveCliOptions(
+      { output: directory, format: 'all', preset: 'invoice' },
+      {},
+      '/workspace',
+    );
+    const csvTarget = path.join(directory, 'nested', 'invoice.csv');
+    await fs.mkdir(path.dirname(csvTarget), { recursive: true });
+    await writeFile(csvTarget, 'existing,csv\n');
+
+    await expect(assertArtifactTargetsAvailable(input, templateOptions, 2)).rejects.toThrow(
+      `Output already exists before extraction: ${csvTarget}`,
+    );
+  });
+
+  it('restores every existing artifact if an overwrite transaction fails', async () => {
+    const markdownTarget = path.join(directory, 'invoice.md');
+    const jsonTarget = path.join(directory, 'invoice.json');
+    await writeFile(markdownTarget, 'original markdown\n');
+    await writeFile(jsonTarget, '{"original":true}\n');
+    const originalRename = fs.rename.bind(fs);
+    let renameCalls = 0;
+    const rename = vi.spyOn(fs, 'rename').mockImplementation(async (...args: Parameters<typeof fs.rename>) => {
+      renameCalls += 1;
+      if (renameCalls === 4) throw new Error('simulated commit failure');
+      return originalRename(...args);
+    });
+    try {
+      await expect(writeArtifacts(
+        { ...input, relativePath: 'invoice.pdf' },
+        { markdown: '# Replacement', json: { replacement: true } },
+        { ...options, format: 'all', overwrite: true },
+        2,
+      )).rejects.toThrow('simulated commit failure');
+      await expect(readFile(markdownTarget, 'utf8')).resolves.toBe('original markdown\n');
+      await expect(readFile(jsonTarget, 'utf8')).resolves.toBe('{"original":true}\n');
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
+  it('surfaces rollback failures instead of hiding a mixed filesystem state', async () => {
+    const markdownTarget = path.join(directory, 'invoice.md');
+    const jsonTarget = path.join(directory, 'invoice.json');
+    await writeFile(markdownTarget, 'original markdown\n');
+    await writeFile(jsonTarget, '{"original":true}\n');
+    const originalRename = fs.rename.bind(fs);
+    let renameCalls = 0;
+    const rename = vi.spyOn(fs, 'rename').mockImplementation(async (...args: Parameters<typeof fs.rename>) => {
+      renameCalls += 1;
+      if (renameCalls === 4) throw new Error('simulated commit failure');
+      if (renameCalls === 5) throw new Error('simulated restore failure');
+      return originalRename(...args);
+    });
+    try {
+      await expect(writeArtifacts(
+        { ...input, relativePath: 'invoice.pdf' },
+        { markdown: '# Replacement', json: { replacement: true } },
+        { ...options, format: 'all', overwrite: true },
+        2,
+      )).rejects.toThrow('artifact rollback also failed');
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
   it('persists and verifies resumable manifest entries', async () => {
     const outputFile = path.join(directory, 'invoice.json');
     await writeArtifacts(
@@ -76,6 +268,10 @@ describe('CLI output', () => {
     const reloaded = new ManifestStore(directory);
     await reloaded.load();
     await expect(reloaded.completed('/workspace/invoice.pdf', 'abc')).resolves.toBe(true);
+    await expect(reloaded.completedEntry('/workspace/invoice.pdf', 'abc')).resolves.toMatchObject({
+      outputFiles: [outputFile],
+      status: 'succeeded',
+    });
     await expect(reloaded.completed('/workspace/invoice.pdf', 'different')).resolves.toBe(false);
 
     await manifest.update('/workspace/invoice.pdf', {
@@ -87,5 +283,134 @@ describe('CLI output', () => {
     const partial = new ManifestStore(directory);
     await partial.load();
     await expect(partial.completed('/workspace/invoice.pdf', 'partial')).resolves.toBe(true);
+  });
+
+  it('surfaces artifact permission errors instead of treating them as a resume miss', async () => {
+    const manifest = new ManifestStore(directory);
+    await manifest.update('/workspace/invoice.pdf', {
+      fingerprint: 'abc',
+      status: 'succeeded',
+      outputFiles: [path.join(directory, 'invoice.json')],
+      completedAt: new Date().toISOString(),
+    });
+    const access = vi.spyOn(fs, 'access').mockRejectedValueOnce(Object.assign(
+      new Error('permission denied'),
+      { code: 'EACCES' },
+    ));
+    try {
+      await expect(manifest.completed('/workspace/invoice.pdf', 'abc')).rejects.toMatchObject({
+        code: 'EACCES',
+      });
+    } finally {
+      access.mockRestore();
+    }
+  });
+
+  it('rejects malformed resume manifests instead of trusting unsafe entry shapes', async () => {
+    const manifestPath = path.join(directory, '.gemini-ocr-manifest.json');
+    await writeFile(manifestPath, JSON.stringify({
+      version: 1,
+      entries: {
+        '/workspace/invoice.pdf': {
+          fingerprint: 'abc',
+          status: 'succeeded',
+          outputFiles: 'invoice.json',
+          completedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    await expect(new ManifestStore(directory).load()).rejects.toThrow('has invalid outputFiles');
+
+    await writeFile(manifestPath, JSON.stringify({
+      version: 1,
+      entries: {
+        '/workspace/invoice.pdf': {
+          fingerprint: 'abc',
+          status: 'succeeded',
+          outputFiles: [],
+          completedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    await expect(new ManifestStore(directory).load()).rejects.toThrow('has no resumable output files');
+
+    await writeFile(manifestPath, '{not-json');
+    await expect(new ManifestStore(directory).load()).rejects.toThrow(`Invalid JSON in ${manifestPath}`);
+  });
+
+  it('prevents concurrent batch ownership and releases only its own lock', async () => {
+    const first = await BatchOutputLock.acquire(directory);
+    await expect(BatchOutputLock.acquire(directory)).rejects.toThrow(
+      'Batch output directory is already in use',
+    );
+    await expect(BatchOutputLock.acquire(directory, { forceUnlock: true })).rejects.toThrow(
+      'is still running',
+    );
+    await first.release();
+
+    const second = await BatchOutputLock.acquire(directory);
+    await expect(second.release()).resolves.toBeUndefined();
+  });
+
+  it('force-unlocks a valid same-host lock only after its owner is proven dead', async () => {
+    const lockPath = path.join(directory, '.gemini-ocr.lock');
+    await writeFile(lockPath, `${JSON.stringify({
+      version: 1,
+      token: 'stale-token',
+      pid: 987654321,
+      hostname: hostname(),
+      startedAt: '2026-07-15T00:00:00.000Z',
+    })}\n`);
+    const dead = Object.assign(new Error('no such process'), { code: 'ESRCH' });
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => { throw dead; });
+    const warnings: string[] = [];
+    try {
+      const recovered = await BatchOutputLock.acquire(directory, {
+        forceUnlock: true,
+        onWarning: (message) => warnings.push(message),
+      });
+      expect(warnings).toEqual([expect.stringContaining('Removed stale batch lock')]);
+      await recovered.release();
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it('preserves the prior batch summary if its atomic replacement fails', async () => {
+    const target = path.join(directory, 'batch-summary.json');
+    await writeFile(target, '{"previous":true}\n');
+    const summary: BatchSummary = {
+      version: 1,
+      startedAt: '2026-07-15T00:00:00.000Z',
+      completedAt: '2026-07-15T00:00:01.000Z',
+      durationMs: 1000,
+      total: 0,
+      succeeded: 0,
+      partial: 0,
+      failed: 0,
+      skipped: 0,
+      mode: 'simple',
+      model: 'gemini-3.5-flash',
+      usage: {
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        thoughtTokens: 0,
+        toolTokens: 0,
+        cachedTokens: 0,
+        totalTokens: 0,
+        estimatedCostUsd: 0,
+      },
+      costLimitReached: false,
+      results: [],
+    };
+    const rename = vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('simulated summary commit failure'));
+    try {
+      await expect(writeBatchSummary(summary, directory)).rejects.toThrow('simulated summary commit failure');
+      await expect(readFile(target, 'utf8')).resolves.toBe('{"previous":true}\n');
+      expect((await fs.readdir(directory)).some((name) => name.endsWith('.tmp'))).toBe(false);
+    } finally {
+      rename.mockRestore();
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -17,6 +17,8 @@ vi.mock('../lib/gemini/extraction', () => ({
 import { resolveCliOptions } from './config';
 import { discoverInputs } from './inputs';
 import { runBatch } from './runner';
+import { BatchOutputLock } from './output';
+import { cliExitCode } from './errors';
 import { recordGeminiUsage } from '../lib/gemini/usage';
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
@@ -42,6 +44,56 @@ afterEach(async () => {
 });
 
 describe('CLI live batch orchestration', () => {
+  it('rejects concurrent ownership before spending Gemini requests', async () => {
+    await writeFile(path.join(directory, 'one.jpg'), JPEG_BYTES);
+    await writeFile(path.join(directory, 'two.jpg'), JPEG_BYTES);
+    const options = resolveCliOptions({ output: outputDirectory, quiet: true }, {}, directory);
+    const inputs = await discoverInputs(['*.jpg'], options);
+    const lock = await BatchOutputLock.acquire(outputDirectory);
+    try {
+      let thrown: unknown;
+      try {
+        await runBatch(inputs, options, {
+          abortController: new AbortController(),
+          writeStdout: () => undefined,
+          writeStderr: () => undefined,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).message).toContain('Batch output directory is already in use');
+      expect(cliExitCode(thrown)).toBe(2);
+      expect(mockExtractTextFromFile).not.toHaveBeenCalled();
+    } finally {
+      await lock.release();
+    }
+  });
+
+  it('rejects existing non-resumable artifacts before spending Gemini requests', async () => {
+    await writeFile(path.join(directory, 'one.jpg'), JPEG_BYTES);
+    await writeFile(path.join(directory, 'two.jpg'), JPEG_BYTES);
+    await mkdir(outputDirectory, { recursive: true });
+    await writeFile(path.join(outputDirectory, 'one.md'), 'existing output\n');
+    const options = resolveCliOptions({ output: outputDirectory, quiet: true }, {}, directory);
+    const inputs = await discoverInputs(['*.jpg'], options);
+
+    let thrown: unknown;
+    try {
+      await runBatch(inputs, options, {
+        abortController: new AbortController(),
+        writeStdout: () => undefined,
+        writeStderr: () => undefined,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain('Output already exists before extraction');
+    expect(cliExitCode(thrown)).toBe(2);
+    expect(mockExtractTextFromFile).not.toHaveBeenCalled();
+  });
+
   it('writes batch artifacts and resumes unchanged documents', async () => {
     await writeFile(path.join(directory, 'one.jpg'), JPEG_BYTES);
     await writeFile(path.join(directory, 'two.jpg'), JPEG_BYTES);
@@ -65,6 +117,10 @@ describe('CLI live batch orchestration', () => {
       abortController: new AbortController(), writeStdout: () => undefined, writeStderr: () => undefined,
     });
     expect(second).toMatchObject({ succeeded: 0, skipped: 2, failed: 0 });
+    expect(second.results.map((result) => result.outputFiles)).toEqual([
+      [path.join(outputDirectory, 'one.md')],
+      [path.join(outputDirectory, 'two.md')],
+    ]);
     expect(mockExtractTextFromFile).toHaveBeenCalledTimes(2);
   });
 
