@@ -152,6 +152,19 @@ open-ocr-cli   Primary command
 gemini-ocr     Backwards-compatible alias
 ```
 
+Coding agents should use the versioned, reference-first interface:
+
+```bash
+open-ocr-cli capabilities --json
+open-ocr-cli run --request request.json --response-format jsonl
+```
+
+The CLI validates request/result/event schemas, emits stable typed errors, and
+keeps large OCR bodies in referenced artifacts. The shared Codex/Claude Code
+workflow is in
+[`integrations/open-ocr/skills/open-ocr/SKILL.md`](integrations/open-ocr/skills/open-ocr/SKILL.md).
+It is also included in the npm package under `skills/open-ocr/`.
+
 ### Useful commands
 
 ```bash

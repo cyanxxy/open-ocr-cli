@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-ocr.dev/schemas/result-v1.schema.json",
+  "title": "Open OCR job result v1",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/failure" }
+  ],
+  "$defs": {
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests", "inputTokens", "outputTokens", "thoughtTokens", "toolTokens", "cachedTokens", "totalTokens", "estimatedCostUsd"],
+      "properties": {
+        "requests": { "type": "integer", "minimum": 0 },
+        "inputTokens": { "type": "integer", "minimum": 0 },
+        "outputTokens": { "type": "integer", "minimum": 0 },
+        "thoughtTokens": { "type": "integer", "minimum": 0 },
+        "toolTokens": { "type": "integer", "minimum": 0 },
+        "cachedTokens": { "type": "integer", "minimum": 0 },
+        "totalTokens": { "type": "integer", "minimum": 0 },
+        "estimatedCostUsd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "mediaType", "kind"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "mediaType": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["markdown", "json", "csv", "agent-steps"] }
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documentId", "source", "status", "mode", "provider", "gateway", "model", "startedAt", "completedAt", "durationMs", "attempts", "artifacts", "plannedArtifacts"],
+      "properties": {
+        "documentId": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["succeeded", "partial", "failed", "skipped"] },
+        "mode": { "enum": ["simple", "template", "agentic"] },
+        "provider": { "enum": ["gemini", "kimi", "muse", "openrouter", "openai-compatible"] },
+        "gateway": { "enum": ["direct", "cloudflare"] },
+        "model": { "type": "string", "minLength": 1 },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "durationMs": { "type": "number", "minimum": 0 },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "skipReason": { "enum": ["validated", "resumed", "cancelled", "cost-limit", "fail-fast"] },
+        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+        "plannedArtifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+        "error": { "$ref": "error-v1.schema.json" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "failed" } },
+            "required": ["status"]
+          },
+          "then": { "required": ["error"] }
+        }
+      ]
+    },
+    "success": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolVersion", "type", "ok", "runId", "status", "startedAt", "completedAt", "durationMs", "total", "succeeded", "partial", "failed", "skipped", "mode", "provider", "gateway", "model", "usage", "costLimitReached", "documents"],
+      "properties": {
+        "protocolVersion": { "const": 1 },
+        "type": { "const": "run.result" },
+        "ok": { "type": "boolean" },
+        "runId": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["succeeded", "partial", "failed", "validated", "cancelled", "cost_limited"] },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "durationMs": { "type": "number", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "succeeded": { "type": "integer", "minimum": 0 },
+        "partial": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "mode": { "enum": ["simple", "template", "agentic"] },
+        "provider": { "enum": ["gemini", "kimi", "muse", "openrouter", "openai-compatible"] },
+        "gateway": { "enum": ["direct", "cloudflare"] },
+        "model": { "type": "string", "minLength": 1 },
+        "usage": { "$ref": "#/$defs/usage" },
+        "costLimitUsd": { "type": "number", "exclusiveMinimum": 0 },
+        "costLimitReached": { "type": "boolean" },
+        "documents": { "type": "array", "items": { "$ref": "#/$defs/document" } }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "enum": ["succeeded", "validated"] } },
+            "required": ["status"]
+          },
+          "then": { "properties": { "ok": { "const": true } } }
+        },
+        {
+          "if": {
+            "properties": { "status": { "enum": ["partial", "failed", "cancelled", "cost_limited"] } },
+            "required": ["status"]
+          },
+          "then": { "properties": { "ok": { "const": false } } }
+        }
+      ]
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolVersion", "type", "ok", "runId", "status", "error"],
+      "properties": {
+        "protocolVersion": { "const": 1 },
+        "type": { "const": "run.result" },
+        "ok": { "const": false },
+        "runId": { "type": "string", "minLength": 1 },
+        "status": { "const": "failed" },
+        "error": { "$ref": "error-v1.schema.json" }
+      }
+    }
+  }
+}

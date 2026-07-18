@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-ocr.dev/schemas/error-v1.schema.json",
+  "title": "Open OCR error v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "category", "message", "retryable"],
+  "properties": {
+    "code": {
+      "enum": [
+        "INPUT_NOT_FOUND",
+        "INPUT_INVALID",
+        "CONFIG_INVALID",
+        "AUTH_MISSING",
+        "SCHEMA_INVALID",
+        "OUTPUT_CONFLICT",
+        "RATE_LIMITED",
+        "TIMEOUT",
+        "COST_LIMIT",
+        "CANCELLED",
+        "PROVIDER_FAILURE",
+        "INTERNAL"
+      ]
+    },
+    "category": {
+      "enum": ["input", "configuration", "authentication", "schema", "output", "provider", "limit", "cancelled", "internal"]
+    },
+    "message": { "type": "string", "minLength": 1 },
+    "retryable": { "type": "boolean" },
+    "hint": { "type": "string", "minLength": 1 }
+  }
+}

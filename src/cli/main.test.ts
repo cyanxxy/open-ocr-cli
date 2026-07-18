@@ -5,13 +5,20 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  executeOcrJobRequest: vi.fn(),
   promptInteractiveArguments: vi.fn(),
+  readOcrJobRequest: vi.fn(),
   runBatch: vi.fn(),
   runWebExtraction: vi.fn(),
 }));
 
 vi.mock('./interactive', () => ({
   promptInteractiveArguments: mocks.promptInteractiveArguments,
+}));
+
+vi.mock('./machine', () => ({
+  executeOcrJobRequest: mocks.executeOcrJobRequest,
+  readOcrJobRequest: mocks.readOcrJobRequest,
 }));
 
 vi.mock('./config', async (importOriginal) => {
@@ -35,7 +42,7 @@ vi.mock('./runner', () => ({
   runBatch: mocks.runBatch,
 }));
 
-import { cliExitCode } from './errors';
+import { CliExitError, cliExitCode } from './errors';
 import { cliBinaryName, createProgram, main } from './main';
 
 const originalApiKey = process.env.GEMINI_API_KEY;
@@ -48,6 +55,8 @@ beforeEach(async () => {
   mocks.runWebExtraction.mockReset();
   mocks.runBatch.mockReset();
   mocks.promptInteractiveArguments.mockReset();
+  mocks.executeOcrJobRequest.mockReset();
+  mocks.readOcrJobRequest.mockReset();
 });
 
 afterEach(async () => {
@@ -159,6 +168,121 @@ describe('CLI command exit contracts', () => {
     expect((thrown as Error).message).toContain(`Output already exists: ${output}`);
     expect(cliExitCode(thrown)).toBe(2);
     expect(mocks.runWebExtraction).not.toHaveBeenCalled();
+  });
+});
+
+describe('agent machine commands', () => {
+  it('emits capabilities and bundled schemas as machine-readable JSON', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await createProgram().parseAsync(['node', 'open-ocr-cli', 'capabilities', '--json']);
+      const capabilities = JSON.parse(stdout.mock.calls.flat().join('')) as {
+        protocolVersion: number;
+        schemaAccess: { networkFetch: boolean };
+      };
+      expect(capabilities).toMatchObject({ protocolVersion: 1, schemaAccess: { networkFetch: false } });
+
+      stdout.mockClear();
+      await createProgram().parseAsync(['node', 'open-ocr-cli', 'schema', 'request']);
+      const schema = JSON.parse(stdout.mock.calls.flat().join('')) as { $id: string };
+      expect(schema.$id).toContain('request-v1.schema.json');
+    } finally {
+      stdout.mockRestore();
+    }
+  });
+
+  it('serializes a successful run result and preserves exit status zero', async () => {
+    mocks.readOcrJobRequest.mockResolvedValueOnce({
+      protocolVersion: 1,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+    });
+    mocks.executeOcrJobRequest.mockResolvedValueOnce({
+      result: {
+        protocolVersion: 1,
+        type: 'run.result',
+        ok: true,
+        runId: 'run-1',
+        status: 'validated',
+        documents: [],
+      },
+    });
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'run', '--request', 'request.json', '--response-format', 'json',
+      ]);
+      expect(JSON.parse(stdout.mock.calls.flat().join(''))).toMatchObject({
+        type: 'run.result',
+        ok: true,
+        status: 'validated',
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      stdout.mockRestore();
+    }
+  });
+
+  it('emits exactly one typed JSONL failure and exit code 2 for an invalid request', async () => {
+    mocks.readOcrJobRequest.mockRejectedValueOnce(new CliExitError(
+      'OCR request extraction.preset cannot be combined with extraction.schema.',
+      2,
+      { code: 'CONFIG_INVALID', category: 'configuration', retryable: false },
+    ));
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'run', '--request', 'request.json', '--response-format', 'jsonl',
+      ]);
+      const lines = stdout.mock.calls.flat().join('').trim().split('\n').map((line) => JSON.parse(line) as {
+        type: string;
+        error: { code: string };
+      });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ type: 'run.failed', error: { code: 'CONFIG_INVALID' } });
+      expect(process.exitCode).toBe(2);
+    } finally {
+      stdout.mockRestore();
+    }
+  });
+
+  it('does not duplicate a JSONL run.failed event already emitted by the service', async () => {
+    mocks.readOcrJobRequest.mockResolvedValueOnce({
+      protocolVersion: 1,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+    });
+    const serviceError = new CliExitError('Provider failed', 1, {
+      code: 'PROVIDER_FAILURE', category: 'provider', retryable: false,
+    });
+    mocks.executeOcrJobRequest.mockImplementationOnce((
+      _request: unknown,
+      execution: { eventSink?: (event: Record<string, unknown>) => void | Promise<void> },
+    ) => {
+      void execution.eventSink?.({
+        protocolVersion: 1,
+        type: 'run.failed',
+        runId: 'run-1',
+        sequence: 0,
+        timestamp: new Date().toISOString(),
+        error: {
+          code: 'PROVIDER_FAILURE', category: 'provider', message: 'Provider failed', retryable: false,
+        },
+      });
+      return Promise.reject(serviceError);
+    });
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'run', '--request', 'request.json', '--response-format', 'jsonl',
+      ]);
+      const lines = stdout.mock.calls.flat().join('').trim().split('\n');
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0] ?? '{}')).toMatchObject({ type: 'run.failed' });
+      expect(process.exitCode).toBe(1);
+    } finally {
+      stdout.mockRestore();
+    }
   });
 });
 

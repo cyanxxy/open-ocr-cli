@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.1.0 - 2026-07-18
+
+### Coding-agent protocol
+
+- Added a versioned, reference-first machine interface for Codex, Claude Code,
+  CI runners, and other automation through `capabilities --json`,
+  `schema <name>`, and `run --request`.
+- Added published Draft 2020-12 request, result, event, error, and capabilities
+  schemas with fail-closed boundary validation and typed recovery guidance.
+- Added JSON and ordered JSONL delivery with artifact references, explicit
+  partial-document events, stable exit statuses, dry-run validation, and
+  machine-native configuration errors.
+- Extracted the process-independent `OcrJobService` from terminal orchestration
+  so programmatic jobs share discovery, retries, usage, manifests, cost gates,
+  output safety, and document accounting with the interactive CLI.
+
+### Reliability and distribution
+
+- Made fixed-directory resume work for both single-document and batch agent
+  jobs, including collision protection for manifest and lock metadata.
+- Tightened schema-error classification, coupled result success to terminal
+  status, recovered safely from progress-sink failures, and removed flag-era
+  inline-schema sentinels and machine-facing overwrite suggestions.
+- Added integration coverage for machine commands, exit codes, JSONL failures,
+  request semantics, event ordering, schema invariants, single-input resume,
+  and installed-package behavior.
+- Packaged the validated Open OCR agent skill and all five protocol schemas in
+  the npm tarball, documented schema identifiers as non-fetchable, and added
+  `.open-ocr-results/<runId>` as the default agent output location.
+
+[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v2.0.1...v2.1.0)
+
 ## 2.0.0 - 2026-07-15
 
 ### Provider-neutral Open OCR CLI

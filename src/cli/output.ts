@@ -163,7 +163,7 @@ export async function assertArtifactTargetsAvailable(
   }))).filter((target): target is string => target !== undefined);
   if (existing.length > 0) {
     throw new Error(
-      `Output already exists before extraction: ${existing.join(', ')} (use --overwrite to replace it)`,
+      `Output already exists before extraction: ${existing.join(', ')}. Choose a new output path or resume a matching job.`,
     );
   }
 }
@@ -171,9 +171,10 @@ export async function assertArtifactTargetsAvailable(
 export async function assertNoOutputCollisions(
   inputs: ResolvedInput[],
   options: ResolvedCliOptions,
+  reserveJobMetadata = inputs.length > 1,
 ): Promise<void> {
   const owners = new Map<string, string[]>();
-  if (inputs.length > 1) {
+  if (reserveJobMetadata) {
     const outputDirectory = defaultOutputDirectory(options);
     for (const metadataPath of [
       path.join(outputDirectory, '.gemini-ocr-manifest.json'),
@@ -181,7 +182,7 @@ export async function assertNoOutputCollisions(
       path.join(outputDirectory, '.gemini-ocr.lock'),
     ]) {
       const key = path.normalize(metadataPath).normalize('NFC').toLowerCase();
-      owners.set(key, ['reserved batch metadata']);
+      owners.set(key, ['reserved job metadata']);
     }
   }
   await Promise.all(inputs.map(async (input) => {
@@ -248,7 +249,7 @@ async function writeExclusiveFallback(target: string, content: string): Promise<
       { cause: failure },
     );
   }
-  throw failure instanceof Error ? failure : new Error(String(failure));
+  throw failure instanceof Error ? failure : new Error(errorMessage(failure));
 }
 
 async function commitStagedNoClobber(
@@ -283,7 +284,7 @@ async function commitArtifacts(
     for (const [target, content] of targets) {
       await fs.mkdir(path.dirname(target), { recursive: true });
       if (!overwrite && await pathExists(target)) {
-        throw new Error(`Output already exists: ${target} (use --overwrite)`);
+        throw new Error(`Output already exists: ${target}. Choose a new output path or resume a matching job.`);
       }
       const temporary = `${target}.${transactionId}.tmp`;
       await fs.writeFile(temporary, content, { encoding: 'utf8', flag: 'wx' });
@@ -295,7 +296,7 @@ async function commitArtifacts(
         entry.backup = `${entry.target}.${transactionId}.bak`;
         await fs.rename(entry.target, entry.backup);
       } else if (!overwrite && await pathExists(entry.target)) {
-        throw new Error(`Output already exists: ${entry.target} (use --overwrite)`);
+        throw new Error(`Output already exists: ${entry.target}. Choose a new output path or resume a matching job.`);
       }
       if (overwrite) {
         await fs.rename(entry.temporary, entry.target);

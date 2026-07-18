@@ -238,6 +238,66 @@ original schema before writing it.
 Exit status is `0` for success, `1` for failed/partial/cost-limited work, `2` for
 command or configuration errors, `130` for SIGINT, and `143` for SIGTERM.
 
+## Coding-agent protocol
+
+Codex, Claude Code, CI runners, and other automation can discover one stable,
+versioned interface instead of reconstructing interactive flags:
+
+```bash
+open-ocr-cli capabilities --json
+open-ocr-cli schema request
+open-ocr-cli schema result
+open-ocr-cli schema event
+open-ocr-cli schema error
+```
+
+Submit a request from a JSON file (or use `--request -` for request JSON on
+stdin):
+
+```json
+{
+  "protocolVersion": 1,
+  "operation": "extract",
+  "inputs": [{ "type": "path", "path": "invoice.pdf" }],
+  "extraction": {
+    "mode": "template",
+    "preset": "invoice",
+    "contentFormat": "json"
+  },
+  "execution": {
+    "maxCostUsd": 1,
+    "timeoutSeconds": 120
+  },
+  "delivery": {
+    "mode": "reference",
+    "outputDirectory": "./ocr-results",
+    "resume": true
+  }
+}
+```
+
+```bash
+open-ocr-cli run --request request.json --response-format json
+open-ocr-cli run --request request.json --response-format jsonl
+```
+
+JSON returns one `run.result`. JSONL returns ordered lifecycle events ending in
+`run.completed` or `run.failed`. Both formats use typed error codes and return
+artifact paths rather than embedding large document bodies. A request with
+`"dryRun": true` validates input discovery, schemas, limits, and planned
+artifact references without credentials, provider calls, or writes.
+
+When `delivery.outputDirectory` is omitted, agent runs use
+`.open-ocr-results/<runId>`. A fixed output directory with `resume: true`
+supports both single-document and batch resume. Partial documents use the
+dedicated `document.partial` JSONL event.
+
+The npm package ships the Draft 2020-12 request, result, event, error, and
+capabilities schemas under `schemas/`. Schema `$id` URLs are stable identifiers,
+not network endpoints; use `open-ocr-cli schema <name>` or the bundled files.
+The shared Open OCR skill ships under `skills/open-ocr/` in npm and lives at
+`integrations/open-ocr/skills/open-ocr/SKILL.md` in the repository.
+
 ## Web and agentic behavior
 
 Gemini Web OCR uses URL Context and verifies retrieval metadata. Other providers

@@ -267,9 +267,11 @@ export function resolveCliOptions(
     DEFAULT_CONFIG.thinking,
   );
   const schemaPath = flags.schema ?? fileConfig.schema;
+  const hasCustomSchema = flags.customSchema ?? false;
+  const hasSchema = hasCustomSchema || Boolean(schemaPath);
   const mode = oneOf<CliMode>(flags.mode ?? fileConfig.mode, CLI_MODES, '--mode', DEFAULT_CONFIG.mode);
   const format = oneOf<CliFormat>(
-    flags.format ?? fileConfig.format ?? (schemaPath ? 'json' : undefined),
+    flags.format ?? fileConfig.format ?? (hasSchema ? 'json' : undefined),
     CLI_FORMATS,
     '--format',
     DEFAULT_CONFIG.format,
@@ -279,12 +281,12 @@ export function resolveCliOptions(
 
   if (provider === 'gemini' && model === 'gemini-3.1-pro-preview' && thinking === 'MINIMAL') thinking = 'LOW';
   if (effectiveMode === 'agentic' && thinking === 'MINIMAL') thinking = 'MEDIUM';
-  if (schemaPath && preset) throw new Error('--schema cannot be combined with --preset');
+  if (hasSchema && preset) throw new Error('--schema cannot be combined with --preset');
   if (effectiveMode === 'template' && !preset) throw new Error('--preset is required when --mode template is selected');
   if (preset) getExtractionPreset(preset);
   if (format === 'csv' && effectiveMode !== 'template') throw new Error('--format csv is only available in template mode');
-  if (schemaPath && effectiveMode !== 'simple') throw new Error('--schema is only available in simple mode');
-  if (schemaPath && format !== 'json') throw new Error('--schema requires --format json');
+  if (hasSchema && effectiveMode !== 'simple') throw new Error('--schema is only available in simple mode');
+  if (hasSchema && format !== 'json') throw new Error('--schema requires --format json');
   const maxTokens = integer(flags.maxTokens ?? fileConfig.maxTokens, DEFAULT_CONFIG.maxTokens, '--max-tokens', 256, 65536);
   if (
     effectiveMode === 'agentic'

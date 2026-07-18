@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 import { readFileSync } from 'node:fs';
@@ -18,11 +19,26 @@ import {
   type ProviderId,
 } from '../lib/providers';
 import { credentialSetupGuidance, loadCliConfig, loadLocalEnv, resolveCliOptions } from './config';
-import { asCliExitError, cliSignalExitCode, type CliExitCode } from './errors';
+import {
+  asCliExitError,
+  cliExitCode,
+  cliSignalExitCode,
+  ocrErrorPayload,
+  type CliExitCode,
+} from './errors';
 import { discoverInputs } from './inputs';
 import { runInit, type InitFlags } from './init';
 import { promptInteractiveArguments } from './interactive';
 import { loadCustomSchema } from './schema';
+import { executeOcrJobRequest, readOcrJobRequest } from './machine';
+import {
+  assertOcrJobEvent,
+  createOcrCapabilities,
+  OCR_PROTOCOL_SCHEMAS,
+  OCR_PROTOCOL_VERSION,
+  toOcrRunFailure,
+  type OcrJobEvent,
+} from './protocol';
 import { runBatch } from './runner';
 import { inspectBatchStatus, renderBatchStatus } from './status';
 import type { ExtractCommandFlags } from './types';
@@ -45,7 +61,7 @@ export function cliBinaryName(argv: string[] = process.argv): string {
   return CLI_BINARY_NAMES.has(invoked) ? invoked : PRIMARY_CLI_NAME;
 }
 
-function cliVersion(): string {
+export function cliVersion(): string {
   const candidates = [new URL('../package.json', import.meta.url), new URL('../../package.json', import.meta.url)];
   for (const candidate of candidates) {
     try {
@@ -145,6 +161,8 @@ Examples:
   $ ${commandName} extract invoice.pdf --schema invoice.schema.json
   $ ${commandName} extract ./documents --mode template --preset invoice --format all
   $ ${commandName} extract '**/*.pdf' --concurrency 4 --max-cost 5 --output ./results
+  $ ${commandName} capabilities --json
+  $ ${commandName} run --request ocr-request.json --response-format jsonl
   $ cat scan.png | ${commandName} extract - --stdin-name scan.png --format json
   $ ${commandName} web https://example.com/report.pdf --format markdown
   $ ${commandName} status ./results
@@ -222,6 +240,91 @@ CLI flags take precedence.
         process.removeListener('SIGINT', onSigint);
         process.removeListener('SIGTERM', onSigterm);
       }
+    });
+
+  program.command('run')
+    .description('execute a versioned OCR request for coding agents and automation')
+    .requiredOption('--request <path>', 'request JSON file, or - to read the request from stdin')
+    .addOption(new Option('--response-format <format>', 'machine response format').choices(['json', 'jsonl']).default('json'))
+    .action(async (flags: { request: string; responseFormat: 'json' | 'jsonl' }) => {
+      const runId = randomUUID();
+      const abortController = new AbortController();
+      let interruptedExitCode: CliExitCode | undefined;
+      let lastSequence = -1;
+      let emittedFailure = false;
+      const onInterrupt = (signal: 'SIGINT' | 'SIGTERM'): void => {
+        interruptedExitCode = cliSignalExitCode(signal);
+        abortController.abort(new Error('Interrupted'));
+      };
+      const onSigint = (): void => onInterrupt('SIGINT');
+      const onSigterm = (): void => onInterrupt('SIGTERM');
+      process.once('SIGINT', onSigint);
+      process.once('SIGTERM', onSigterm);
+      const eventSink = flags.responseFormat === 'jsonl'
+        ? (event: OcrJobEvent): void => {
+            lastSequence = event.sequence;
+            if (event.type === 'run.failed') emittedFailure = true;
+            process.stdout.write(`${JSON.stringify(event)}\n`);
+          }
+        : undefined;
+      try {
+        const request = await readOcrJobRequest(flags.request, process.cwd());
+        const execution = await executeOcrJobRequest(request, {
+          cwd: process.cwd(),
+          runId,
+          abortController,
+          eventSink,
+          onWarning: (message) => process.stderr.write(`${message}\n`),
+        });
+        if (flags.responseFormat === 'json') {
+          process.stdout.write(`${JSON.stringify(execution.result)}\n`);
+        }
+        if (abortController.signal.aborted) process.exitCode = interruptedExitCode ?? 1;
+        else if (!execution.result.ok) process.exitCode = 1;
+      } catch (error) {
+        const payload = ocrErrorPayload(error, interruptedExitCode ?? 2);
+        if (flags.responseFormat === 'json') {
+          process.stdout.write(`${JSON.stringify(toOcrRunFailure(runId, payload))}\n`);
+        } else if (!emittedFailure) {
+          const event: OcrJobEvent = {
+            protocolVersion: OCR_PROTOCOL_VERSION,
+            type: 'run.failed',
+            runId,
+            sequence: lastSequence + 1,
+            timestamp: new Date().toISOString(),
+            error: payload,
+          };
+          assertOcrJobEvent(event);
+          process.stdout.write(`${JSON.stringify(event)}\n`);
+        }
+        process.exitCode = interruptedExitCode ?? cliExitCode(asCliExitError(error, 2));
+      } finally {
+        process.removeListener('SIGINT', onSigint);
+        process.removeListener('SIGTERM', onSigterm);
+      }
+    });
+
+  program.command('capabilities')
+    .description('describe the stable machine protocol, providers, presets, and limits')
+    .option('--json', 'emit the complete machine-readable capability document')
+    .action((flags: { json?: boolean }) => {
+      const capabilities = createOcrCapabilities(cliVersion());
+      if (flags.json) process.stdout.write(`${JSON.stringify(capabilities, null, 2)}\n`);
+      else process.stdout.write(
+        `Protocol v${capabilities.protocolVersion}: ${capabilities.operations.join(', ')}; `
+        + `modes ${capabilities.modes.join(', ')}; use --json for the full contract.\n`,
+      );
+    });
+
+  program.command('schema')
+    .description('print one bundled machine-protocol JSON Schema')
+    .argument('<name>', 'request, result, event, error, or capabilities')
+    .action((name: string) => {
+      if (!(name in OCR_PROTOCOL_SCHEMAS)) {
+        throw new Error(`Unknown protocol schema: ${name}`);
+      }
+      const schema = OCR_PROTOCOL_SCHEMAS[name as keyof typeof OCR_PROTOCOL_SCHEMAS];
+      process.stdout.write(`${JSON.stringify(schema, null, 2)}\n`);
     });
 
   program.command('init')

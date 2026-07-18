@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -72,6 +73,30 @@ function compileSchema(schema: Record<string, unknown>): ValidateFunction<unknow
   return validate;
 }
 
+/** Validate and normalize an in-memory custom schema for programmatic callers. */
+export function validateCustomSchema(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error('Custom schema must be a JSON object');
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch (error) {
+    throw new Error(`Custom schema must be JSON-serializable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (Buffer.byteLength(serialized, 'utf8') > MAX_SCHEMA_BYTES) {
+    throw new Error('Schema exceeds the 1 MB safety limit');
+  }
+  const schema = JSON.parse(serialized) as Record<string, unknown>;
+  assertSupportedSchemaNode(schema, '#', 0);
+  // Accept `$schema` as document metadata, but omit it from provider requests.
+  delete schema.$schema;
+  try {
+    compileSchema(schema);
+  } catch (error) {
+    throw new Error(`Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return schema;
+}
+
 export async function loadCustomSchema(schemaPath: string, cwd: string): Promise<Record<string, unknown>> {
   const absolutePath = path.resolve(cwd, schemaPath);
   const metadata = await stat(absolutePath);
@@ -84,17 +109,7 @@ export async function loadCustomSchema(schemaPath: string, cwd: string): Promise
     if (error instanceof SyntaxError) throw new Error(`Invalid JSON in schema ${schemaPath}: ${error.message}`);
     throw error;
   }
-  if (!isRecord(parsed)) throw new Error('Custom schema must be a JSON object');
-  assertSupportedSchemaNode(parsed, '#', 0);
-  // Accept `$schema` as document metadata, but omit it from the portable
-  // subset. Local validation consistently uses Draft 2020-12.
-  delete parsed.$schema;
-  try {
-    compileSchema(parsed);
-  } catch (error) {
-    throw new Error(`Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  return parsed;
+  return validateCustomSchema(parsed);
 }
 
 export function assertCustomSchemaOutput(

@@ -158,7 +158,22 @@ describe('CLI output', () => {
     await expect(assertNoOutputCollisions(
       [metadataCollision, other],
       { ...options, format: 'json' },
-    )).rejects.toThrow('reserved batch metadata');
+    )).rejects.toThrow('reserved job metadata');
+  });
+
+  it('can reserve job metadata for a reference-first single-document run', async () => {
+    const metadataCollision = {
+      ...input,
+      absolutePath: '/workspace/.gemini-ocr-manifest.jpg',
+      relativePath: '.gemini-ocr-manifest.jpg',
+      displayPath: '.gemini-ocr-manifest.jpg',
+      name: '.gemini-ocr-manifest.jpg',
+    };
+    await expect(assertNoOutputCollisions(
+      [metadataCollision],
+      { ...options, format: 'json' },
+      true,
+    )).rejects.toThrow('reserved job metadata');
   });
 
   it('plans only the artifact set guaranteed by each all-format mode', async () => {

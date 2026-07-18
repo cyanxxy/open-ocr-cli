@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-ocr.dev/schemas/capabilities-v1.schema.json",
+  "title": "Open OCR capabilities v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "cliVersion", "operations", "inputKinds", "modes", "contentFormats", "responseFormats", "deliveryModes", "features", "errorCodes", "exitCodes", "providers", "presets", "limits", "schemas", "schemaAccess"],
+  "properties": {
+    "protocolVersion": { "const": 1 },
+    "cliVersion": { "type": "string", "minLength": 1 },
+    "operations": { "type": "array", "items": { "enum": ["extract"] } },
+    "inputKinds": { "type": "array", "items": { "enum": ["path"] } },
+    "modes": { "type": "array", "items": { "enum": ["simple", "template", "agentic"] } },
+    "contentFormats": { "type": "array", "items": { "enum": ["markdown", "json", "csv", "all"] } },
+    "responseFormats": { "type": "array", "items": { "enum": ["json", "jsonl"] } },
+    "deliveryModes": { "type": "array", "items": { "enum": ["reference"] } },
+    "features": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "errorCodes": { "type": "array", "items": { "$ref": "error-v1.schema.json#/properties/code" } },
+    "exitCodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["success", "incomplete", "invalid", "interrupted", "terminated"],
+      "properties": {
+        "success": { "const": 0 },
+        "incomplete": { "const": 1 },
+        "invalid": { "const": 2 },
+        "interrupted": { "const": 130 },
+        "terminated": { "const": 143 }
+      }
+    },
+    "providers": { "type": "array", "items": { "type": "object" } },
+    "presets": { "type": "array", "items": { "type": "object" } },
+    "limits": { "type": "object" },
+    "schemas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request", "result", "event", "error", "capabilities"],
+      "properties": {
+        "request": { "type": "string" },
+        "result": { "type": "string" },
+        "event": { "type": "string" },
+        "error": { "type": "string" },
+        "capabilities": { "type": "string" }
+      }
+    },
+    "schemaAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "packageDirectory", "networkFetch"],
+      "properties": {
+        "command": { "const": "open-ocr-cli schema <name>" },
+        "packageDirectory": { "const": "schemas" },
+        "networkFetch": { "const": false }
+      }
+    }
+  }
+}

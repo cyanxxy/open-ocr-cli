@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { assertCustomSchemaOutput, loadCustomSchema } from './schema';
+import { assertCustomSchemaOutput, loadCustomSchema, validateCustomSchema } from './schema';
 
 let directory: string;
 
@@ -58,5 +58,17 @@ describe('custom JSON schemas', () => {
     const schemaPath = path.join(directory, 'external-ref.json');
     await writeFile(schemaPath, JSON.stringify({ $ref: 'https://example.com/schema.json' }));
     await expect(loadCustomSchema(schemaPath, directory)).rejects.toThrow('this schema document');
+  });
+
+  it('validates and clones inline schemas for machine requests', () => {
+    const input = {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: { value: { type: 'string' } },
+    };
+    const schema = validateCustomSchema(input);
+    expect(schema).not.toBe(input);
+    expect(schema).not.toHaveProperty('$schema');
+    expect(input).toHaveProperty('$schema');
   });
 });

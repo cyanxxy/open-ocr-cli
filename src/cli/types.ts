@@ -11,6 +11,7 @@ import {
   type ProviderId,
   type ProviderUsageSnapshot,
 } from '../lib/providers';
+import type { OcrErrorPayload } from './errors';
 
 export const CLI_MODES = ['simple', 'template', 'agentic'] as const;
 export type CliMode = (typeof CLI_MODES)[number];
@@ -106,6 +107,8 @@ export interface ExtractCommandFlags {
   maxIterations?: string;
   confidenceThreshold?: string;
   schema?: string;
+  /** Internal machine-adapter signal for an already-validated in-memory schema. */
+  customSchema?: boolean;
   maxCost?: string;
   requestsPerMinute?: string;
 }
@@ -195,6 +198,7 @@ export interface OcrJobResult {
   plannedOutputFiles?: string[];
   skipReason?: 'validated' | 'resumed' | 'cancelled' | 'cost-limit' | 'fail-fast';
   error?: string;
+  errorDetails?: OcrErrorPayload;
   attempts: number;
 }
 

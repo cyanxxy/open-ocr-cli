@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -26,6 +26,22 @@ try {
   if (!Array.isArray(providers) || !providers.some((entry) => entry.id === 'openrouter')) {
     throw new Error('Packed CLI did not expose the OpenRouter provider');
   }
+  const capabilities = JSON.parse(run(executable, ['capabilities', '--json']));
+  if (
+    capabilities.protocolVersion !== 1
+    || !capabilities.deliveryModes?.includes('reference')
+    || capabilities.schemaAccess?.networkFetch !== false
+  ) {
+    throw new Error('Packed CLI did not expose the reference-first agent protocol');
+  }
+  const installedSkill = path.join(installDirectory, 'node_modules', 'open-ocr-cli', 'skills', 'open-ocr', 'SKILL.md');
+  if (!existsSync(installedSkill) || !readFileSync(installedSkill, 'utf8').includes('name: open-ocr')) {
+    throw new Error('Packed CLI did not include the shared Open OCR skill');
+  }
+  const requestSchema = JSON.parse(run(executable, ['schema', 'request']));
+  if (!requestSchema.$id?.endsWith('/request-v1.schema.json')) {
+    throw new Error('Packed CLI did not expose the request schema');
+  }
   run(alias, ['--version']);
   run(executable, [
     'extract',
@@ -35,6 +51,40 @@ try {
     '--dry-run',
     '--quiet',
   ]);
+  const requestPath = path.join(temporary, 'request.json');
+  writeFileSync(requestPath, JSON.stringify({
+    protocolVersion: 1,
+    operation: 'extract',
+    inputs: [{ type: 'path', path: path.join(root, 'evals', 'corpus', 'raster', 'invoice.png') }],
+    delivery: { mode: 'reference', outputDirectory: path.join(temporary, 'results') },
+    dryRun: true,
+  }));
+  const result = JSON.parse(run(executable, ['run', '--request', requestPath, '--response-format', 'json']));
+  if (!result.ok || result.status !== 'validated' || result.documents?.[0]?.plannedArtifacts?.length !== 1) {
+    throw new Error('Packed CLI agent-protocol dry run did not return planned artifact references');
+  }
+  const invalidRequestPath = path.join(temporary, 'invalid-request.json');
+  writeFileSync(invalidRequestPath, JSON.stringify({
+    protocolVersion: 1,
+    operation: 'extract',
+    inputs: [{ type: 'path', path: path.join(root, 'evals', 'corpus', 'raster', 'invoice.png') }],
+    extraction: { preset: 'invoice', schema: { type: 'object' } },
+  }));
+  const invalidRun = spawnSync(
+    executable,
+    ['run', '--request', invalidRequestPath, '--response-format', 'jsonl'],
+    { cwd: root, encoding: 'utf8' },
+  );
+  const invalidEvents = invalidRun.stdout.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  if (
+    invalidRun.status !== 2
+    || invalidEvents.length !== 1
+    || invalidEvents[0]?.type !== 'run.failed'
+    || invalidEvents[0]?.error?.code !== 'CONFIG_INVALID'
+    || invalidEvents[0]?.error?.message.includes('--schema')
+  ) {
+    throw new Error('Packed CLI did not preserve the typed JSONL invalid-request contract');
+  }
   process.stdout.write(`Packed install smoke passed: ${tarballName}\n`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });

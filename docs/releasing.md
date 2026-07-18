@@ -35,7 +35,8 @@ file, GitHub Release, container tag, Homebrew formula, and GitHub Action tag.
    npm run action:smoke
    npx audit-ci --config audit-ci.json
    docker build --tag open-ocr-cli:release-candidate .
-   node scripts/assert-release-version.mjs v2.0.0
+   VERSION=2.1.0
+   node scripts/assert-release-version.mjs "v$VERSION"
    ```
 
 3. When provider credentials are available, run the canary evaluation matrix
@@ -44,8 +45,9 @@ file, GitHub Release, container tag, Homebrew formula, and GitHub Action tag.
 4. Merge the release commit to `main`, wait for CI, then push the immutable tag:
 
    ```bash
-   git tag v2.0.0
-   git push origin v2.0.0
+   VERSION=2.1.0
+   git tag "v$VERSION"
+   git push origin "v$VERSION"
    ```
 
 5. Confirm the workflow published all five surfaces: npm, GitHub Release,
@@ -56,7 +58,7 @@ file, GitHub Release, container tag, Homebrew formula, and GitHub Action tag.
 
 ## Rollback
 
-Never move or overwrite the immutable `v2.0.0` tag. If a release is bad,
+Never move or overwrite an immutable release tag. If a release is bad,
 deprecate that npm version with a clear message, point the moving `v2` Action
 tag back to the last safe v2 release, mark the container tag as affected, and
 ship a patch release. Preserve the original release artifacts for auditability.
