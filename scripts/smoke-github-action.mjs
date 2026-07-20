@@ -28,7 +28,7 @@ try {
     ...process.env,
     OPEN_OCR_ACTION_INPUTS: `${path.join(root, 'evals', 'corpus', 'raster', 'invoice.png')}\n`,
     OPEN_OCR_ACTION_PROVIDER: 'kimi',
-    OPEN_OCR_ACTION_MODEL: 'kimi-k2.6',
+    OPEN_OCR_ACTION_MODEL: 'kimi-k3',
     OPEN_OCR_ACTION_API_KEY_ENV: 'MOONSHOT_API_KEY',
     OPEN_OCR_ACTION_BASE_URL: '',
     OPEN_OCR_ACTION_GATEWAY: 'cloudflare',

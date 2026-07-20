@@ -6,7 +6,14 @@ const { mockTemplateGenerateContent, mockTemplateGenerateContentStream } = vi.ho
 }));
 
 import type { ExtractionPreset, PresetStructuredOutput } from '../gemini/types';
-import { buildPresetCsv, buildPresetMarkdown, buildPresetPrompt, normalizeFieldValue, runExtractionPreset } from './engine';
+import {
+  buildPresetCsv,
+  buildPresetMarkdown,
+  buildPresetPrompt,
+  normalizeFieldValue,
+  presetRunResultFromText,
+  runExtractionPreset,
+} from './engine';
 import { getExtractionPreset } from './presets';
 
 // Mutable payload so individual tests can drive the mocked model response
@@ -23,17 +30,24 @@ let mockModelPayload: unknown = {
 
 mockTemplateGenerateContent.mockImplementation(async () => {
   await Promise.resolve();
-  return { text: JSON.stringify(mockModelPayload) };
+  return {
+    text: JSON.stringify(mockModelPayload),
+    candidates: [{ finishReason: 'STOP' }],
+  };
 });
 
-vi.mock('@google/genai', () => ({
-  GoogleGenAI: class {
-    models = {
-      generateContent: mockTemplateGenerateContent,
-      generateContentStream: mockTemplateGenerateContentStream,
-    };
-  },
-}));
+vi.mock('@google/genai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@google/genai')>();
+  return {
+    ...actual,
+    GoogleGenAI: class {
+      models = {
+        generateContent: mockTemplateGenerateContent,
+        generateContentStream: mockTemplateGenerateContentStream,
+      };
+    },
+  };
+});
 
 const testClientConfig = {
   apiKey: 'test-key',
@@ -398,5 +412,50 @@ describe('preset normalization contract and validation', () => {
 
     const result = await runExtractionPreset('data:application/pdf;base64,ZmFrZQ==', 'application/pdf', testClientConfig, preset);
     expect(result.json.validationErrors).toBeUndefined();
+  });
+});
+
+
+// Fail closed on malformed preset JSON so empty/primitive payloads never become
+// plausible mostly-empty extraction results (handoff: parsePresetPayload).
+describe('parsePresetPayload schema validation', () => {
+  const preset = getExtractionPreset('invoice');
+  const schemaError = /Preset extraction response did not match the expected schema/;
+
+  it.each([
+    ['42', '42'],
+    ['empty object', '{}'],
+    ['fields array', '{"fields":[]}'],
+    ['non-numeric confidence', '{"fields":{"total":{"value":"42","confidence":"high"}}}'],
+    ['warnings not an array', '{"fields":{},"warnings":"none"}'],
+  ] as const)('rejects %s', (_label, payload) => {
+    expect(() => presetRunResultFromText(payload, preset)).toThrow(schemaError);
+  });
+
+  it('accepts partial {"fields":{}} and reports missing required fields', () => {
+    const result = presetRunResultFromText('{"fields":{}}', preset);
+
+    expect(result.json.fields.invoice_number?.value).toBeNull();
+    expect(result.json.validationErrors).toBeDefined();
+    expect(result.json.validationErrors?.some((msg) => msg.includes('invoice_number'))).toBe(true);
+    expect(result.json.validationErrors?.some((msg) => msg.includes('total'))).toBe(true);
+  });
+
+  it('accepts a well-formed partial field map without inventing missing keys as schema errors', () => {
+    const result = presetRunResultFromText(
+      JSON.stringify({
+        documentType: 'Invoice',
+        summary: 'Partial',
+        fields: {
+          total: { value: '10.00', confidence: 0.95 },
+        },
+      }),
+      preset,
+    );
+
+    expect(result.json.fields.total?.value).toBe('10.00');
+    expect(result.json.fields.total?.confidence).toBe(0.95);
+    // Other required fields remain validation (not schema) failures.
+    expect(result.json.validationErrors?.some((msg) => msg.includes('invoice_number'))).toBe(true);
   });
 });

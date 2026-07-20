@@ -119,6 +119,7 @@ export async function executeAgentTurn(
     }
 
     const previousInteractionId = interactionState.previousInteractionId;
+    const streamProgress = clientConfig.progress !== undefined && clientConfig.progress !== 'off';
     const interaction = await runModelInteraction({
       apiKey: clientConfig.apiKey,
       model: clientConfig.model as GeminiModel,
@@ -135,6 +136,21 @@ export async function executeAgentTurn(
       ...(previousInteractionId ? { previousInteractionId } : {}),
       abortSignal: clientConfig.abortSignal,
       store: true,
+      runtime: clientConfig.runtime,
+      ...(streamProgress ? {
+        onProgress: (delta): void => {
+          const liveStep: AgentStep = {
+            type: 'thinking',
+            source: delta.kind,
+            id: delta.stepId,
+            delta: true,
+            content: delta.text,
+            timestamp: Date.now(),
+          };
+          onStep(liveStep);
+          allSteps.push(liveStep);
+        },
+      } : {}),
     });
 
     if (interaction.status !== 'completed' && interaction.status !== 'requires_action') {
@@ -164,193 +180,249 @@ export async function executeAgentTurn(
       transcript.push(...replaySteps);
     }
 
+    if (!interaction.streamedProgressKinds?.includes('thought_summary')) {
       for (const thoughtSummary of extractInteractionThoughtSummaries(steps)) {
         const thinkingStep: AgentStep = {
           type: 'thinking',
+          source: 'thought_summary',
           content: thoughtSummary,
           timestamp: Date.now(),
         };
         onStep(thinkingStep);
         allSteps.push(thinkingStep);
       }
+    }
 
-      if (functionCalls.length === 0) {
-        // Closing prose (no tool call) is surfaced here as activity; prose that
-        // merely precedes a tool call is not (audit A-09).
-        const responseText = extractInteractionText(steps, interaction.output_text);
-        if (responseText) {
-          const responseStep: AgentStep = {
-            type: 'thinking',
-            content: responseText,
-            timestamp: Date.now(),
-          };
-          onStep(responseStep);
-          allSteps.push(responseStep);
-        }
-
-        // A turn with no tool calls is only a genuine completion if the agent has already
-        // done work. Nudge once before giving up on an empty opener.
-        const hasExtraction = Object.keys(memory.extractedFields).length > 0;
-        if (!hasCalledTools && !hasExtraction && !nudgedToUseTools && round < MAX_INNER_ROUNDS - 1) {
-          nudgedToUseTools = true;
-          const nudgeStep: AgentStep = {
-            type: 'thinking',
-            content: 'No tool call received yet; prompting the agent to begin extraction with its tools.',
-            timestamp: Date.now(),
-          };
-          onStep(nudgeStep);
-          allSteps.push(nudgeStep);
-          const nudgeInput = createUserInputStep([{
-            type: 'text',
-            text: 'You have not called any tools yet and no fields have been extracted. '
-              + 'Begin now by calling analyze_document_structure, then extract_fields_batch. '
-              + 'Respond with a tool call, not prose.',
-          }]);
-          transcript.push(nudgeInput);
-          interactionState.pendingInput = [nudgeInput];
-          continue;
-        }
-        return {
-          finished: true,
-          steps: allSteps,
-        };
-      }
-
-      hasCalledTools = true;
-
-      // Prefer sequential decision-making: execute the first call for real.
-      // Any additional parallel calls stay in the local history and receive
-      // explicit error function_results so call/result counts match (Gemini
-      // strict matching). The model can re-issue them after seeing the first result.
-      if (functionCalls.length > 1) {
-        const sequencingStep: AgentStep = {
+    if (functionCalls.length === 0) {
+      // Closing prose (no tool call) is surfaced here as activity; prose that
+      // merely precedes a tool call is not (audit A-09).
+      const responseText = extractInteractionText(steps, interaction.output_text);
+      if (responseText && !interaction.streamedProgressKinds?.includes('model_output')) {
+        const responseStep: AgentStep = {
           type: 'thinking',
-          content: `Model requested ${functionCalls.length} tool calls at once; executing the first and returning explicit skip results for the rest so history stays valid.`,
+          source: 'model_output',
+          content: responseText,
           timestamp: Date.now(),
         };
-        onStep(sequencingStep);
-        allSteps.push(sequencingStep);
+        onStep(responseStep);
+        allSteps.push(responseStep);
       }
 
-      if (clientConfig.abortSignal?.aborted) {
-        throw new Error('Agent processing cancelled');
+      // A turn with no tool calls is only a genuine completion if the agent has already
+      // done work. Nudge once before giving up on an empty opener.
+      const hasExtraction = Object.keys(memory.extractedFields).length > 0;
+      if (!hasCalledTools && !hasExtraction && !nudgedToUseTools && round < MAX_INNER_ROUNDS - 1) {
+        nudgedToUseTools = true;
+        const nudgeStep: AgentStep = {
+          type: 'thinking',
+          source: 'runtime',
+          content: 'No tool call received yet; prompting the agent to begin extraction with its tools.',
+          timestamp: Date.now(),
+        };
+        onStep(nudgeStep);
+        allSteps.push(nudgeStep);
+        const nudgeInput = createUserInputStep([{
+          type: 'text',
+          text: 'You have not called any tools yet and no fields have been extracted. '
+            + 'Begin now by calling analyze_document_structure, then extract_fields_batch. '
+            + 'Respond with a tool call, not prose.',
+        }]);
+        transcript.push(nudgeInput);
+        interactionState.pendingInput = [nudgeInput];
+        continue;
       }
+      return {
+        finished: true,
+        steps: allSteps,
+      };
+    }
 
-      const functionResultInputs: InteractionStep[] = [];
-      for (let callIndex = 0; callIndex < functionCalls.length; callIndex++) {
-        const fc = functionCalls[callIndex];
-        // extractInteractionFunctionCalls always assigns a stable id that matches
-        // the ID from the unchanged function_call step.
-        const callId = fc.id;
+    hasCalledTools = true;
 
-        if (callIndex === 0) {
-          const callStep: AgentStep = {
-            type: 'function_call',
-            content: `Executing: ${fc.name}`,
+    // Prefer sequential decision-making: execute the first call for real.
+    // Any additional parallel calls stay in the local history and receive
+    // explicit error function_results so call/result counts match (Gemini
+    // strict matching). The model can re-issue them after seeing the first result.
+    if (functionCalls.length > 1) {
+      const sequencingStep: AgentStep = {
+        type: 'thinking',
+        source: 'runtime',
+        content: `Model requested ${functionCalls.length} tool calls at once; executing the first and returning explicit skip results for the rest so history stays valid.`,
+        timestamp: Date.now(),
+      };
+      onStep(sequencingStep);
+      allSteps.push(sequencingStep);
+    }
+
+    if (clientConfig.abortSignal?.aborted) {
+      throw new Error('Agent processing cancelled');
+    }
+
+    // Surface every model-requested call before producing any matching result.
+    // This keeps machine consumers' call/result correlation complete even when
+    // the runtime deliberately declines parallel calls or the first tool fails.
+    for (let callIndex = 0; callIndex < functionCalls.length; callIndex += 1) {
+      const fc = functionCalls[callIndex];
+      const callStep: AgentStep = {
+        type: 'function_call',
+        source: 'tool_call',
+        id: fc.id,
+        content: callIndex === 0
+          ? `Executing: ${fc.name}`
+          : `Queued parallel call for explicit sequential handling: ${fc.name}`,
+        functionCall: fc,
+        timestamp: Date.now(),
+      };
+      onStep(callStep);
+      allSteps.push(callStep);
+    }
+
+    const functionResultInputs: InteractionStep[] = [];
+    for (let callIndex = 0; callIndex < functionCalls.length; callIndex++) {
+      const fc = functionCalls[callIndex];
+      // extractInteractionFunctionCalls always assigns a stable id that matches
+      // the ID from the unchanged function_call step.
+      const callId = fc.id;
+
+      if (callIndex === 0) {
+        let result: AgentFunctionResult;
+        try {
+          result = await executeFunctionCall(fc, fileData, mimeType, memory, clientConfig);
+        } catch (error) {
+          const retryable = isRetryableGeminiError(error);
+          const failureMessage = retryable
+            ? `Temporary Gemini API failure while executing ${fc.name}; retry this tool.`
+            : `Tool ${fc.name} failed: ${error instanceof Error ? error.message : String(error)}`;
+          const failureResult: AgentFunctionResult = { success: false, error: failureMessage };
+          const failureStep: AgentStep = {
+            type: 'error',
+            source: 'tool_result',
+            id: callId,
+            content: failureMessage,
             functionCall: fc,
+            functionResult: failureResult,
             timestamp: Date.now(),
           };
-          onStep(callStep);
-          allSteps.push(callStep);
+          onStep(failureStep);
+          allSteps.push(failureStep);
 
-          let result: AgentFunctionResult;
-          try {
-            result = await executeFunctionCall(fc, fileData, mimeType, memory, clientConfig);
-          } catch (error) {
-            if (isRetryableGeminiError(error)) {
-              // The model turn has already been committed and is waiting for a
-              // matching function_result. Queue an explicit transient failure
-              // before bubbling to the outer backoff loop; the retry will send
-              // this incremental result instead of creating a new user turn.
-              const transientResult = createFunctionResultInput(
-                callId,
-                fc.name,
+          const skippedCalls = functionCalls.slice(callIndex + 1);
+          for (const skippedCall of skippedCalls) {
+            const skippedMessage = retryable
+              ? 'Skipped because an earlier parallel tool call failed transiently; re-issue this call.'
+              : 'Not executed because an earlier parallel tool call failed.';
+            const skippedResult: AgentFunctionResult = { success: false, error: skippedMessage };
+            const skippedStep: AgentStep = {
+              type: 'error',
+              source: 'tool_result',
+              id: skippedCall.id,
+              content: skippedMessage,
+              functionCall: skippedCall,
+              functionResult: skippedResult,
+              timestamp: Date.now(),
+            };
+            onStep(skippedStep);
+            allSteps.push(skippedStep);
+          }
+
+          if (retryable) {
+            // The model turn has already been committed and is waiting for a
+            // matching function_result. Queue an explicit transient failure
+            // before bubbling to the outer backoff loop; the retry will send
+            // this incremental result instead of creating a new user turn.
+            const transientResult = createFunctionResultInput(
+              callId,
+              fc.name,
+              {
+                success: false,
+                error: failureMessage,
+                data: null,
+              },
+              true,
+            );
+            transcript.push(transientResult);
+            functionResultInputs.push(transientResult);
+
+            // Gemini requires one result for every parallel function call.
+            for (const skippedCall of skippedCalls) {
+              const skippedResult = createFunctionResultInput(
+                skippedCall.id,
+                skippedCall.name,
                 {
                   success: false,
-                  error: `Temporary Gemini API failure while executing ${fc.name}; retry this tool.`,
+                  error: 'Skipped because an earlier parallel tool call failed transiently; re-issue this call.',
                   data: null,
                 },
                 true,
               );
-              transcript.push(transientResult);
-              functionResultInputs.push(transientResult);
-
-              // Gemini requires one result for every parallel function call.
-              for (const skippedCall of functionCalls.slice(callIndex + 1)) {
-                const skippedResult = createFunctionResultInput(
-                  skippedCall.id,
-                  skippedCall.name,
-                  {
-                    success: false,
-                    error: 'Skipped because an earlier parallel tool call failed transiently; re-issue this call.',
-                    data: null,
-                  },
-                  true,
-                );
-                transcript.push(skippedResult);
-                functionResultInputs.push(skippedResult);
-              }
-              interactionState.pendingInput = functionResultInputs;
+              transcript.push(skippedResult);
+              functionResultInputs.push(skippedResult);
             }
-            throw error;
+            interactionState.pendingInput = functionResultInputs;
           }
-          applyMemoryUpdate(memory, result.memoryUpdate);
+          throw error;
+        }
+        applyMemoryUpdate(memory, result.memoryUpdate);
 
-          const resultStep: AgentStep = {
-            type: 'result',
-            content: result.success ? `${fc.name} completed` : `${fc.name} returned an error`,
-            functionCall: fc,
-            functionResult: result,
-            timestamp: Date.now(),
-          };
-          onStep(resultStep);
-          allSteps.push(resultStep);
+        const resultStep: AgentStep = {
+          type: 'result',
+          source: 'tool_result',
+          id: callId,
+          content: result.success ? `${fc.name} completed` : `${fc.name} returned an error`,
+          functionCall: fc,
+          functionResult: result,
+          timestamp: Date.now(),
+        };
+        onStep(resultStep);
+        allSteps.push(resultStep);
 
-          const functionResultInput = createFunctionResultInput(
-            callId,
-            fc.name,
-            {
-              success: result.success,
-              error: result.error ?? null,
-              data: result.data ?? null,
-            },
-            !result.success,
-          );
-          transcript.push(functionResultInput);
-          functionResultInputs.push(functionResultInput);
-        } else {
-          // Declined parallel call: still answer it so history validation succeeds.
-          const skipMessage = 'Skipped: this agent executes one tool at a time. '
-            + 'Re-issue this call after reviewing the prior tool result.';
-          const skipResult: AgentFunctionResult = {
+        const functionResultInput = createFunctionResultInput(
+          callId,
+          fc.name,
+          {
+            success: result.success,
+            error: result.error ?? null,
+            data: result.data ?? null,
+          },
+          !result.success,
+        );
+        transcript.push(functionResultInput);
+        functionResultInputs.push(functionResultInput);
+      } else {
+        // Declined parallel call: still answer it so history validation succeeds.
+        const skipMessage = 'Skipped: this agent executes one tool at a time. '
+          + 'Re-issue this call after reviewing the prior tool result.';
+        const skipResult: AgentFunctionResult = {
+          success: false,
+          error: skipMessage,
+        };
+        const resultStep: AgentStep = {
+          type: 'result',
+          source: 'tool_result',
+          id: callId,
+          content: `${fc.name} skipped (parallel batch)`,
+          functionCall: fc,
+          functionResult: skipResult,
+          timestamp: Date.now(),
+        };
+        onStep(resultStep);
+        allSteps.push(resultStep);
+
+        const functionResultInput = createFunctionResultInput(
+          callId,
+          fc.name,
+          {
             success: false,
             error: skipMessage,
-          };
-          const resultStep: AgentStep = {
-            type: 'result',
-            content: `${fc.name} skipped (parallel batch)`,
-            functionCall: fc,
-            functionResult: skipResult,
-            timestamp: Date.now(),
-          };
-          onStep(resultStep);
-          allSteps.push(resultStep);
-
-          const functionResultInput = createFunctionResultInput(
-            callId,
-            fc.name,
-            {
-              success: false,
-              error: skipMessage,
-              data: null,
-            },
-            true,
-          );
-          transcript.push(functionResultInput);
-          functionResultInputs.push(functionResultInput);
-        }
+            data: null,
+          },
+          true,
+        );
+        transcript.push(functionResultInput);
+        functionResultInputs.push(functionResultInput);
       }
-      interactionState.pendingInput = functionResultInputs;
+    }
+    interactionState.pendingInput = functionResultInputs;
   }
 
   return {

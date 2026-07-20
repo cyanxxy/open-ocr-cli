@@ -20,6 +20,7 @@ import {
   extractPresetWithProvider,
   extractTextWithProvider,
   getProviderUsage,
+  isKimiK3Route,
   isLocalBaseUrl,
   providerAgentLoop,
   providerDefaultApiKeyEnv,
@@ -35,6 +36,7 @@ import {
 } from '../src/lib/providers';
 import { getExtractionPreset } from '../src/lib/templates';
 import { nodeRegionCropper } from '../src/cli/nodeRegionCropper';
+import { cliThinkingLevels, defaultCliThinkingLevel } from '../src/cli/config';
 import {
   assertEvalInputsExist,
   fileToDataUrl,
@@ -164,7 +166,9 @@ async function runAgenticEvalCase(evalCase: EvalCase, clientConfig: ProviderRunt
   const loopConfig = {
     maxIterations: evalCase.agentConfig?.maxIterations ?? 4,
     confidenceThreshold: evalCase.agentConfig?.confidenceThreshold ?? 0.65,
-    maxTokens: clientConfig.model.includes('kimi-k2.6') ? 16384 : 4096,
+    maxTokens: isKimiK3Route(clientConfig.provider, clientConfig.model)
+      ? 131072
+      : clientConfig.model.includes('kimi-') ? 32768 : 4096,
   };
   const generator = clientConfig.provider === 'gemini' ? agentLoop(
     file,
@@ -266,22 +270,19 @@ async function runEvalCase(evalCase: EvalCase, clientConfig: ProviderRuntimeConf
   }
 }
 
-function resolveThinkingLevel(model: string): ThinkingLevel {
-  const isFlashFamily = model === 'gemini-3-flash-preview'
-    || model === 'gemini-3.5-flash'
-    || model === 'gemini-3.1-flash-lite';
-  const allowedLevels: ThinkingLevel[] = isFlashFamily
-    ? ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH']
-    : ['LOW', 'MEDIUM', 'HIGH'];
+function resolveThinkingLevel(provider: ProviderId, model: string): ThinkingLevel {
+  const allowedLevels = cliThinkingLevels(provider, model);
   const envLevel = (process.env.OPEN_OCR_THINKING ?? process.env.GEMINI_THINKING_LEVEL)?.toUpperCase();
 
-  if (envLevel && allowedLevels.includes(envLevel as ThinkingLevel)) {
+  if (envLevel) {
+    if (!allowedLevels.includes(envLevel as ThinkingLevel)) {
+      throw new Error(
+        `OPEN_OCR_THINKING must be one of ${allowedLevels.join(', ')} for ${provider}/${model}`,
+      );
+    }
     return envLevel as ThinkingLevel;
   }
-
-  if (model === 'gemini-3.1-flash-lite') return 'MINIMAL';
-  if (model === 'gemini-3.5-flash') return 'MEDIUM';
-  return 'HIGH';
+  return defaultCliThinkingLevel(provider, model);
 }
 
 async function main() {
@@ -313,7 +314,7 @@ async function main() {
   }
   const suite = resolveSuiteName();
   const repeatCount = resolveRepeatCount();
-  const thinkingLevel = resolveThinkingLevel(model);
+  const thinkingLevel = resolveThinkingLevel(provider, model);
   const evalCases = await loadEvalCases(suite);
   if (evalCases.length === 0) {
     const setupHint = suite === 'benchmark' ? ' Run `npm run evals:setup` first.' : '';

@@ -5,7 +5,7 @@
 ## Multimodal document extraction that does not lock you to one model
 
 Extract text and structured data from images, PDFs, and public URLs with a
-production-oriented Node.js CLI. Use Gemini directly, Kimi K2.6, Meta Muse
+production-oriented Node.js CLI. Use Gemini directly, Kimi K3, Meta Muse
 Spark 1.1, OpenRouter, any compatible endpoint, or route requests through
 Cloudflare AI Gateway. The repository also contains the original Gemini-powered
 React application.
@@ -111,7 +111,7 @@ docker run --rm -v "$PWD:/work" \
   with:
     inputs: invoices
     provider: openrouter
-    model: moonshotai/kimi-k2.6
+    model: moonshotai/kimi-k3
     format: all
     output: ocr-results
     # Set dry-run: true to validate a workflow without secrets or API calls.
@@ -135,7 +135,7 @@ open-ocr-cli extract invoice.pdf --provider kimi
 export OPENROUTER_API_KEY="your-key"
 open-ocr-cli extract invoice.pdf \
   --provider openrouter \
-  --model moonshotai/kimi-k2.6
+  --model moonshotai/kimi-k3
 ```
 
 The CLI loads provider credentials from the environment or a project-local
@@ -209,6 +209,11 @@ open-ocr-cli models --provider openrouter
 Inputs can be individual files, recursive directories, shell globs, public URLs,
 or binary stdin. Progress and diagnostics go to `stderr`; extracted content and
 JSONL events stay on `stdout`, so the command is safe to compose in pipelines.
+Direct `extract --jsonl` preserves the established document-record stream for
+existing scripts. `run --response-format jsonl` is the versioned agent protocol
+and emits ordered lifecycle events; protocol v2 is current and v1 remains a
+compatibility contract. Use `--no-config` or `OPEN_OCR_NO_CONFIG=1` for a
+hermetic run that ignores config files and the project `.env`.
 Direct subcommands never prompt unless the command itself is interactive, so
 existing scripts and CI workflows keep deterministic behavior.
 
@@ -220,29 +225,33 @@ exit codes, see the [CLI package guide](packages/cli/README.md).
 | Provider profile | Default model | Documents | Structured output | Agent tools |
 | --- | --- | --- | --- | --- |
 | `gemini` | `gemini-3.5-flash` | Images and native PDFs | Yes | Native Interactions API |
-| `kimi` | `kimi-k2.6` | Images; PDFs through Kimi file extraction | Yes | OpenAI-compatible tool calls |
-| `muse` | `muse-spark-1.1` | Images and PDFs | Yes | OpenAI-compatible tool calls |
-| `openrouter` | `google/gemini-3.5-flash` | Images and PDFs | Model-dependent | Model-dependent |
+| `kimi` | `kimi-k3` | Images; PDFs through Kimi file extraction | Yes | OpenAI-compatible tool calls |
+| `muse` | `muse-spark-1.1` | PNG, JPEG, WebP, GIF images and PDFs | Yes | OpenAI-compatible tool calls |
+| `openrouter` | `google/gemini-3.5-flash` | Model-dependent images and PDFs | Model-dependent | Model-dependent |
 | `openai-compatible` | Required | Images; PDF capability is not assumed | Endpoint-dependent | Endpoint-dependent |
 
 Named profiles supply sensible endpoints, credential names, and multimodal
 wire formats. `openrouter` and `openai-compatible` accept arbitrary upstream
 model IDs. Muse Spark is a public-preview API, so `--base-url` remains available
-if Meta changes its endpoint before general availability.
+if Meta changes its endpoint before general availability. Muse PDFs use Meta's
+documented Chat Completions `{ type: "file", file: { filename, file_data } }`
+shape. Muse agentic tool loops run on Chat Completions and do not carry private
+chain-of-thought across turns for external API keys (prefer Gemini or Kimi when
+deep multi-iteration reasoning continuity matters).
 
 Structured extraction keeps the same fail-closed contract across providers.
 Direct Kimi requests use Moonshot Flavoured JSON Schema strict mode, which
-supports optional properties. Routes that implement OpenAI's narrower strict
-subset receive the schema as a non-strict response-format hint, and the CLI then
-validates the returned value against the original schema locally. Invalid JSON
-or a schema mismatch is never persisted as a successful extraction.
+supports optional properties. Other named routes receive `strict: true` only
+when the supplied schema satisfies the narrower all-properties-required strict
+dialect; an arbitrary `openai-compatible` endpoint is not falsely claimed to
+support `strict`. In every case the CLI validates the returned value against the
+original schema locally. Invalid JSON or a schema mismatch is never persisted
+as a successful extraction.
 
 The implementations follow the providers' public contracts:
-[Kimi K2.6 and its OpenAI-compatible API](https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart),
-[Kimi K2.6 pricing](https://platform.kimi.ai/docs/pricing/chat-k26),
-[Meta Model API](https://dev.meta.ai/docs/getting-started/overview/),
-[Meta reasoning](https://dev.meta.ai/docs/features/reasoning/),
-[Meta pricing](https://dev.meta.ai/docs/getting-started/pricing-rate-limits/),
+[Kimi K3 and its OpenAI-compatible API](https://platform.kimi.ai/docs/guide/kimi-k3-quickstart),
+[Kimi model catalog](https://platform.kimi.ai/docs/models),
+[Meta Muse Spark 1.1](https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/),
 [OpenRouter multimodal files](https://openrouter.ai/docs/guides/overview/multimodal/pdfs),
 [OpenRouter tool calling](https://openrouter.ai/docs/guides/features/tool-calling), and
 [Cloudflare AI Gateway chat compatibility](https://developers.cloudflare.com/ai-gateway/usage/chat-completion/).
@@ -302,7 +311,7 @@ Configuration stores only the environment-variable name used for credentials.
 ```json
 {
   "provider": "openrouter",
-  "model": "moonshotai/kimi-k2.6",
+  "model": "moonshotai/kimi-k3",
   "gateway": "direct",
   "apiKeyEnv": "OPENROUTER_API_KEY",
   "concurrency": 4,
@@ -340,7 +349,7 @@ flowchart LR
   CLI["Open OCR CLI"] --> Core["Provider-neutral extraction contract"]
   Core --> Gemini
   Core --> Compatible["OpenAI-compatible adapter"]
-  Compatible --> Kimi["Kimi K2.6"]
+  Compatible --> Kimi["Kimi K3"]
   Compatible --> Muse["Muse Spark 1.1"]
   Compatible --> Router["OpenRouter / custom APIs"]
   Gemini --> Gateway["Direct or Cloudflare AI Gateway"]
@@ -371,35 +380,62 @@ known. Other profiles accept upstream model IDs, with these recommended defaults
 | `gemini-3.1-flash-lite` | Lower-cost, high-volume extraction | MINIMAL · LOW · MEDIUM · HIGH |
 | `gemini-3-flash-preview` | Preview Flash option | MINIMAL · LOW · MEDIUM · HIGH |
 | `gemini-3.1-pro-preview` | Highest-reasoning option | LOW · MEDIUM · HIGH |
-| `kimi-k2.6` | Kimi native multimodal and agentic route | instant or thinking |
-| `muse-spark-1.1` | Meta public-preview multimodal route | LOW · MEDIUM · HIGH |
-| `moonshotai/kimi-k2.6` | Kimi through OpenRouter | model-dependent |
+| `kimi-k3` | Default Kimi multimodal and agentic route | LOW · HIGH · MAX |
+| `kimi-k2.7-code` | Kimi coding/agent route; thinking is always enabled | HIGH (enabled; no configurable effort) |
+| `kimi-k2.7-code-highspeed` | Faster Kimi K2.7 Code route with the same parameter contract | HIGH (enabled; no configurable effort) |
+| `kimi-k2.6` | Legacy Kimi multimodal route | MINIMAL (instant) · HIGH (thinking) |
+| `muse-spark-1.1` | Meta public-preview multimodal route | MINIMAL · LOW · MEDIUM · HIGH · XHIGH |
+| `moonshotai/kimi-k3` | Kimi through OpenRouter | LOW · HIGH · MAX |
+| Other OpenRouter models | Upstream model selected by ID | model-dependent; MINIMAL · LOW · MEDIUM · HIGH · XHIGH · MAX are accepted by the router |
 
-The CLI default is **MEDIUM**. Agentic mode raises `MINIMAL` to `MEDIUM`. Kimi
-maps `MINIMAL` to instant mode; Muse maps the configured level to its
-`reasoning_effort` field, with `MINIMAL` treated as `low`.
+Gemini defaults are model-aware: 3.5 Flash uses **MEDIUM**, Flash-Lite uses
+**MINIMAL**, and 3 Flash Preview / 3.1 Pro use **HIGH**. Explicit supported
+levels are preserved in agentic mode instead of being silently increased.
+Kimi K3 defaults to **MAX** and uses its current `reasoning_effort` contract.
+K2.7 keeps thinking enabled and rejects fake effort distinctions. Legacy K2.6
+uses `MINIMAL` for instant mode and `HIGH` for thinking mode. Muse passes the
+configured supported level through as `reasoning_effort` without rewriting it.
+OpenRouter's unified reasoning interface maps an effort to the closest level
+supported by the selected model; Kimi K3 routes are validated more narrowly as
+LOW, HIGH, or MAX. Non-Gemini compatible routes accept `--max-tokens` up to the
+protocol ceiling of 1,048,576 so the CLI does not impose an obsolete model
+limit; an upstream model can still enforce a smaller advertised maximum.
+
+Use `--progress off|standard|detailed` (or `extraction.progress` in a protocol
+v2 request) to choose observability. V2 JSONL emits typed, ordered progress
+steps: standard preserves model output, provider thought summaries, and tool
+lifecycle metadata; detailed additionally exposes provider reasoning and tool
+payloads. Reasoning state needed for a tool continuation is always replayed to
+the provider regardless of visibility. The deprecated `--include-thoughts`
+flag maps to standard progress (tool payloads stay opt-in via `--progress detailed`).
+Terminal output and protocol v1 retain bounded,
+single-line display messages for compatibility; those are not the v2 machine
+contract.
 
 Built-in paid-tier estimates use USD per million tokens:
 
 | Model | Input | Cached input | Output and reasoning |
 | --- | ---: | ---: | ---: |
-| `gemini-3.5-flash` | $1.50 | — | $9.00 |
-| `gemini-3.1-flash-lite` | $0.25 | — | $1.50 |
-| `gemini-3-flash-preview` | $0.50 | — | $3.00 |
-| `gemini-3.1-pro-preview` | $2.00 / $4.00 above 200K input tokens | — | $12.00 / $18.00 |
+| `gemini-3.5-flash` | $1.50 | $0.15 | $9.00 |
+| `gemini-3.1-flash-lite` | $0.25 | $0.025 | $1.50 |
+| `gemini-3-flash-preview` | $0.50 | $0.05 | $3.00 |
+| `gemini-3.1-pro-preview` | $2.00 / $4.00 above 200K input tokens | $0.20 / $0.40 | $12.00 / $18.00 |
+| `kimi-k3` | $3.00 | $0.30 | $15.00 |
+| `kimi-k2.7-code` | $0.95 | $0.19 | $4.00 |
+| `kimi-k2.7-code-highspeed` | $1.90 | $0.38 | $8.00 |
 | `kimi-k2.6` | $0.95 | $0.16 | $4.00 |
-| `muse-spark-1.1` | $1.25 | — | $4.25 |
 
 OpenRouter-reported cost is used when present. Provider prices can change, so
 verify the linked provider pages before budgeting a large run. For an unknown
-or custom model, set both `--input-price` and `--output-price` if `--max-cost`
-must be enforceable.
+or custom model—or Muse Spark while its public-preview pricing is not available
+in public primary documentation—set both `--input-price` and `--output-price`
+if `--max-cost` must be enforceable.
 
 ## Inputs, outputs, and limits
 
 | Constraint | Current limit |
 | --- | --- |
-| Local formats | PNG · JPEG · WebP · HEIC · HEIF · PDF |
+| CLI local formats | PNG · JPEG · WebP · GIF · HEIC · HEIF · PDF |
 | Image input | 70 MB raw |
 | PDF input | 50 MB and up to 1,000 pages |
 | Web-app bulk queue | 200 files and 500 MB total |
@@ -407,6 +443,19 @@ must be enforceable.
 | CLI concurrency | 2 by default; configurable from 1–16 |
 | Web OCR | Up to 20 public HTTP(S) URLs per request |
 | Output | Markdown · JSON · CSV · JSONL · agent audit steps |
+
+Video is outside this OCR CLI's input contract. Files such as MP4 are rejected
+even when the selected foundation model has a broader video capability; video
+signatures appear in tests only to prove they are not misidentified as HEIC or
+HEIF images.
+
+HEIC and HEIF are sent natively through Gemini. The named Kimi, Muse, and
+OpenRouter profiles accept PNG, JPEG, WebP, and GIF through this CLI,
+so they reject HEIC/HEIF locally with a conversion hint instead of speculating
+about an undocumented transport format after an API call.
+Agents can discover the CLI/provider intersection from each known profile's
+`inputImageMimeTypes` field in `open-ocr-cli capabilities --json`; an omitted
+field means the accepted formats depend on the selected model or endpoint.
 
 Web OCR rejects credentials in URLs, localhost, private network ranges, and
 common tunnel hosts. Gemini uses verified URL Context metadata. Other providers
@@ -506,7 +555,7 @@ npm run evals:validate
 EVAL_PROVIDER=gemini GEMINI_API_KEY=your_key npm run evals:canary
 EVAL_PROVIDER=kimi MOONSHOT_API_KEY=your_key npm run evals:canary
 EVAL_PROVIDER=openrouter OPENROUTER_API_KEY=your_key \
-  OPEN_OCR_MODEL=moonshotai/kimi-k2.6 npm run evals:canary
+  OPEN_OCR_MODEL=moonshotai/kimi-k3 npm run evals:canary
 npm run evals:matrix -- --suite canary
 npm run evals:report
 ```

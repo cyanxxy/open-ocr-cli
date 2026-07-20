@@ -21,6 +21,7 @@ import { evaluateAgentCompletion } from './agentSchema';
 import type { InteractionStep } from './gemini/interactions';
 import { isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
 import { isGeminiCostLimitError } from './gemini/requestPolicy';
+import { streamAgentOperation, waitForAbortableAgentDelay } from './agentStepStream';
 
 // Re-export the memory reducer from its neutral home so existing importers that
 // reference `applyMemoryUpdate` from this module keep working (the function moved
@@ -102,6 +103,7 @@ export async function* agentLoop(
     // Initialize
     yield {
       type: 'thinking',
+      source: 'runtime',
       content: 'Initializing autonomous document processing agent...',
       timestamp: Date.now(),
     };
@@ -153,6 +155,7 @@ export async function* agentLoop(
 
       yield {
         type: 'thinking',
+        source: 'runtime',
         content: `Starting iteration ${iteration}/${agentConfig.maxIterations}`,
         timestamp: Date.now(),
       };
@@ -174,6 +177,7 @@ export async function* agentLoop(
 
         yield {
           type: 'thinking',
+          source: 'runtime',
           content: `Analyzing document with Gemini AI (iteration ${iteration})...`,
           timestamp: Date.now(),
         };
@@ -181,7 +185,7 @@ export async function* agentLoop(
         const fieldCountBefore = Object.keys(memory.extractedFields).length;
 
         // Execute multi-turn function calling
-        const turnResult = await executeAgentTurn(
+        const streamedTurn = streamAgentOperation((onStep) => executeAgentTurn(
           systemPrompt,
           iterationContent,
           interactionTranscript,
@@ -192,13 +196,14 @@ export async function* agentLoop(
           memory,
           clientConfig,
           agentConfig,
-          () => undefined,
-        );
-
-        // Yield all steps produced during the turn
-        for (const step of turnResult.steps) {
-          yield step;
+          onStep,
+        ));
+        let streamed = await streamedTurn.next();
+        while (!streamed.done) {
+          yield streamed.value;
+          streamed = await streamedTurn.next();
         }
+        const turnResult = streamed.value;
 
         // A successful turn resets the transient-retry budget.
         transientRetries = 0;
@@ -248,6 +253,7 @@ export async function* agentLoop(
         const errorMessage = error instanceof Error ? error.message : 'Iteration failed';
         yield {
           type: 'error',
+          source: 'runtime',
           content: `Error in iteration ${iteration}: ${errorMessage}`,
           timestamp: Date.now(),
         };
@@ -255,6 +261,7 @@ export async function* agentLoop(
         // Terminal failures (bad key, permission) stop immediately.
         if (isFatalGeminiError(error)) {
           stopReason = 'failed';
+          if (agentConfig.throwOnFailure) throw error;
           break;
         }
 
@@ -270,16 +277,18 @@ export async function* agentLoop(
             : 0;
           yield {
             type: 'thinking',
+            source: 'runtime',
             content: `Transient error; retrying in ${(backoff / 1000).toFixed(1)}s (attempt ${transientRetries}/${MAX_TRANSIENT_RETRIES}).`,
             timestamp: Date.now(),
           };
           iteration--;
-          await new Promise((resolve) => setTimeout(resolve, backoff));
+          await waitForAbortableAgentDelay(backoff, clientConfig.abortSignal);
           continue;
         }
 
         // Out of retries, or a non-retryable/non-fatal error: give up cleanly.
         stopReason = 'failed';
+        if (agentConfig.throwOnFailure) throw error;
         break;
       }
 
@@ -288,7 +297,10 @@ export async function* agentLoop(
         stopReason = 'cancelled';
         break;
       }
-      await new Promise(resolve => setTimeout(resolve, agentConfig.iterationPauseMs ?? 500));
+      await waitForAbortableAgentDelay(
+        agentConfig.iterationPauseMs ?? 500,
+        clientConfig.abortSignal,
+      );
     }
 
     // Loop exited by the while condition (iterations exhausted) without an
@@ -310,6 +322,7 @@ export async function* agentLoop(
     isComplete = stopReason === 'succeeded';
     yield {
       type: 'result',
+      source: 'runtime',
       content: describeStopReason(stopReason, memory),
       timestamp: Date.now(),
     };
@@ -323,8 +336,10 @@ export async function* agentLoop(
     }
 
     memory.stopReason = 'failed';
+    if (agentConfig.throwOnFailure) throw error;
     yield {
       type: 'error',
+      source: 'runtime',
       content: `Agent processing failed: ${errorMessage}`,
       timestamp: Date.now(),
     };

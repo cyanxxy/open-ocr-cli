@@ -203,16 +203,19 @@ describe('extractTextFromUrls', () => {
           ],
         },
         {
-          type: 'text',
-          text: JSON.stringify({
-            results: [
-              {
-                url: 'https://example.com',
-                type: 'webpage',
-                content: 'Only one result',
-              },
-            ],
-          }),
+          type: 'model_output',
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              results: [
+                {
+                  url: 'https://example.com',
+                  type: 'webpage',
+                  content: 'Only one result',
+                },
+              ],
+            }),
+          }],
         },
       ],
     });
@@ -242,17 +245,20 @@ describe('extractTextFromUrls', () => {
           ],
         },
         {
-          type: 'text',
+          type: 'model_output',
           // Returned in the OPPOSITE order from the request, with a trailing
           // slash variation to exercise normalized matching. audit H-05: `www.`
           // is intentionally NOT collapsed, so the org entry keeps its
           // non-www host to remain matchable.
-          text: JSON.stringify({
-            results: [
-              { url: 'https://example.org/', type: 'webpage', content: 'Org content' },
-              { url: 'https://example.com', type: 'webpage', content: 'Com content' },
-            ],
-          }),
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              results: [
+                { url: 'https://example.org/', type: 'webpage', content: 'Org content' },
+                { url: 'https://example.com', type: 'webpage', content: 'Com content' },
+              ],
+            }),
+          }],
         },
       ],
     });
@@ -282,13 +288,16 @@ describe('extractTextFromUrls', () => {
           ],
         },
         {
-          type: 'text',
-          text: JSON.stringify({
-            results: [
-              { url: 'https://example.com', type: 'webpage', content: 'Com content' },
-              { url: 'https://evil.example.net', type: 'webpage', content: 'Unexpected content' },
-            ],
-          }),
+          type: 'model_output',
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              results: [
+                { url: 'https://example.com', type: 'webpage', content: 'Com content' },
+                { url: 'https://evil.example.net', type: 'webpage', content: 'Unexpected content' },
+              ],
+            }),
+          }],
         },
       ],
     });
@@ -313,13 +322,16 @@ describe('extractTextFromUrls', () => {
       steps: [
         urlContextResult(['http://example.com', 'https://example.com']),
         {
-          type: 'text',
-          text: JSON.stringify({
-            results: [
-              { url: 'http://example.com', type: 'webpage', content: 'Insecure content' },
-              { url: 'https://example.com', type: 'webpage', content: 'Secure content' },
-            ],
-          }),
+          type: 'model_output',
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              results: [
+                { url: 'http://example.com', type: 'webpage', content: 'Insecure content' },
+                { url: 'https://example.com', type: 'webpage', content: 'Secure content' },
+              ],
+            }),
+          }],
         },
       ],
     });
@@ -345,12 +357,15 @@ describe('extractTextFromUrls', () => {
       steps: [
         urlContextResult(['https://example.com']),
         {
-          type: 'text',
-          text: JSON.stringify({
-            results: [
-              { url: 'https://www.example.com', type: 'webpage', content: 'www content' },
-            ],
-          }),
+          type: 'model_output',
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              results: [
+                { url: 'https://www.example.com', type: 'webpage', content: 'www content' },
+              ],
+            }),
+          }],
         },
       ],
     });
@@ -377,13 +392,16 @@ describe('extractTextFromUrls', () => {
       steps: [
         urlContextResult(['https://example.com', 'https://example.org']),
         {
-          type: 'text',
-          text: JSON.stringify({
-            results: [
-              { url: 'https://example.com', type: 'webpage', content: 'First' },
-              { url: 'https://example.com', type: 'webpage', content: 'Duplicate' },
-            ],
-          }),
+          type: 'model_output',
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              results: [
+                { url: 'https://example.com', type: 'webpage', content: 'First' },
+                { url: 'https://example.com', type: 'webpage', content: 'Duplicate' },
+              ],
+            }),
+          }],
         },
       ],
     });

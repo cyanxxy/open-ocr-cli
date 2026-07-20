@@ -1,0 +1,14 @@
+{
+  "protocolVersion": 2,
+  "operation": "extract",
+  "inputs": [
+    {
+      "type": "stdin",
+      "name": "scan"
+    }
+  ],
+  "delivery": {
+    "mode": "inline"
+  },
+  "noConfig": true
+}

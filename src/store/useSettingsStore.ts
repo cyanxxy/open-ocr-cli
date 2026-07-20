@@ -24,7 +24,7 @@ export class ApiKeyPersistError extends Error {
 export type { GeminiModel, ThinkingConfig, ThinkingLevel };
 
 /**
- * Defines the available Gemini preview model types that the user can select.
+ * Defines the available Gemini model types that the user can select.
  */
 export type ModelType = GeminiModel;
 
@@ -184,7 +184,7 @@ interface SettingsState {
   theme: ThemeMode;
   /** Whether the user has seen the onboarding flow. */
   hasSeenOnboarding: boolean;
-  /** Thinking mode configuration for Gemini preview models */
+  /** Thinking mode configuration for Gemini models */
   thinkingConfig: ThinkingConfig;
   /** Whether Zustand has finished rehydrating persisted state */
   hasHydrated: boolean;

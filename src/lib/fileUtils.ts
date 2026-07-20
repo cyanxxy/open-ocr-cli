@@ -95,7 +95,10 @@ export function validateFile(file: File | null | undefined): { valid: boolean; e
 
   // Check file type before size so we can apply the correct MIME-specific limit.
   const supportedMimeTypes: readonly string[] = [
-    ...FILE_CONSTRAINTS.SUPPORTED_IMAGE_MIME_TYPES,
+    // The browser application currently talks directly to Gemini. Keep its
+    // upload surface aligned with the Gemini profile even though the
+    // provider-neutral CLI also accepts GIF for Kimi, Muse, and OpenRouter.
+    ...FILE_CONSTRAINTS.SUPPORTED_IMAGE_MIME_TYPES.filter((mimeType) => mimeType !== 'image/gif'),
     ...FILE_CONSTRAINTS.SUPPORTED_DOCUMENT_MIME_TYPES,
   ];
 

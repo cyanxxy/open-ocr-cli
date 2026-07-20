@@ -1,5 +1,7 @@
-import { readFile } from 'node:fs/promises';
+import { Buffer } from 'node:buffer';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import type { Readable } from 'node:stream';
 
 import { loadCliConfig, loadLocalEnv, resolveCliOptions } from './config';
 import { CliExitError } from './errors';
@@ -10,8 +12,10 @@ import { loadCustomSchema, validateCustomSchema } from './schema';
 import {
   defaultAgentOutputDirectory,
   parseOcrJobRequest,
+  peekOcrProtocolVersion,
   type OcrJobEventSink,
   type OcrJobRequest,
+  type OcrProtocolVersion,
 } from './protocol';
 import type { CliConfigFile, ExtractCommandFlags } from './types';
 
@@ -21,19 +25,69 @@ export interface ExecuteOcrJobOptions {
   abortController: AbortController;
   eventSink?: OcrJobEventSink;
   onWarning?: (message: string) => void;
+  noConfig?: boolean;
 }
 
-async function readStandardInput(): Promise<string> {
+const MAX_REQUEST_BYTES = 1024 * 1024;
+
+function requestTooLarge(): CliExitError {
+  return new CliExitError('OCR request JSON exceeds the 1 MB limit', 2, {
+    code: 'CONFIG_INVALID',
+    category: 'configuration',
+    retryable: false,
+    hint: 'Store large extraction schemas in a separate schema file.',
+  });
+}
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('Operation aborted');
+}
+
+export async function readStandardInput(
+  signal?: AbortSignal,
+  input: Readable = process.stdin,
+): Promise<string> {
   let value = '';
-  process.stdin.setEncoding('utf8');
-  for await (const chunk of process.stdin) value += chunk;
+  let bytes = 0;
+  signal?.throwIfAborted();
+  const onAbort = (): void => {
+    input.destroy(signal ? abortReason(signal) : undefined);
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  input.setEncoding('utf8');
+  try {
+    for await (const chunk of input as AsyncIterable<string>) {
+      bytes += Buffer.byteLength(chunk);
+      if (bytes > MAX_REQUEST_BYTES) throw requestTooLarge();
+      value += chunk;
+    }
+  } catch (error) {
+    if (signal?.aborted) throw abortReason(signal);
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+  }
   return value;
 }
 
-export async function readOcrJobRequest(requestPath: string, cwd: string): Promise<OcrJobRequest> {
-  const raw = requestPath === '-'
-    ? await readStandardInput()
-    : await readFile(path.resolve(cwd, requestPath), 'utf8');
+/**
+ * Read request JSON and peek its declared protocol version before full
+ * validation (so invalid v1 bodies still fail as protocol v1).
+ */
+export async function readOcrJobRequestRaw(requestPath: string, cwd: string, signal?: AbortSignal): Promise<{
+  raw: string;
+  parsed: unknown;
+  declaredProtocolVersion?: OcrProtocolVersion;
+}> {
+  let raw: string;
+  if (requestPath === '-') {
+    raw = await readStandardInput(signal);
+  } else {
+    const absolutePath = path.resolve(cwd, requestPath);
+    if ((await stat(absolutePath)).size > MAX_REQUEST_BYTES) throw requestTooLarge();
+    raw = await readFile(absolutePath, 'utf8');
+    if (Buffer.byteLength(raw) > MAX_REQUEST_BYTES) throw requestTooLarge();
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw) as unknown;
@@ -50,10 +104,26 @@ export async function readOcrJobRequest(requestPath: string, cwd: string): Promi
       },
     );
   }
+  return {
+    raw,
+    parsed,
+    declaredProtocolVersion: peekOcrProtocolVersion(parsed),
+  };
+}
+
+export async function readOcrJobRequest(
+  requestPath: string,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<OcrJobRequest> {
+  const { parsed } = await readOcrJobRequestRaw(requestPath, cwd, signal);
   return parseOcrJobRequest(parsed);
 }
 
-function requestFlags(request: OcrJobRequest, outputDirectory: string): ExtractCommandFlags {
+function requestFlags(request: OcrJobRequest, outputDirectory?: string): ExtractCommandFlags {
+  const progress = request.protocolVersion === 2
+    ? request.extraction?.progress ?? 'standard'
+    : 'standard';
   return {
     config: request.configPath,
     provider: request.provider?.id,
@@ -68,6 +138,7 @@ function requestFlags(request: OcrJobRequest, outputDirectory: string): ExtractC
     customSchema: request.extraction?.schema !== undefined,
     instruction: request.extraction?.instructions,
     thinking: request.extraction?.thinking,
+    progress,
     detectImages: request.extraction?.detectImages,
     detectMath: request.extraction?.detectMath,
     maxTokens: request.extraction?.maxTokens?.toString(),
@@ -86,7 +157,6 @@ function requestFlags(request: OcrJobRequest, outputDirectory: string): ExtractC
     output: outputDirectory,
     resume: request.delivery?.resume ?? true,
     overwrite: false,
-    includeThoughts: false,
     jsonl: false,
     quiet: true,
     verbose: false,
@@ -146,13 +216,23 @@ export async function executeOcrJobRequest(
   request: OcrJobRequest,
   execution: ExecuteOcrJobOptions,
 ): Promise<OcrJobServiceResult> {
-  if (request.inputs.some((input) => input.path === '-')) {
+  const stdinInputs = request.inputs.filter((input) => (
+    input.type === 'stdin' || (input.type === 'path' && input.path === '-')
+  ));
+  if (stdinInputs.length > 0 && request.inputs.length !== 1) {
     throw configurationError(
-      'OCR requests accept file, directory, and glob paths; stdin document input is not supported.',
+      'An OCR stdin document must be the request\'s only input.',
     );
   }
-  loadLocalEnv(execution.cwd);
-  const fileConfig = await loadCliConfig(execution.cwd, request.configPath);
+  const hermetic = execution.noConfig === true || request.noConfig === true;
+  // Ambient OPEN_OCR_NO_CONFIG still blocks .env; explicit configPath may load
+  // only that file (no user/project merge) via loadCliConfig hermetic rules.
+  loadLocalEnv(execution.cwd, hermetic);
+  const fileConfig = await loadCliConfig(
+    execution.cwd,
+    request.configPath,
+    hermetic,
+  );
   const invalidConfiguration = machineConfigurationError(request, fileConfig);
   if (invalidConfiguration) throw configurationError(invalidConfiguration);
 
@@ -169,22 +249,37 @@ export async function executeOcrJobRequest(
   } catch (error) {
     throw schemaError(error);
   }
-  const outputDirectory = request.delivery?.outputDirectory
-    ? path.resolve(execution.cwd, request.delivery.outputDirectory)
-    : defaultAgentOutputDirectory(execution.cwd, execution.runId);
+  const deliveryMode = request.protocolVersion === 1
+    ? 'reference'
+    : request.delivery?.mode ?? 'reference';
+  const outputDirectory = deliveryMode === 'reference'
+    ? request.delivery?.outputDirectory
+      ? path.resolve(execution.cwd, request.delivery.outputDirectory)
+      : defaultAgentOutputDirectory(execution.cwd, execution.runId)
+    : undefined;
   const effectiveFileConfig = request.extraction?.schema !== undefined
     ? { ...fileConfig, schema: undefined }
     : fileConfig;
+  const stdinInput = stdinInputs[0]?.type === 'stdin' ? stdinInputs[0] : undefined;
   const options = {
     ...resolveCliOptions(requestFlags(request, outputDirectory), effectiveFileConfig, execution.cwd),
     customSchema,
+    ...(stdinInput?.name ? { stdinName: stdinInput.name } : {}),
+    ...(stdinInput?.mimeType ? { stdinType: stdinInput.mimeType } : {}),
   };
-  const inputs = await discoverInputs(request.inputs.map((input) => input.path), options);
+  const inputs = await discoverInputs(request.inputs.map((input) => (
+    input.type === 'stdin' ? '-' : input.path
+  )), options, execution.abortController.signal);
   return createOcrJobService().run(inputs, options, {
     runId: execution.runId,
     abortController: execution.abortController,
     eventSink: execution.eventSink,
     onWarning: execution.onWarning,
-    enableSingleInputResume: true,
+    protocolVersion: request.protocolVersion,
+    deliveryMode,
+    progress: request.protocolVersion === 2
+      ? request.extraction?.progress ?? 'standard'
+      : 'standard',
+    enableSingleInputResume: deliveryMode === 'reference',
   });
 }

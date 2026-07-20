@@ -9,13 +9,13 @@
     {
       "id": "kimi-direct",
       "provider": "kimi",
-      "model": "kimi-k2.6",
+      "model": "kimi-k3",
       "apiKeyEnv": "MOONSHOT_API_KEY"
     },
     {
       "id": "kimi-openrouter",
       "provider": "openrouter",
-      "model": "moonshotai/kimi-k2.6",
+      "model": "moonshotai/kimi-k3",
       "apiKeyEnv": "OPENROUTER_API_KEY"
     },
     {
@@ -34,14 +34,14 @@
     {
       "id": "openrouter-cloudflare",
       "provider": "openrouter",
-      "model": "moonshotai/kimi-k2.6",
+      "model": "moonshotai/kimi-k3",
       "gateway": "cloudflare",
       "apiKeyEnv": "OPENROUTER_API_KEY"
     },
     {
       "id": "kimi-cloudflare",
       "provider": "kimi",
-      "model": "kimi-k2.6",
+      "model": "kimi-k3",
       "gateway": "cloudflare",
       "apiKeyEnv": "MOONSHOT_API_KEY",
       "cloudflareProvider": "moonshot"

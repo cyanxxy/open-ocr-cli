@@ -55,7 +55,7 @@ describe('interactive command menu', () => {
       'scans/*.png',
       '--provider', 'kimi',
       '--gateway', 'direct',
-      '--model', 'kimi-k2.6',
+      '--model', 'kimi-k3',
       '--thinking', 'high',
       '--api-key-env', 'MOONSHOT_API_KEY',
       '--mode', 'template',
@@ -93,6 +93,38 @@ describe('interactive command menu', () => {
       '--format', 'markdown',
       '--dry-run',
     ]);
+  });
+
+  it('uses the exact Kimi K3 effort menu through OpenRouter', async () => {
+    const calls: Array<{ question: string; values: string[]; defaultValue: string }> = [];
+    const choose: NonNullable<InteractivePrompter['choose']> = <T extends string>(
+      question: string,
+      choices: ReadonlyArray<{ value: T; label: string }>,
+      defaultValue: T,
+    ): Promise<T> => {
+      calls.push({ question, values: choices.map((choice) => choice.value), defaultValue });
+      return Promise.resolve(defaultValue);
+    };
+    const prompter = scriptedPrompter(['invoice.pdf']);
+    prompter.choose = choose;
+
+    const result = await promptInteractiveArguments({
+      env: {},
+      config: {
+        provider: 'openrouter',
+        model: 'moonshotai/kimi-k3',
+        apiKeyEnv: 'OPENROUTER_API_KEY',
+      },
+      prompter,
+      writeOutput: () => undefined,
+    });
+
+    expect(result).toContain('max');
+    expect(calls).toContainEqual({
+      question: 'Thinking level',
+      values: ['low', 'high', 'max'],
+      defaultValue: 'max',
+    });
   });
 
   it.each([

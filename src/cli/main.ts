@@ -1,27 +1,33 @@
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import path from 'node:path';
 import process from 'node:process';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 
 import { Command, CommanderError, Option } from 'commander';
+import cliPackageJson from '../../packages/cli/package.json';
 
 import { listExtractionPresets } from '../lib/templates';
 import {
   PROVIDER_IDS,
   PROVIDER_PROFILES,
-  configureProviderRequestPolicy,
-  getProviderUsage,
+  createProviderExecutionContext,
   isLocalBaseUrl,
   providerDefaultApiKeyEnv,
-  resetProviderRequestPolicy,
-  resetProviderUsage,
   type ProviderId,
 } from '../lib/providers';
-import { credentialSetupGuidance, loadCliConfig, loadLocalEnv, resolveCliOptions } from './config';
+import {
+  cliConfigDisabled,
+  credentialSetupGuidance,
+  loadCliConfig,
+  loadLocalEnv,
+  resolveCliOptions,
+} from './config';
 import {
   asCliExitError,
+  CliExitError,
+  cliBatchExitCode,
   cliExitCode,
+  cliRunStatusExitCode,
   cliSignalExitCode,
   ocrErrorPayload,
   type CliExitCode,
@@ -30,12 +36,14 @@ import { discoverInputs } from './inputs';
 import { runInit, type InitFlags } from './init';
 import { promptInteractiveArguments } from './interactive';
 import { loadCustomSchema } from './schema';
-import { executeOcrJobRequest, readOcrJobRequest } from './machine';
+import { executeOcrJobRequest, readOcrJobRequestRaw } from './machine';
 import {
   assertOcrJobEvent,
   createOcrCapabilities,
+  errorPayloadForProtocol,
   OCR_PROTOCOL_SCHEMAS,
   OCR_PROTOCOL_VERSION,
+  parseOcrJobRequest,
   toOcrRunFailure,
   type OcrJobEvent,
 } from './protocol';
@@ -62,16 +70,13 @@ export function cliBinaryName(argv: string[] = process.argv): string {
 }
 
 export function cliVersion(): string {
-  const candidates = [new URL('../package.json', import.meta.url), new URL('../../package.json', import.meta.url)];
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(readFileSync(fileURLToPath(candidate), 'utf8')) as { version?: unknown };
-      if (typeof parsed.version === 'string') return parsed.version;
-    } catch {
-      // Try the source-tree fallback after the packaged layout.
-    }
+  const version: unknown = cliPackageJson.version;
+  if (typeof version === 'string' && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+    return version;
   }
-  return '0.0.0';
+  throw new Error(
+    'Unable to determine the CLI version: packages/cli/package.json has no valid version.',
+  );
 }
 
 function isSupportedNode(version: string): boolean {
@@ -83,6 +88,51 @@ function isSupportedNode(version: string): boolean {
 
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+async function writeMachineStdout(value: string): Promise<void> {
+  if (process.stdout.write(value)) return;
+  await once(process.stdout, 'drain');
+}
+
+interface InterruptRuntime {
+  abortController: AbortController;
+  interruptedExitCode: () => CliExitCode | undefined;
+}
+
+async function withInterruptHandling<T>(
+  operation: (runtime: InterruptRuntime) => Promise<T>,
+): Promise<T> {
+  const abortController = new AbortController();
+  let exitCode: CliExitCode | undefined;
+  const interrupt = (signal: 'SIGINT' | 'SIGTERM'): void => {
+    exitCode = cliSignalExitCode(signal);
+    abortController.abort(new Error(`Interrupted by ${signal}`));
+  };
+  const onSigint = (): void => interrupt('SIGINT');
+  const onSigterm = (): void => interrupt('SIGTERM');
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
+  try {
+    return await operation({ abortController, interruptedExitCode: () => exitCode });
+  } finally {
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
+  }
+}
+
+function assertConfigFlagsDoNotConflict(command: Command): void {
+  const rawArgs = (command.parent as (Command & { rawArgs?: string[] }) | null)?.rawArgs ?? [];
+  const hasConfigPath = rawArgs.some((argument: string) => argument === '--config' || argument.startsWith('--config='));
+  const hasNoConfig = rawArgs.includes('--no-config');
+  if (hasConfigPath && hasNoConfig) {
+    throw new CliExitError('--config and --no-config are mutually exclusive', 2, {
+      code: 'CONFIG_INVALID',
+      category: 'configuration',
+      retryable: false,
+      hint: 'Choose either an explicit configuration file or a hermetic run.',
+    });
+  }
 }
 
 function addProviderOptions(command: Command): Command {
@@ -106,13 +156,15 @@ function addExtractOptions(command: Command): Command {
   return addProviderOptions(command)
     .argument('<inputs...>', 'files, directories, globs, or - for stdin')
     .option('--config <path>', 'explicit JSON configuration file')
+    .option('--no-config', 'ignore config files and .env for a hermetic run')
     .addOption(new Option('--mode <mode>', 'OCR mode').choices(['simple', 'template', 'agentic']))
     .option('--preset <id>', 'structured extraction preset (implies template mode)')
     .option('--schema <path>', 'JSON Schema for custom structured extraction')
     .addOption(new Option('--format <format>', 'artifact format').choices(['markdown', 'json', 'csv', 'all']))
     .option('-o, --output <path>', 'output file for one document or directory for batches')
-    .addOption(new Option('--thinking <level>', 'thinking level').choices(['minimal', 'low', 'medium', 'high']))
-    .option('--include-thoughts', 'request thought summaries where supported')
+    .addOption(new Option('--thinking <level>', 'thinking/reasoning effort').choices(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']))
+    .addOption(new Option('--progress <level>', 'agent progress detail').choices(['off', 'standard', 'detailed']))
+    .option('--include-thoughts', 'deprecated alias for --progress standard')
     .option('-c, --concurrency <count>', 'parallel documents (1-16)')
     .option('--retries <count>', 'transient retries per document (0-10)')
     .option('--timeout <seconds>', 'per-document time limit')
@@ -128,11 +180,11 @@ function addExtractOptions(command: Command): Command {
     .option('--overwrite', 'replace existing output artifacts')
     .option('--force-unlock', 'recover a same-host batch lock only when its owner process is dead')
     .option('--fail-fast', 'stop scheduling new documents after the first failure')
-    .option('--jsonl', 'emit one machine-readable event per document on stdout')
+    .option('--jsonl', 'emit the established inline document JSONL stream on stdout')
     .option('--dry-run', 'resolve and validate the job without calling a provider or writing files')
     .option('--quiet', 'suppress progress output on stderr')
     .option('--verbose', 'show agent steps and detailed progress on stderr')
-    .option('--stdin-name <name>', 'filename used for stdin input', 'stdin.pdf')
+    .option('--stdin-name <name>', 'filename used for stdin input (type is sniffed when omitted)')
     .option('--stdin-type <mime>', 'MIME type for stdin when it cannot be inferred from --stdin-name')
     .option('--detect-images', 'describe charts, diagrams, and non-text images in simple mode')
     .option('--detect-math', 'detect and format equations in simple mode')
@@ -155,8 +207,8 @@ Examples:
   $ ${commandName} interactive           # explicitly launch the command menu
   $ ${commandName} init
   $ ${commandName} extract invoice.pdf
-  $ ${commandName} extract invoice.pdf --provider kimi --model kimi-k2.6
-  $ ${commandName} extract invoice.pdf --provider openrouter --model moonshotai/kimi-k2.6
+  $ ${commandName} extract invoice.pdf --provider kimi --model kimi-k3
+  $ ${commandName} extract invoice.pdf --provider openrouter --model moonshotai/kimi-k3
   $ ${commandName} extract invoice.pdf --provider gemini --gateway cloudflare
   $ ${commandName} extract invoice.pdf --schema invoice.schema.json
   $ ${commandName} extract ./documents --mode template --preset invoice --format all
@@ -173,6 +225,7 @@ Environment:
   OPEN_OCR_PROVIDER       Default provider override
   OPEN_OCR_MODEL          Default model override
   OPEN_OCR_THINKING       Default thinking level override
+  OPEN_OCR_NO_CONFIG      Set to 1 for a hermetic run without config files or .env
   CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_AI_GATEWAY_ID / CLOUDFLARE_AI_GATEWAY_TOKEN
 
 Configuration is loaded from the legacy Gemini paths, then
@@ -193,52 +246,64 @@ CLI flags take precedence.
     });
 
   addExtractOptions(program.command('extract').description('extract one or many documents'))
-    .action(async (inputs: string[], flags: ExtractCommandFlags) => {
-      const cwd = process.cwd();
-      loadLocalEnv(cwd);
-      const fileConfig = await loadCliConfig(cwd, flags.config);
-      const resolvedOptions = resolveCliOptions(flags, fileConfig, cwd);
-      const options = resolvedOptions.schemaPath
-        ? { ...resolvedOptions, customSchema: await loadCustomSchema(resolvedOptions.schemaPath, cwd) }
-        : resolvedOptions;
-      const resolvedInputs = await discoverInputs(inputs, options);
-      const abortController = new AbortController();
-      let interruptedExitCode: CliExitCode | undefined;
-      const interrupt = (exitCode: CliExitCode): void => {
-        interruptedExitCode = exitCode;
-        abortController.abort(new Error('Interrupted'));
-      };
-      const onSigint = (): void => interrupt(cliSignalExitCode('SIGINT'));
-      const onSigterm = (): void => interrupt(cliSignalExitCode('SIGTERM'));
-      process.once('SIGINT', onSigint);
-      process.once('SIGTERM', onSigterm);
+    .action(async (inputs: string[], flags: ExtractCommandFlags, command: Command) => {
       try {
-        if (!options.quiet) {
-          process.stderr.write(
-            `${options.dryRun ? 'Planning' : 'Processing'} ${resolvedInputs.length} document(s) `
-            + `with ${options.provider}/${options.model} via ${options.gateway} in ${options.mode} mode `
-            + `(concurrency ${options.concurrency})\n`,
-          );
-        }
-        const summary = await runBatch(resolvedInputs, options, { abortController });
-        if (!options.quiet) {
-          process.stderr.write(
-            `Finished: ${summary.succeeded} succeeded, ${summary.partial} partial, ${summary.failed} failed, ${summary.skipped} skipped; `
-            + `${summary.usage.totalTokens} tokens across ${summary.usage.requests} request(s); `
-            + `estimated cost $${summary.usage.estimatedCostUsd.toFixed(6)}\n`,
-          );
-        }
-        if (abortController.signal.aborted) process.exitCode = interruptedExitCode ?? 1;
-        else if (summary.failed > 0 || summary.partial > 0 || summary.costLimitReached) process.exitCode = 1;
+        assertConfigFlagsDoNotConflict(command);
+        const cwd = process.cwd();
+        const noConfig = cliConfigDisabled(flags.config);
+        loadLocalEnv(cwd, noConfig);
+        const fileConfig = await loadCliConfig(
+          cwd,
+          typeof flags.config === 'string' ? flags.config : undefined,
+          noConfig,
+        );
+        // A malformed schema is a local request error and must be reported
+        // before credential resolution can fail or any provider work begins.
+        const schemaPath = flags.schema ?? fileConfig.schema;
+        const customSchema = schemaPath
+          ? await loadCustomSchema(schemaPath, cwd)
+          : undefined;
+        const resolvedOptions = resolveCliOptions(flags, fileConfig, cwd);
+        const options = customSchema
+          ? { ...resolvedOptions, customSchema }
+          : resolvedOptions;
+        const resolvedInputs = await discoverInputs(inputs, options);
+        await withInterruptHandling(async ({ abortController, interruptedExitCode }) => {
+          try {
+            if (!options.quiet) {
+              process.stderr.write(
+                `${options.dryRun ? 'Planning' : 'Processing'} ${resolvedInputs.length} document(s) `
+                + `with ${options.provider}/${options.model} via ${options.gateway} in ${options.mode} mode `
+                + `(concurrency ${options.concurrency})\n`,
+              );
+            }
+            const summary = await runBatch(resolvedInputs, options, {
+              abortController,
+            });
+            if (!options.quiet) {
+              process.stderr.write(
+                `Finished: ${summary.succeeded} succeeded, ${summary.partial} partial, ${summary.failed} failed, ${summary.skipped} skipped; `
+                + `${summary.usage.totalTokens} tokens across ${summary.usage.requests} request(s); `
+                + `estimated cost $${summary.usage.estimatedCostUsd.toFixed(6)}\n`,
+              );
+            }
+            if (abortController.signal.aborted) process.exitCode = interruptedExitCode() ?? 1;
+            else {
+              const exitCode = cliBatchExitCode(summary);
+              if (exitCode !== 0) process.exitCode = exitCode;
+            }
+          } catch (error) {
+            const signalExitCode = interruptedExitCode();
+            if (signalExitCode !== undefined) {
+              process.exitCode = signalExitCode;
+              return;
+            }
+            throw asCliExitError(error, 1);
+          }
+        });
       } catch (error) {
-        if (interruptedExitCode !== undefined) {
-          process.exitCode = interruptedExitCode;
-          return;
-        }
-        throw asCliExitError(error, 1);
-      } finally {
-        process.removeListener('SIGINT', onSigint);
-        process.removeListener('SIGTERM', onSigterm);
+        const typed = asCliExitError(error, 2);
+        throw typed;
       }
     });
 
@@ -246,62 +311,80 @@ CLI flags take precedence.
     .description('execute a versioned OCR request for coding agents and automation')
     .requiredOption('--request <path>', 'request JSON file, or - to read the request from stdin')
     .addOption(new Option('--response-format <format>', 'machine response format').choices(['json', 'jsonl']).default('json'))
-    .action(async (flags: { request: string; responseFormat: 'json' | 'jsonl' }) => {
+    .option('--no-config', 'ignore config files and .env for a hermetic run')
+    .action(async (flags: { request: string; responseFormat: 'json' | 'jsonl'; config?: boolean }) => {
       const runId = randomUUID();
-      const abortController = new AbortController();
-      let interruptedExitCode: CliExitCode | undefined;
+      let protocolVersion: 1 | 2 = OCR_PROTOCOL_VERSION;
       let lastSequence = -1;
       let emittedFailure = false;
-      const onInterrupt = (signal: 'SIGINT' | 'SIGTERM'): void => {
-        interruptedExitCode = cliSignalExitCode(signal);
-        abortController.abort(new Error('Interrupted'));
-      };
-      const onSigint = (): void => onInterrupt('SIGINT');
-      const onSigterm = (): void => onInterrupt('SIGTERM');
-      process.once('SIGINT', onSigint);
-      process.once('SIGTERM', onSigterm);
       const eventSink = flags.responseFormat === 'jsonl'
-        ? (event: OcrJobEvent): void => {
+        ? async (event: OcrJobEvent): Promise<void> => {
             lastSequence = event.sequence;
             if (event.type === 'run.failed') emittedFailure = true;
-            process.stdout.write(`${JSON.stringify(event)}\n`);
+            await writeMachineStdout(`${JSON.stringify(event)}\n`);
           }
         : undefined;
-      try {
-        const request = await readOcrJobRequest(flags.request, process.cwd());
-        const execution = await executeOcrJobRequest(request, {
-          cwd: process.cwd(),
-          runId,
-          abortController,
-          eventSink,
-          onWarning: (message) => process.stderr.write(`${message}\n`),
-        });
-        if (flags.responseFormat === 'json') {
-          process.stdout.write(`${JSON.stringify(execution.result)}\n`);
-        }
-        if (abortController.signal.aborted) process.exitCode = interruptedExitCode ?? 1;
-        else if (!execution.result.ok) process.exitCode = 1;
-      } catch (error) {
-        const payload = ocrErrorPayload(error, interruptedExitCode ?? 2);
-        if (flags.responseFormat === 'json') {
-          process.stdout.write(`${JSON.stringify(toOcrRunFailure(runId, payload))}\n`);
-        } else if (!emittedFailure) {
-          const event: OcrJobEvent = {
-            protocolVersion: OCR_PROTOCOL_VERSION,
-            type: 'run.failed',
+      await withInterruptHandling(async ({ abortController, interruptedExitCode }) => {
+        try {
+          const loaded = await readOcrJobRequestRaw(
+            flags.request,
+            process.cwd(),
+            abortController.signal,
+          );
+          // Peek before full validation so invalid v1 bodies still fail as v1.
+          if (loaded.declaredProtocolVersion) protocolVersion = loaded.declaredProtocolVersion;
+          const request = parseOcrJobRequest(loaded.parsed);
+          protocolVersion = request.protocolVersion;
+          if (flags.request === '-' && request.inputs.some((input) => (
+            input.type === 'stdin' || (input.type === 'path' && input.path === '-')
+          ))) {
+            throw new CliExitError(
+              'Request JSON and document bytes cannot both be read from stdin; store the request in a file.',
+              2,
+              {
+                code: 'CONFIG_INVALID',
+                category: 'configuration',
+                retryable: false,
+                hint: 'Pass --request <file> when the OCR document uses stdin.',
+              },
+            );
+          }
+          const execution = await executeOcrJobRequest(request, {
+            cwd: process.cwd(),
             runId,
-            sequence: lastSequence + 1,
-            timestamp: new Date().toISOString(),
-            error: payload,
-          };
-          assertOcrJobEvent(event);
-          process.stdout.write(`${JSON.stringify(event)}\n`);
+            abortController,
+            eventSink,
+            onWarning: (message) => process.stderr.write(`${message}\n`),
+            noConfig: flags.config === false,
+          });
+          if (flags.responseFormat === 'json') {
+            await writeMachineStdout(`${JSON.stringify(execution.result)}\n`);
+          }
+          if (abortController.signal.aborted) process.exitCode = interruptedExitCode() ?? 1;
+          else {
+            const exitCode = cliRunStatusExitCode(execution.result.status);
+            if (exitCode !== 0) process.exitCode = exitCode;
+          }
+        } catch (error) {
+          const signalExitCode = interruptedExitCode();
+          const payload = ocrErrorPayload(error, signalExitCode ?? 2);
+          if (flags.responseFormat === 'json') {
+            await writeMachineStdout(`${JSON.stringify(toOcrRunFailure(runId, payload, protocolVersion))}\n`);
+          } else if (!emittedFailure) {
+            const event: OcrJobEvent = {
+              protocolVersion,
+              type: 'run.failed',
+              runId,
+              sequence: lastSequence + 1,
+              timestamp: new Date().toISOString(),
+              error: errorPayloadForProtocol(payload, protocolVersion),
+            };
+            assertOcrJobEvent(event);
+            await writeMachineStdout(`${JSON.stringify(event)}\n`);
+          }
+          process.exitCode = signalExitCode ?? cliExitCode(asCliExitError(error, 2));
         }
-        process.exitCode = interruptedExitCode ?? cliExitCode(asCliExitError(error, 2));
-      } finally {
-        process.removeListener('SIGINT', onSigint);
-        process.removeListener('SIGTERM', onSigterm);
-      }
+      });
     });
 
   program.command('capabilities')
@@ -318,7 +401,7 @@ CLI flags take precedence.
 
   program.command('schema')
     .description('print one bundled machine-protocol JSON Schema')
-    .argument('<name>', 'request, result, event, error, or capabilities')
+    .argument('<name>', 'request/result/event/error/capabilities, optionally suffixed with -v1 or -v2')
     .action((name: string) => {
       if (!(name in OCR_PROTOCOL_SCHEMAS)) {
         throw new Error(`Unknown protocol schema: ${name}`);
@@ -346,11 +429,12 @@ CLI flags take precedence.
     .argument('[urls...]', 'up to 20 public HTTP(S) URLs')
     .option('--file <path>', 'read URLs from a text file, one per line')
     .option('--config <path>', 'explicit JSON configuration file')
+    .option('--no-config', 'ignore config files and .env for a hermetic run')
     .addOption(new Option('--analysis <mode>', 'URL analysis mode').choices([...WEB_ANALYSIS_MODES]).default('individual'))
     .addOption(new Option('--format <format>', 'output format').choices(['markdown', 'json']))
     .option('-o, --output <path>', 'write output to a file instead of stdout')
-    .addOption(new Option('--thinking <level>', 'thinking level').choices(['minimal', 'low', 'medium', 'high']))
-    .option('--include-thoughts', 'request thought summaries where supported')
+    .addOption(new Option('--thinking <level>', 'thinking/reasoning effort').choices(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']))
+    .option('--include-thoughts', 'deprecated compatibility flag; Web OCR does not emit reasoning progress')
     .option('--timeout <seconds>', 'request time limit')
     .option('--max-cost <usd>', 'fail if estimated paid-tier cost reaches this value')
     .option('--requests-per-minute <count>', 'maximum provider API request starts per minute (0 disables)')
@@ -359,46 +443,28 @@ CLI flags take precedence.
     .option('--quiet', 'suppress status output on stderr')
     .action(async (rawUrls: string[], flags: ExtractCommandFlags & {
       file?: string;
-      config?: string;
       analysis: WebAnalysisMode;
       format?: WebOutputFormat;
       output?: string;
-    }) => {
+    }, command: Command) => {
+      assertConfigFlagsDoNotConflict(command);
       const cwd = process.cwd();
-      loadLocalEnv(cwd);
-      const fileConfig = await loadCliConfig(cwd, flags.config);
+      const noConfig = cliConfigDisabled(flags.config);
+      loadLocalEnv(cwd, noConfig);
+      const fileConfig = await loadCliConfig(
+        cwd,
+        typeof flags.config === 'string' ? flags.config : undefined,
+        noConfig,
+      );
       const options = resolveCliOptions(
-        {
-          provider: flags.provider,
-          gateway: flags.gateway,
-          model: flags.model,
-          baseUrl: flags.baseUrl,
-          apiKeyEnv: flags.apiKeyEnv,
-          cloudflareAccountId: flags.cloudflareAccountId,
-          cloudflareGatewayId: flags.cloudflareGatewayId,
-          cloudflareTokenEnv: flags.cloudflareTokenEnv,
-          cloudflareByok: flags.cloudflareByok,
-          cloudflareByokAlias: flags.cloudflareByokAlias,
-          cloudflareProvider: flags.cloudflareProvider,
-          inputPrice: flags.inputPrice,
-          outputPrice: flags.outputPrice,
-          thinking: flags.thinking,
-          includeThoughts: flags.includeThoughts,
-          format: flags.format,
-          output: flags.output,
-          timeout: flags.timeout,
-          maxCost: flags.maxCost,
-          requestsPerMinute: flags.requestsPerMinute,
-          overwrite: flags.overwrite,
-          dryRun: flags.dryRun,
-          quiet: flags.quiet,
-        },
+        flags,
         { ...fileConfig, mode: 'simple', preset: undefined, schema: undefined },
         cwd,
       );
       if (options.format !== 'markdown' && options.format !== 'json') {
         throw new Error('Web OCR format must be markdown or json');
       }
+      const webFormat: WebOutputFormat = options.format;
       const urls = await resolveWebUrls(rawUrls, flags.file, cwd);
       const outputTarget = options.output
         ? await assertWebOutputAvailable(options.output, cwd, options.overwrite)
@@ -408,53 +474,48 @@ CLI flags take precedence.
         return;
       }
 
-      const abortController = new AbortController();
-      let interruptedExitCode: CliExitCode | undefined;
-      const interrupt = (exitCode: CliExitCode): void => {
-        interruptedExitCode = exitCode;
-        abortController.abort(new Error('Interrupted'));
-      };
-      const onSigint = (): void => interrupt(cliSignalExitCode('SIGINT'));
-      const onSigterm = (): void => interrupt(cliSignalExitCode('SIGTERM'));
-      process.once('SIGINT', onSigint);
-      process.once('SIGTERM', onSigterm);
-      const timeout = setTimeout(
-        () => abortController.abort(new Error(`Timed out after ${options.timeoutSeconds}s`)),
-        options.timeoutSeconds * 1000,
-      );
-      resetProviderUsage();
-      configureProviderRequestPolicy({
+      const providerRuntime = createProviderExecutionContext({
         requestsPerMinute: options.requestsPerMinute,
         maxCostUsd: options.maxCostUsd,
       });
-      try {
-        const result = await runWebExtraction(urls, flags.analysis, options, abortController.signal);
-        const content = renderWebResult(result, flags.analysis, options.format);
-        if (options.output) await writeWebOutput(content, options.output, cwd, options.overwrite);
-        else process.stdout.write(content);
-        const usage = getProviderUsage();
-        if (!options.quiet) process.stderr.write(
-          `Extracted ${urls.length} URL(s); ${usage.totalTokens} tokens across ${usage.requests} request(s); `
-          + `estimated cost $${usage.estimatedCostUsd.toFixed(6)}\n`,
+      await withInterruptHandling(async ({ abortController, interruptedExitCode }) => {
+        const timeout = setTimeout(
+          () => abortController.abort(new DOMException(
+            `Timed out after ${options.timeoutSeconds}s`,
+            'TimeoutError',
+          )),
+          options.timeoutSeconds * 1000,
         );
-        if (options.maxCostUsd !== undefined && usage.estimatedCostUsd >= options.maxCostUsd) {
-          process.exitCode = 1;
+        try {
+          const result = await runWebExtraction(
+            urls,
+            flags.analysis,
+            options,
+            abortController.signal,
+            providerRuntime,
+          );
+          const content = renderWebResult(result, flags.analysis, webFormat);
+          if (options.output) await writeWebOutput(content, options.output, cwd, options.overwrite);
+          else await writeMachineStdout(content);
+          const usage = providerRuntime.getUsage();
+          if (!options.quiet) process.stderr.write(
+            `Extracted ${urls.length} URL(s); ${usage.totalTokens} tokens across ${usage.requests} request(s); `
+            + `estimated cost $${usage.estimatedCostUsd.toFixed(6)}\n`,
+          );
+        } catch (error) {
+          const signalExitCode = interruptedExitCode();
+          if (signalExitCode !== undefined) {
+            process.exitCode = signalExitCode;
+            return;
+          }
+          if (abortController.signal.aborted && abortController.signal.reason instanceof Error) {
+            throw asCliExitError(abortController.signal.reason, 1);
+          }
+          throw asCliExitError(error, 1);
+        } finally {
+          clearTimeout(timeout);
         }
-      } catch (error) {
-        if (interruptedExitCode !== undefined) {
-          process.exitCode = interruptedExitCode;
-          return;
-        }
-        if (abortController.signal.aborted && abortController.signal.reason instanceof Error) {
-          throw asCliExitError(abortController.signal.reason, 1);
-        }
-        throw asCliExitError(error, 1);
-      } finally {
-        clearTimeout(timeout);
-        resetProviderRequestPolicy();
-        process.removeListener('SIGINT', onSigint);
-        process.removeListener('SIGTERM', onSigterm);
-      }
+      });
     });
 
   program.command('presets')
@@ -496,11 +557,18 @@ CLI flags take precedence.
   program.command('doctor')
     .description('check local CLI configuration without making an API request')
     .option('--config <path>', 'explicit JSON configuration file')
+    .option('--no-config', 'ignore config files and .env for a hermetic diagnosis')
     .option('--json', 'emit machine-readable JSON')
-    .action(async (flags: { config?: string; json?: boolean }) => {
+    .action(async (flags: { config?: string | false; json?: boolean }, command: Command) => {
+      assertConfigFlagsDoNotConflict(command);
       const cwd = process.cwd();
-      loadLocalEnv(cwd);
-      const config = await loadCliConfig(cwd, flags.config);
+      const noConfig = cliConfigDisabled(flags.config);
+      loadLocalEnv(cwd, noConfig);
+      const config = await loadCliConfig(
+        cwd,
+        typeof flags.config === 'string' ? flags.config : undefined,
+        noConfig,
+      );
       let resolvedConfig: ReturnType<typeof resolveCliOptions> | undefined;
       let configurationError: string | undefined;
       try {

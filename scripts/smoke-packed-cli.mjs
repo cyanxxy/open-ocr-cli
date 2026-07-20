@@ -28,7 +28,10 @@ try {
   }
   const capabilities = JSON.parse(run(executable, ['capabilities', '--json']));
   if (
-    capabilities.protocolVersion !== 1
+    capabilities.protocolVersion !== 2
+    || !Array.isArray(capabilities.supportedProtocolVersions)
+    || !capabilities.supportedProtocolVersions.includes(1)
+    || !capabilities.supportedProtocolVersions.includes(2)
     || !capabilities.deliveryModes?.includes('reference')
     || capabilities.schemaAccess?.networkFetch !== false
   ) {
@@ -39,8 +42,12 @@ try {
     throw new Error('Packed CLI did not include the shared Open OCR skill');
   }
   const requestSchema = JSON.parse(run(executable, ['schema', 'request']));
-  if (!requestSchema.$id?.endsWith('/request-v1.schema.json')) {
-    throw new Error('Packed CLI did not expose the request schema');
+  if (!requestSchema.$id?.endsWith('/request-v2.schema.json')) {
+    throw new Error('Packed CLI did not expose the current request schema');
+  }
+  const legacyRequestSchema = JSON.parse(run(executable, ['schema', 'request-v1']));
+  if (!legacyRequestSchema.$id?.endsWith('/request-v1.schema.json')) {
+    throw new Error('Packed CLI did not expose the v1 request schema');
   }
   run(alias, ['--version']);
   run(executable, [

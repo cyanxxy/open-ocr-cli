@@ -203,6 +203,7 @@ describe('agentTools', () => {
           },
         ],
       }),
+      candidates: [{ finishReason: 'STOP' }],
     });
 
     const result = await executeReOcrRegion(

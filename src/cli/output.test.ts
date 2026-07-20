@@ -61,6 +61,19 @@ describe('CLI output', () => {
     expect(await readFile(path.join(directory, 'nested', 'invoice.json'), 'utf8')).toContain('"Invoice"');
   });
 
+  it('preserves valid falsey custom-schema JSON values', async () => {
+    const target = path.join(directory, 'null-result.json');
+    const files = await writeArtifacts(
+      input,
+      { json: null },
+      { ...options, format: 'json', output: target },
+      1,
+    );
+
+    expect(files).toEqual([target]);
+    await expect(readFile(target, 'utf8')).resolves.toBe('null\n');
+  });
+
   it('refuses accidental replacement and supports explicit overwrite', async () => {
     await writeArtifacts(input, artifacts, options, 2);
     await expect(writeArtifacts(input, artifacts, options, 2)).rejects.toThrow('Output already exists');

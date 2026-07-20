@@ -1,7 +1,7 @@
 {
   "name": "open-gemini-ocr",
   "private": true,
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Provider-neutral multimodal OCR CLI for images, PDFs, URLs, JSON schemas, and agentic extraction, with a Gemini web app.",
   "license": "MIT",
   "type": "module",

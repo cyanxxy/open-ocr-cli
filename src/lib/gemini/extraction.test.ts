@@ -63,6 +63,18 @@ describe('extractTextFromFile — output contract', () => {
     expect(result.sections[0].content).toEqual(['line']);
   });
 
+  it.each([
+    ['a primitive', '42'],
+    ['a missing required sections property', '{"title":"Invoice"}'],
+    ['a malformed nested section', '{"sections":[{"content":"not-an-array"}]}'],
+    ['an undeclared property', '{"sections":[],"surprise":true}'],
+  ])('rejects schema-invalid JSON: %s', async (_description, text) => {
+    mockGenerate({ text, candidates: [{ finishReason: 'STOP' }] });
+    await expect(
+      extractTextFromFile(FILE_DATA, 'image/png', CLIENT, undefined, { structuredOutput: true }),
+    ).rejects.toThrow(/did not match the OCR schema/i);
+  });
+
   it('extracts JSON with a caller-provided schema', async () => {
     const generateContent = mockGenerate({
       text: '{"invoice_number":"INV-42","total":12.5}',

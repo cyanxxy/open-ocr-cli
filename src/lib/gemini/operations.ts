@@ -9,6 +9,7 @@ import {
 } from './interactions';
 import { logger } from '../logger';
 import type { GeminiModel, ThinkingConfig } from './types';
+import type { ProviderExecutionContext } from '../providers/runtime';
 
 /**
  * A single extracted URL result from grounded URL-context extraction.
@@ -268,6 +269,7 @@ export async function extractTextFromUrls(
   thinkingConfig?: ThinkingConfig,
   abortSignal?: AbortSignal,
   transport?: { baseUrl?: string; headers?: Record<string, string> },
+  runtime?: ProviderExecutionContext,
 ): Promise<{
   results?: UrlResult[];
   combinedContent?: string;
@@ -379,6 +381,7 @@ Format as a structured comparison analysis.`;
       responseMimeType: analysisMode === 'individual' ? 'application/json' : undefined,
       abortSignal,
       store: false,
+      runtime,
     });
 
     if (interaction.status !== 'completed') {

@@ -1,5 +1,38 @@
 # Changelog
 
+## 2.2.0 - 2026-07-21
+
+### Provider and agent upgrades
+
+- Added Kimi K3 and Kimi K2.7 model profiles, model-aware reasoning controls,
+  updated cached-token pricing, and safer high-output-token limits for
+  compatible providers.
+- Added streamed Gemini Interactions and OpenAI-compatible agent progress with
+  stable step IDs, typed tool lifecycle events, provider reasoning continuity,
+  and compact audit artifacts.
+- Added per-job request-rate and cost contexts so concurrent CLI jobs do not
+  share accounting state, while preserving usage reported by incomplete or
+  failed streams.
+- Tightened provider finish-reason, structured-output, tool-call, preset, and
+  extraction validation so malformed or incomplete responses fail closed.
+
+### Machine protocol and input reliability
+
+- Added protocol v2 inline/reference delivery, typed progress levels, expanded
+  error codes, stdin document requests, provider capabilities, and bundled v2
+  JSON Schemas while retaining protocol v1 compatibility.
+- Added provider-aware GIF ingestion for Kimi, Muse, and OpenRouter across
+  local files and Web OCR, while keeping Gemini-only browser uploads aligned
+  with Gemini's advertised media types.
+- Made request and document stdin reads abort immediately on SIGINT/SIGTERM,
+  fixed hermetic runs with explicit config files, and prevented low request
+  rates from consuming Kimi's remote-file DELETE timeout.
+- Improved input signature sniffing, bounded reads, PDF cleanup, output
+  conflicts, resumable fingerprints, ordered event delivery, and stdout
+  backpressure for large automation batches.
+
+[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v2.1.0...v2.2.0)
+
 ## 2.1.0 - 2026-07-18
 
 ### Coding-agent protocol

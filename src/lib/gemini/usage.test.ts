@@ -40,6 +40,23 @@ describe('Gemini usage accumulator', () => {
     expect(getGeminiUsage().requests).toBe(0);
   });
 
+  it('accepts the current shared UsageMetadata output-token field', () => {
+    recordGeminiUsage({
+      usageMetadata: {
+        promptTokenCount: 10,
+        responseTokenCount: 4,
+        totalTokenCount: 14,
+      },
+    }, 'gemini-3.5-flash');
+
+    expect(getGeminiUsage()).toMatchObject({
+      requests: 1,
+      inputTokens: 10,
+      outputTokens: 4,
+      totalTokens: 14,
+    });
+  });
+
   it('records tool-use tokens without double-counting their input cost', () => {
     recordGeminiUsage({
       usage: {

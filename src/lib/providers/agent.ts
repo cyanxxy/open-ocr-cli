@@ -24,6 +24,7 @@ import {
 } from './openaiCompatible';
 import { isProviderCostLimitError } from './requestPolicy';
 import type { ProviderRuntimeConfig } from './types';
+import { streamAgentOperation, waitForAbortableAgentDelay } from '../agentStepStream';
 
 const MAX_INNER_ROUNDS = 10;
 const MAX_TRANSIENT_RETRIES = 3;
@@ -66,9 +67,13 @@ async function completionWithRetries(
   config: ProviderRuntimeConfig,
   messages: OpenAIMessage[],
   maxTokens: number,
+  onStep: (step: AgentStep) => void,
+  stepIdPrefix: string,
+  promptCacheKey: string,
   signal?: AbortSignal,
 ): ReturnType<typeof createChatCompletion> {
   for (let attempt = 0; ; attempt += 1) {
+    let emittedDelta = false;
     try {
       return await createChatCompletion(config, {
         messages,
@@ -76,23 +81,33 @@ async function completionWithRetries(
         tools: agentTools(),
         toolChoice: 'auto',
         signal,
+        ...(config.provider === 'kimi'
+          ? { extraBody: { prompt_cache_key: promptCacheKey } }
+          : {}),
+        ...(config.progress === 'off' ? {} : {
+          onDelta: (delta): void => {
+            if (delta.kind === 'reasoning' && config.progress !== 'detailed') return;
+            emittedDelta = true;
+            onStep({
+              type: 'thinking',
+              source: delta.kind,
+              id: `${stepIdPrefix}:${delta.kind}`,
+              delta: true,
+              content: delta.text,
+              timestamp: Date.now(),
+            });
+          },
+        }),
       });
     } catch (error) {
-      if (signal?.aborted || !isRetryableProviderError(error) || attempt >= MAX_TRANSIENT_RETRIES) throw error;
+      if (
+        emittedDelta
+        || signal?.aborted
+        || !isRetryableProviderError(error)
+        || attempt >= MAX_TRANSIENT_RETRIES
+      ) throw error;
       const delay = 750 * 2 ** attempt + Math.floor(Math.random() * 250);
-      await new Promise<void>((resolve, reject) => {
-        const onAbort = (): void => {
-          clearTimeout(timeout);
-          reject(signal?.reason instanceof Error
-            ? signal.reason
-            : new DOMException('Operation aborted', 'AbortError'));
-        };
-        const timeout = setTimeout(() => {
-          signal?.removeEventListener('abort', onAbort);
-          resolve();
-        }, delay);
-        signal?.addEventListener('abort', onAbort, { once: true });
-      });
+      await waitForAbortableAgentDelay(delay, signal);
     }
   }
 }
@@ -106,6 +121,7 @@ async function executeProviderTurn(
   loopConfig: AgentLoopConfig,
   signal: AbortSignal | undefined,
   regionCropper: RegionCropper,
+  iteration: number,
   onStep: (step: AgentStep) => void,
 ): Promise<{ finished: boolean; steps: AgentStep[] }> {
   const steps: AgentStep[] = [];
@@ -113,26 +129,50 @@ async function executeProviderTurn(
   let nudged = false;
 
   for (let round = 0; round < MAX_INNER_ROUNDS; round += 1) {
+    let streamedDelta = false;
+    // Namespace streamed channels by the agent session so concurrent documents
+    // cannot publish colliding step IDs into one machine-event stream.
+    const stepIdPrefix = `${memory.sessionId}:completion-${iteration}-${round + 1}`;
     const completion = await completionWithRetries(
       providerConfig,
       messages,
       loopConfig.maxTokens,
+      (step) => {
+        streamedDelta = true;
+        onStep(step);
+      },
+      stepIdPrefix,
+      memory.sessionId,
       signal,
     );
     messages.push(completion.message);
     const reasoningText = completion.message.reasoning_content ?? completion.message.reasoning;
-    if (reasoningText) {
-      const step: AgentStep = {
-        type: 'thinking',
-        content: reasoningText,
-        timestamp: Date.now(),
-      };
-      steps.push(step);
-      onStep(step);
-    } else if (completion.text) {
-      const step: AgentStep = { type: 'thinking', content: completion.text, timestamp: Date.now() };
-      steps.push(step);
-      onStep(step);
+    if (providerConfig.progress === 'off' || streamedDelta) {
+      // The assistant message is retained losslessly for continuation. Avoid
+      // replaying a completed copy when live deltas were already emitted.
+    } else {
+      if (reasoningText && providerConfig.progress === 'detailed') {
+        const reasoningStep: AgentStep = {
+          type: 'thinking',
+          source: 'reasoning',
+          id: `${stepIdPrefix}:reasoning`,
+          content: reasoningText,
+          timestamp: Date.now(),
+        };
+        steps.push(reasoningStep);
+        onStep(reasoningStep);
+      }
+      if (completion.text) {
+        const outputStep: AgentStep = {
+          type: 'thinking',
+          source: 'model_output',
+          id: `${stepIdPrefix}:model_output`,
+          content: completion.text,
+          timestamp: Date.now(),
+        };
+        steps.push(outputStep);
+        onStep(outputStep);
+      }
     }
 
     const calls = completion.message.tool_calls ?? [];
@@ -154,6 +194,8 @@ async function executeProviderTurn(
       const args = parseToolArguments(call.function.arguments);
       const callStep: AgentStep = {
         type: 'function_call',
+        source: 'tool_call',
+        id: call.id,
         content: index === 0
           ? `Calling ${call.function.name}`
           : `Skipping parallel call ${call.function.name}; tools run sequentially`,
@@ -211,7 +253,10 @@ async function executeProviderTurn(
       if (index === 0) applyMemoryUpdate(memory, result.memoryUpdate);
       const resultStep: AgentStep = {
         type: result.success ? 'result' : 'error',
+        source: 'tool_result',
+        id: call.id,
         content: result.success ? `${call.function.name} completed` : (result.error ?? `${call.function.name} failed`),
+        functionCall: { id: call.id, name: call.function.name, arguments: args },
         functionResult: result,
         timestamp: Date.now(),
       };
@@ -246,8 +291,6 @@ export async function* providerAgentLoop(
   );
   const deadline = Date.now() + (config.maxDurationMs ?? 120_000);
   let stopReason: AgentStopReason | undefined;
-  const emitQueue: AgentStep[] = [];
-  const onStep = (step: AgentStep): void => { emitQueue.push(step); };
   const media = await documentContentParts(
     providerConfig,
     fileData,
@@ -274,7 +317,7 @@ export async function* providerAgentLoop(
     };
     try {
       const before = Object.keys(memory.extractedFields).length;
-      const turn = await executeProviderTurn(
+      const streamedTurn = streamAgentOperation((onStep) => executeProviderTurn(
         messages,
         fileData,
         file.type,
@@ -283,22 +326,33 @@ export async function* providerAgentLoop(
         config,
         signal,
         regionCropper,
+        iteration,
         onStep,
-      );
-      while (emitQueue.length > 0) yield emitQueue.shift()!;
+      ));
+      let streamed = await streamedTurn.next();
+      while (!streamed.done) {
+        yield streamed.value;
+        streamed = await streamedTurn.next();
+      }
+      const turn = streamed.value;
       const completion = evaluateAgentCompletion(memory, memory.confidence, config.confidenceThreshold);
       if (completion.complete) { stopReason = 'succeeded'; break; }
       if (!turn.finished) { stopReason = 'tool_limit_reached'; break; }
       if (Object.keys(memory.extractedFields).length === before) { stopReason = 'partial'; break; }
     } catch (error) {
-      while (emitQueue.length > 0) yield emitQueue.shift()!;
       if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
         stopReason = 'cancelled';
         break;
       }
       if (isProviderCostLimitError(error)) { stopReason = 'cost_limit_reached'; break; }
       const message = error instanceof Error ? error.message : String(error);
-      yield { type: 'error', content: `Agent iteration failed: ${message}`, timestamp: Date.now() };
+      yield {
+        type: 'error',
+        source: 'runtime',
+        content: `Agent iteration failed: ${message}`,
+        timestamp: Date.now(),
+      };
+      if (config.throwOnFailure) throw error;
       stopReason = 'failed';
       break;
     }
@@ -308,7 +362,12 @@ export async function* providerAgentLoop(
     : 'max_iterations';
   memory.stopReason = stopReason;
   if (stopReason !== 'cancelled') {
-    yield { type: 'result', content: terminalLine(stopReason, memory), timestamp: Date.now() };
+    yield {
+      type: 'result',
+      source: 'runtime',
+      content: terminalLine(stopReason, memory),
+      timestamp: Date.now(),
+    };
   }
   return memory;
 }

@@ -1,4 +1,5 @@
 import type { ThinkingConfig } from '../gemini/types';
+import type { ProviderExecutionContext } from './runtime';
 
 export const PROVIDER_IDS = [
   'gemini',
@@ -14,13 +15,17 @@ export const GATEWAY_IDS = ['direct', 'cloudflare'] as const;
 export type GatewayId = (typeof GATEWAY_IDS)[number];
 
 export interface ProviderCapabilities {
-  images: boolean;
-  pdfs: boolean;
-  structuredOutput: boolean;
-  toolCalling: boolean;
-  reasoning: boolean;
-  webUrls: boolean;
+  images: ProviderCapabilityState;
+  pdfs: ProviderCapabilityState;
+  structuredOutput: ProviderCapabilityState;
+  toolCalling: ProviderCapabilityState;
+  reasoning: ProviderCapabilityState;
+  webUrls: ProviderCapabilityState;
 }
+
+export type ProviderCapabilityState = boolean | 'model-dependent' | 'unknown';
+
+export type AgentProgressLevel = 'off' | 'standard' | 'detailed';
 
 export interface ProviderTokenPrice {
   inputPerMillionUsd: number;
@@ -37,6 +42,8 @@ export interface ProviderRuntimeConfig {
   model: string;
   baseUrl: string;
   thinkingConfig?: ThinkingConfig;
+  /** Controls emitted observability only; never controls reasoning continuity. */
+  progress?: AgentProgressLevel;
   gatewayToken?: string;
   gatewayTokenEnv?: string;
   cloudflareAccountId?: string;
@@ -46,6 +53,8 @@ export interface ProviderRuntimeConfig {
   cloudflareProvider?: string;
   inputPricePerMillionUsd?: number;
   outputPricePerMillionUsd?: number;
+  /** Per-job usage accounting, cost ceiling, and request-rate gate. */
+  runtime?: ProviderExecutionContext;
 }
 
 export interface ProviderProfile {
@@ -55,6 +64,8 @@ export interface ProviderProfile {
   defaultBaseUrl: string;
   defaultApiKeyEnv: string;
   models: readonly string[];
+  /** Image MIME types accepted by both this CLI and the known provider transport. Omitted when model/endpoint-specific. */
+  inputImageMimeTypes?: readonly string[];
   capabilities: ProviderCapabilities;
 }
 

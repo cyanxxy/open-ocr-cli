@@ -1,9 +1,11 @@
 {
   "provider": "openrouter",
-  "model": "moonshotai/kimi-k2.6",
+  "model": "moonshotai/kimi-k3",
   "apiKeyEnv": "OPENROUTER_API_KEY",
   "gateway": "direct",
   "format": "all",
+  "thinking": "MAX",
+  "progress": "standard",
   "concurrency": 2,
   "requestsPerMinute": 30,
   "resume": true

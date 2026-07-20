@@ -4,6 +4,7 @@ import { hostname } from 'node:os';
 import path from 'node:path';
 
 import { parseBatchLockOwner, type BatchLockOwner } from './jsonValidation';
+import { CliExitError } from './errors';
 import { parseCliManifest } from './manifest';
 import type {
   BatchSummary,
@@ -16,6 +17,16 @@ import type {
 } from './types';
 
 const EMPTY_MANIFEST: CliManifest = { version: 1, entries: {} };
+
+function outputConflict(message: string, cause?: unknown): CliExitError {
+  return new CliExitError(message, 2, {
+    ...(cause !== undefined ? { cause } : {}),
+    code: 'OUTPUT_CONFLICT',
+    category: 'output',
+    retryable: false,
+    hint: 'Choose a new output path or resume a matching job.',
+  });
+}
 
 export interface BatchLockAcquireOptions {
   forceUnlock?: boolean;
@@ -46,7 +57,10 @@ async function pathExists(filePath: string): Promise<boolean> {
 }
 
 export function primaryArtifact(artifacts: OcrArtifacts, format: ResolvedCliOptions['format']): string {
-  if (format === 'json') return `${JSON.stringify(artifacts.json, null, 2)}\n`;
+  if (format === 'json') {
+    if (artifacts.json === undefined) throw new Error('This extraction did not produce JSON output');
+    return `${JSON.stringify(artifacts.json, null, 2)}\n`;
+  }
   if (format === 'csv') {
     if (!artifacts.csv) throw new Error('This extraction did not produce tabular CSV output');
     return `${artifacts.csv.replace(/\n?$/, '\n')}`;
@@ -60,7 +74,7 @@ function artifactEntries(artifacts: OcrArtifacts, format: ResolvedCliOptions['fo
   if ((format === 'markdown' || format === 'all') && artifacts.markdown) {
     entries.push(['md', artifacts.markdown.replace(/\n?$/, '\n')]);
   }
-  if ((format === 'json' || format === 'all') && artifacts.json) {
+  if ((format === 'json' || format === 'all') && artifacts.json !== undefined) {
     entries.push(['json', `${JSON.stringify(artifacts.json, null, 2)}\n`]);
   }
   if ((format === 'csv' || format === 'all') && artifacts.csv) {
@@ -72,6 +86,14 @@ function artifactEntries(artifacts: OcrArtifacts, format: ResolvedCliOptions['fo
   if (format === 'csv' && !artifacts.csv) throw new Error('This extraction did not produce tabular CSV output');
   if (entries.length === 0) throw new Error(`No artifact is available for format ${format}`);
   return entries;
+}
+
+/** Validate an inline delivery against the same artifact contract as file output. */
+export function assertArtifactFormatAvailable(
+  artifacts: OcrArtifacts,
+  format: ResolvedCliOptions['format'],
+): void {
+  void artifactEntries(artifacts, format);
 }
 
 function safeOutputRelative(input: ResolvedInput): string {
@@ -162,7 +184,7 @@ export async function assertArtifactTargetsAvailable(
     }
   }))).filter((target): target is string => target !== undefined);
   if (existing.length > 0) {
-    throw new Error(
+    throw outputConflict(
       `Output already exists before extraction: ${existing.join(', ')}. Choose a new output path or resume a matching job.`,
     );
   }
@@ -202,7 +224,7 @@ export async function assertNoOutputCollisions(
     .map(([target, sources]) => `${target} <= ${sources.join(', ')}`)
     .join('; ');
   const remainder = collisions.length > 5 ? `; and ${collisions.length - 5} more` : '';
-  throw new Error(
+  throw outputConflict(
     `Output path collision detected before extraction: ${details}${remainder}. `
     + 'Rename same-stem inputs or process them into separate output directories.',
   );
@@ -284,7 +306,7 @@ async function commitArtifacts(
     for (const [target, content] of targets) {
       await fs.mkdir(path.dirname(target), { recursive: true });
       if (!overwrite && await pathExists(target)) {
-        throw new Error(`Output already exists: ${target}. Choose a new output path or resume a matching job.`);
+        throw outputConflict(`Output already exists: ${target}. Choose a new output path or resume a matching job.`);
       }
       const temporary = `${target}.${transactionId}.tmp`;
       await fs.writeFile(temporary, content, { encoding: 'utf8', flag: 'wx' });
@@ -296,7 +318,7 @@ async function commitArtifacts(
         entry.backup = `${entry.target}.${transactionId}.bak`;
         await fs.rename(entry.target, entry.backup);
       } else if (!overwrite && await pathExists(entry.target)) {
-        throw new Error(`Output already exists: ${entry.target}. Choose a new output path or resume a matching job.`);
+        throw outputConflict(`Output already exists: ${entry.target}. Choose a new output path or resume a matching job.`);
       }
       if (overwrite) {
         await fs.rename(entry.temporary, entry.target);
@@ -483,22 +505,22 @@ export class BatchOutputLock {
 
       if (options.forceUnlock) {
         if (!existingOwner) {
-          throw new Error(
+          throw outputConflict(
             `Cannot force-unlock ${lockPath}: owner metadata is invalid. Remove it manually only after verifying no batch is running.`,
-            { cause: error },
+            error,
           );
         }
         const localHostname = hostname();
         if (existingOwner.hostname !== localHostname) {
-          throw new Error(
+          throw outputConflict(
             `Cannot force-unlock ${lockPath}: it belongs to host ${existingOwner.hostname}, not ${localHostname}.`,
-            { cause: error },
+            error,
           );
         }
         if (processIsAlive(existingOwner.pid)) {
-          throw new Error(
+          throw outputConflict(
             `Cannot force-unlock ${lockPath}: owner PID ${existingOwner.pid} is still running on ${localHostname}.`,
-            { cause: error },
+            error,
           );
         }
 
@@ -506,7 +528,7 @@ export class BatchOutputLock {
           JSON.parse(await fs.readFile(lockPath, 'utf8')) as unknown,
         );
         if (currentOwner?.token !== existingOwner.token) {
-          throw new Error(`Cannot force-unlock ${lockPath}: lock ownership changed during recovery.`);
+          throw outputConflict(`Cannot force-unlock ${lockPath}: lock ownership changed during recovery.`);
         }
         await fs.rm(lockPath);
         options.onWarning?.(
@@ -514,11 +536,11 @@ export class BatchOutputLock {
         );
         return BatchOutputLock.acquire(outputDirectory, { onWarning: options.onWarning });
       }
-      throw new Error(
+      throw outputConflict(
         `Batch output directory is already in use (${ownership}): ${outputDirectory}. `
         + 'If that same-host process is no longer running, retry with --force-unlock. '
         + `Review ${lockPath} manually for cross-host or invalid lock metadata.`,
-        { cause: error },
+        error,
       );
     }
   }
@@ -532,7 +554,7 @@ export class BatchOutputLock {
       throw error;
     }
     if (current.token !== this.owner.token) {
-      throw new Error(`Batch lock ownership changed unexpectedly; refusing to remove ${this.lockPath}`);
+      throw outputConflict(`Batch lock ownership changed unexpectedly; refusing to remove ${this.lockPath}`);
     }
     await fs.rm(this.lockPath);
   }
@@ -544,6 +566,7 @@ export async function writeBatchSummary(summary: BatchSummary, outputDirectory: 
   return target;
 }
 
+/** Established direct-CLI JSONL document record (separate from `run` protocol events). */
 export function jsonlResult(result: OcrJobResult): string {
   return JSON.stringify({
     type: 'document',

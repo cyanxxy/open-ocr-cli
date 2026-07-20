@@ -1,13 +1,14 @@
 import type { AgentStep } from '../lib/agentTypes';
 import {
-  configureProviderRequestPolicy,
-  getProviderUsage,
-  resetProviderRequestPolicy,
-  resetProviderUsage,
+  createProviderExecutionContext,
+  isProviderCostLimitError,
+  type ProviderExecutionContext,
 } from '../lib/providers';
 import { asCliExitError, CliExitError, ocrErrorPayload } from './errors';
 import { inputFingerprint, readAndValidateInput } from './inputs';
+import { assertProviderMediaTypeSupported } from './providerInputs';
 import {
+  assertArtifactFormatAvailable,
   assertArtifactTargetsAvailable,
   assertNoOutputCollisions,
   BatchOutputLock,
@@ -18,13 +19,18 @@ import {
   writeBatchSummary,
 } from './output';
 import {
+  agentProtocolStep,
   assertOcrJobEvent,
+  errorPayloadForProtocol,
   OCR_PROTOCOL_VERSION,
   ocrDocumentId,
   toOcrRunResult,
   toProtocolDocument,
   type OcrJobEvent,
   type OcrJobEventSink,
+  type OcrDeliveryMode,
+  type OcrProgressLevel,
+  type OcrProtocolVersion,
   type OcrRunResult,
 } from './protocol';
 import type {
@@ -46,6 +52,7 @@ export type OcrDocumentExtractor = (
   options: ResolvedCliOptions,
   signal: AbortSignal,
   onStep: (step: AgentStep) => void,
+  providerRuntime: ProviderExecutionContext,
 ) => Promise<OcrExtractionResult>;
 
 export interface OcrJobServiceDependencies {
@@ -61,6 +68,12 @@ export interface OcrJobServiceRuntime {
   onWarning?: (message: string) => void;
   /** Persist a manifest for a reference-first, single-document output directory. */
   enableSingleInputResume?: boolean;
+  /** Machine protocol negotiated by the request. Direct CLI calls omit it. */
+  protocolVersion?: OcrProtocolVersion;
+  /** Explicit machine delivery; omitted for the direct CLI's historical behavior. */
+  deliveryMode?: OcrDeliveryMode;
+  /** Structured agent event detail. */
+  progress?: OcrProgressLevel;
 }
 
 export interface OcrJobServiceResult {
@@ -74,32 +87,51 @@ type EventPayload = Omit<OcrJobEvent, 'protocolVersion' | 'runId' | 'sequence' |
 class EventDispatcher {
   private sequence = 0;
   private pending: Promise<void> = Promise.resolve();
+  private failure: unknown;
 
   constructor(
     private readonly runId: string,
+    private readonly protocolVersion: OcrProtocolVersion,
     private readonly sink?: OcrJobEventSink,
   ) {}
 
   emit(payload: EventPayload): Promise<void> {
     if (!this.sink) return Promise.resolve();
+    const { step, phase, message, error, ...common } = payload;
     const event: OcrJobEvent = {
-      protocolVersion: OCR_PROTOCOL_VERSION,
+      protocolVersion: this.protocolVersion,
       runId: this.runId,
       sequence: this.sequence,
       timestamp: new Date().toISOString(),
-      ...payload,
+      ...common,
+      ...(this.protocolVersion === 1 && payload.type === 'document.progress'
+        ? { phase: phase ?? step?.kind ?? 'runtime', message: message ?? step?.text ?? 'Agent progress updated.' }
+        : {}),
+      ...(this.protocolVersion === 2 && payload.type === 'document.progress' && step ? { step } : {}),
+      ...(error ? { error: errorPayloadForProtocol(error, this.protocolVersion) } : {}),
     };
-    this.sequence += 1;
+    // Validate before allocating the sequence number so a bad event does not
+    // leave a permanent gap or throw after side effects.
     assertOcrJobEvent(event);
+    this.sequence += 1;
     const delivery = this.pending.then(async () => this.sink?.(event));
-    // Keep later events deliverable after a sink failure. The caller still
-    // receives the original rejection and decides whether the job can proceed.
-    this.pending = delivery.catch(() => undefined);
+    // Keep later events deliverable after a sink failure, while retaining the
+    // first rejection so a later flush cannot race past an async sink error.
+    this.pending = delivery.catch((error: unknown) => {
+      this.failure ??= error;
+    });
     return delivery;
   }
 
-  flush(): Promise<void> {
-    return this.pending;
+  async flush(): Promise<void> {
+    await this.pending;
+    if (this.failure !== undefined) {
+      const failure = this.failure;
+      this.failure = undefined;
+      throw failure instanceof Error
+        ? failure
+        : new Error(errorMessage(failure));
+    }
   }
 }
 
@@ -115,6 +147,8 @@ export function modeFingerprint(options: ResolvedCliOptions): string {
     preset: options.preset,
     model: options.model,
     thinking: options.thinking,
+    traceProgress: options.format === 'all' ? options.progress : undefined,
+    traceThoughtSummaries: options.format === 'all' ? options.includeThoughts : undefined,
     format: options.format,
     instructions: options.instructions,
     detectImages: options.detectImages,
@@ -146,6 +180,67 @@ function terminalEventType(result: OcrJobResult): OcrJobEvent['type'] {
   return 'document.completed';
 }
 
+function agentToolLabel(name: string | undefined): string {
+  if (name === 'analyze_document_structure') return 'document structure analysis';
+  if (name === 'extract_fields_batch') return 'field extraction';
+  if (name === 're_ocr_region') return 'region re-OCR';
+  return 'an agent tool';
+}
+
+const MAX_PROGRESS_MESSAGE_LENGTH = 512;
+const ANSI_CONTROL_SEQUENCE = new RegExp(
+  `${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`,
+  'gu',
+);
+
+function isSafeProgressCharacter(character: string): boolean {
+  const codePoint = character.codePointAt(0);
+  if (codePoint === undefined) return false;
+  const disallowedControl = codePoint <= 8
+    || (codePoint >= 11 && codePoint <= 12)
+    || (codePoint >= 14 && codePoint <= 31)
+    || (codePoint >= 127 && codePoint <= 159);
+  const bidirectionalOverride = (codePoint >= 0x202a && codePoint <= 0x202e)
+    || (codePoint >= 0x2066 && codePoint <= 0x2069);
+  return !disallowedControl && !bidirectionalOverride;
+}
+
+/**
+ * Produce the bounded compatibility message used by human stderr and protocol
+ * v1. Protocol v2 additionally carries the lossless typed AgentProtocolStep;
+ * modern agent consumers should use that structured field for model output,
+ * reasoning summaries, tool calls, and stable streaming step IDs.
+ */
+export function normalizeAgentProgressText(content: string): string | undefined {
+  const withoutAnsi = content.replace(ANSI_CONTROL_SEQUENCE, '');
+  const normalized = Array.from(withoutAnsi)
+    .filter(isSafeProgressCharacter)
+    .join('')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (!normalized) return undefined;
+
+  const characters = Array.from(normalized);
+  if (characters.length <= MAX_PROGRESS_MESSAGE_LENGTH) return normalized;
+  return `${characters.slice(0, MAX_PROGRESS_MESSAGE_LENGTH - 1).join('').trimEnd()}…`;
+}
+
+export function agentProgressMessage(step: AgentStep): string {
+  if (step.type === 'thinking') {
+    return normalizeAgentProgressText(step.content) ?? 'Agent is analyzing the document.';
+  }
+  if (step.type === 'function_call') {
+    return `Agent requested ${agentToolLabel(step.functionCall?.name)}.`;
+  }
+  if (step.type === 'error') {
+    return normalizeAgentProgressText(step.content) ?? 'An agent step reported an error.';
+  }
+  if (step.functionCall?.name) {
+    return `Agent completed ${agentToolLabel(step.functionCall.name)}.`;
+  }
+  return normalizeAgentProgressText(step.content) ?? 'Agent processing step completed.';
+}
+
 /**
  * Process-independent batch application service. It owns OCR job semantics,
  * persistence, scheduling, and lifecycle events, but never reads or writes
@@ -159,7 +254,13 @@ export class OcrJobService {
     options: ResolvedCliOptions,
     runtime: OcrJobServiceRuntime,
   ): Promise<OcrJobServiceResult> {
-    const events = new EventDispatcher(runtime.runId, runtime.eventSink);
+    const protocolVersion = runtime.protocolVersion ?? OCR_PROTOCOL_VERSION;
+    const deliveryMode = runtime.deliveryMode ?? 'reference';
+    const events = new EventDispatcher(runtime.runId, protocolVersion, runtime.eventSink);
+    const providerRuntime = createProviderExecutionContext({
+      requestsPerMinute: options.requestsPerMinute,
+      maxCostUsd: options.maxCostUsd,
+    });
     let batchLock: BatchOutputLock | undefined;
     let summary: BatchSummary | undefined;
     let failure: unknown;
@@ -175,7 +276,8 @@ export class OcrJobService {
     });
 
     try {
-      const needsManifest = inputs.length > 1 || runtime.enableSingleInputResume === true;
+      const needsManifest = runtime.deliveryMode !== 'inline'
+        && (inputs.length > 1 || runtime.enableSingleInputResume === true);
       if (needsManifest && !options.dryRun) {
         try {
           batchLock = await BatchOutputLock.acquire(defaultOutputDirectory(options), {
@@ -186,15 +288,9 @@ export class OcrJobService {
           throw asCliExitError(error, 2);
         }
       }
-      configureProviderRequestPolicy({
-        requestsPerMinute: options.requestsPerMinute,
-        maxCostUsd: options.maxCostUsd,
-      });
-      summary = await this.runBatchInternal(inputs, options, runtime, events);
+      summary = await this.runBatchInternal(inputs, options, runtime, events, providerRuntime);
     } catch (error) {
       failure = error;
-    } finally {
-      resetProviderRequestPolicy();
     }
 
     try {
@@ -224,7 +320,14 @@ export class OcrJobService {
     }
     if (!summary) throw new Error('Internal error: batch completed without a summary');
 
-    const result = toOcrRunResult(runtime.runId, summary);
+    const result = toOcrRunResult(
+      runtime.runId,
+      summary,
+      protocolVersion,
+      deliveryMode,
+      options.format,
+      runtime.progress ?? options.progress,
+    );
     await events.emit({ type: 'run.completed', result });
     await events.flush();
     return { runId: runtime.runId, summary, result };
@@ -235,15 +338,27 @@ export class OcrJobService {
     options: ResolvedCliOptions,
     runtime: OcrJobServiceRuntime,
     events: EventDispatcher,
+    providerRuntime: ProviderExecutionContext,
   ): Promise<BatchSummary> {
     const started = performance.now();
     const startedAt = new Date().toISOString();
-    const shouldWriteFiles = inputs.length > 1 || Boolean(options.output) || options.format === 'all';
-    const needsManifest = inputs.length > 1 || runtime.enableSingleInputResume === true;
-    try {
-      await assertNoOutputCollisions(inputs, options, needsManifest);
-    } catch (error) {
-      throw asCliExitError(error, 2);
+    const explicitDelivery = runtime.deliveryMode;
+    // stdin IDs include a content hash. Compute them once per document so a
+    // detailed streaming run does not re-hash tens of megabytes for every
+    // model delta.
+    const documentIds = inputs.map((input) => ocrDocumentId({ input }));
+    const shouldWriteFiles = explicitDelivery === 'reference'
+      || (explicitDelivery === undefined && (
+        inputs.length > 1 || Boolean(options.output) || options.format === 'all'
+      ));
+    const needsManifest = shouldWriteFiles
+      && (inputs.length > 1 || runtime.enableSingleInputResume === true);
+    if (shouldWriteFiles) {
+      try {
+        await assertNoOutputCollisions(inputs, options, needsManifest);
+      } catch (error) {
+        throw asCliExitError(error, 2);
+      }
     }
     const manifest = needsManifest ? new ManifestStore(defaultOutputDirectory(options)) : undefined;
     try {
@@ -262,14 +377,12 @@ export class OcrJobService {
             ? await manifest.completedEntry(key, fingerprint)
             : undefined;
           if (completedEntry) resumableEntries.set(index, completedEntry);
-          else await assertArtifactTargetsAvailable(input, options, inputs.length);
+          else if (shouldWriteFiles) await assertArtifactTargetsAvailable(input, options, inputs.length);
         }));
       } catch (error) {
         throw asCliExitError(error, 2);
       }
     }
-    resetProviderUsage();
-
     const results = new Array<OcrJobResult | undefined>(inputs.length);
     let cursor = 0;
     let completed = 0;
@@ -279,22 +392,31 @@ export class OcrJobService {
     const publishResult = async (index: number, result: OcrJobResult): Promise<void> => {
       completed += 1;
       await runtime.onDocumentResult?.(completed, inputs.length, result);
-      await events.emit({ type: terminalEventType(result), document: toProtocolDocument(result) });
+      await events.emit({
+        type: terminalEventType(result),
+        document: toProtocolDocument(
+          result,
+          runtime.protocolVersion ?? OCR_PROTOCOL_VERSION,
+          runtime.deliveryMode ?? 'reference',
+          options.format,
+          runtime.progress ?? options.progress,
+        ),
+      });
       // Large bodies have already been persisted and observed by the adapter.
-      results[index] = inputs.length > 1 && result.artifacts
+      results[index] = shouldWriteFiles && inputs.length > 1 && result.artifacts
         ? { ...result, artifacts: undefined }
         : result;
     };
 
     const worker = async (): Promise<void> => {
       while (!runtime.abortController.signal.aborted && !failFastTriggered && !costLimitReached) {
-        if (options.maxCostUsd !== undefined && getProviderUsage().estimatedCostUsd >= options.maxCostUsd) {
+        const index = cursor;
+        if (index >= inputs.length) return;
+        if (providerRuntime.hasReachedCostLimit()) {
           costLimitReached = true;
           return;
         }
-        const index = cursor;
         cursor += 1;
-        if (index >= inputs.length) return;
         const input = inputs[index];
         const jobStart = performance.now();
         const jobStartedAt = new Date().toISOString();
@@ -302,7 +424,7 @@ export class OcrJobService {
         const fingerprint = inputFingerprint(input, fingerprintMode);
         await events.emit({
           type: 'document.started',
-          documentId: ocrDocumentId({ input }),
+          documentId: documentIds[index],
           index,
           total: inputs.length,
           source: input.displayPath,
@@ -312,8 +434,11 @@ export class OcrJobService {
         const completedEntry = resumableEntries.get(index);
         if (options.dryRun) {
           try {
+            assertProviderMediaTypeSupported(input.mimeType, options);
             await readAndValidateInput(input);
-            const plannedOutputFiles = await plannedArtifactTargets(input, options, inputs.length);
+            const plannedOutputFiles = shouldWriteFiles
+              ? await plannedArtifactTargets(input, options, inputs.length)
+              : [];
             result = {
               status: 'skipped', input, provider: options.provider, gateway: options.gateway,
               mode: options.mode, model: options.model, startedAt: jobStartedAt,
@@ -347,30 +472,53 @@ export class OcrJobService {
           }, options.timeoutSeconds * 1000);
           let progressFailure: unknown;
           try {
+            assertProviderMediaTypeSupported(input.mimeType, options);
             const { artifacts, attempts } = await this.dependencies.extractDocument(
               input,
               options,
               timeoutController.signal,
               (step) => {
-                runtime.onAgentStep?.(input, step);
-                void events.emit({
-                  type: 'document.progress',
-                  documentId: ocrDocumentId({ input }),
-                  index,
-                  total: inputs.length,
-                  source: input.displayPath,
-                  phase: step.type,
-                  message: 'Agentic OCR step completed',
-                }).catch((error: unknown) => {
+                try {
+                  runtime.onAgentStep?.(input, step);
+                  const protocolStep = agentProtocolStep(step, runtime.progress ?? options.progress);
+                  if (!protocolStep) return;
+                  void events.emit({
+                    type: 'document.progress',
+                    documentId: documentIds[index],
+                    index,
+                    total: inputs.length,
+                    source: input.displayPath,
+                    phase: step.type,
+                    message: agentProgressMessage(step),
+                    step: protocolStep,
+                  }).catch((error: unknown) => {
+                    progressFailure ??= error;
+                  });
+                } catch (error) {
+                  // agentProtocolStep / assertOcrJobEvent can throw sync; keep
+                  // the intentional document-boundary progressFailure path.
                   progressFailure ??= error;
-                });
+                }
               },
+              providerRuntime,
             );
+            // Agent runtimes may preserve partial memory by returning normally
+            // after their signal fires. The document boundary owns timeout and
+            // cancellation semantics, so never accept that return as a normal
+            // partial/successful extraction.
+            if (timeoutController.signal.aborted) {
+              throw timeoutController.signal.reason instanceof Error
+                ? timeoutController.signal.reason
+                : new DOMException('Operation aborted', 'AbortError');
+            }
             await events.flush();
             if (progressFailure !== undefined) {
               throw progressFailure instanceof Error
                 ? progressFailure
                 : new Error(errorMessage(progressFailure));
+            }
+            if (explicitDelivery === 'inline') {
+              assertArtifactFormatAvailable(artifacts, options.format);
             }
             const outputFiles = shouldWriteFiles
               ? await writeArtifacts(input, artifacts, options, inputs.length)
@@ -381,6 +529,7 @@ export class OcrJobService {
             const jobStatus: OcrJobResult['status'] = agentMemory?.stopReason && agentMemory.stopReason !== 'succeeded'
               ? 'partial'
               : 'succeeded';
+            if (agentMemory?.stopReason === 'cost_limit_reached') costLimitReached = true;
             result = {
               status: jobStatus, input, provider: options.provider, gateway: options.gateway,
               mode: options.mode, model: options.model, startedAt: jobStartedAt,
@@ -395,16 +544,28 @@ export class OcrJobService {
             });
           } catch (error) {
             if (progressFailure !== undefined && error === progressFailure) throw error;
-            const message = timedOut ? `Timed out after ${options.timeoutSeconds}s` : errorMessage(error);
+            const cancelled = runtime.abortController.signal.aborted && !timedOut;
+            const message = timedOut
+              ? `Timed out after ${options.timeoutSeconds}s`
+              : cancelled
+                ? errorMessage(runtime.abortController.signal.reason ?? error)
+                : errorMessage(error);
             const typedError = timedOut
               ? new CliExitError(message, 1, { code: 'TIMEOUT', category: 'limit', retryable: true })
-              : error;
+              : cancelled
+                ? new CliExitError(message, 130, { cause: error })
+                : error;
+            if (isProviderCostLimitError(error)) costLimitReached = true;
             result = {
-              status: 'failed', input, provider: options.provider, gateway: options.gateway,
+              status: cancelled ? 'skipped' : 'failed', input, provider: options.provider, gateway: options.gateway,
               mode: options.mode, model: options.model, startedAt: jobStartedAt,
               completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart,
+              ...(cancelled ? { skipReason: 'cancelled' as const } : {}),
               error: message, errorDetails: ocrErrorPayload(typedError, 1), attempts: errorAttempts(error),
             };
+            // An interrupted document must remain resumable. The manifest has no
+            // cancelled state, so persist it as failed while exposing the richer
+            // skipped/cancelled status through the machine and batch contracts.
             await manifest?.update(key, {
               fingerprint,
               status: 'failed',
@@ -412,16 +573,13 @@ export class OcrJobService {
               completedAt: result.completedAt,
               error: message,
             });
-            if (options.failFast) failFastTriggered = true;
+            if (options.failFast && !cancelled) failFastTriggered = true;
           } finally {
             clearTimeout(timeout);
             runtime.abortController.signal.removeEventListener('abort', relayAbort);
           }
         }
         await publishResult(index, result);
-        if (options.maxCostUsd !== undefined && getProviderUsage().estimatedCostUsd >= options.maxCostUsd) {
-          costLimitReached = true;
-        }
       }
     };
 
@@ -443,7 +601,19 @@ export class OcrJobService {
           ? ocrErrorPayload(new CliExitError(unscheduledReason, 1, {
               code: 'COST_LIMIT', category: 'limit', retryable: false,
             }))
-          : ocrErrorPayload(new CliExitError(unscheduledReason, 1));
+          : ocrErrorPayload(new CliExitError(unscheduledReason, 1, {
+              code: 'NOT_RUN', category: 'execution', retryable: true,
+              hint: 'Rerun the skipped documents without --fail-fast after addressing the first failure.',
+            }));
+      // Emit document.started so every documentId appears in the lifecycle
+      // stream before its terminal event (including fail-fast/cost/cancel remainders).
+      await events.emit({
+        type: 'document.started',
+        documentId: documentIds[index],
+        index,
+        total: inputs.length,
+        source: inputs[index].displayPath,
+      });
       const result: OcrJobResult = {
         status: 'skipped', input: inputs[index], provider: options.provider, gateway: options.gateway,
         mode: options.mode, model: options.model, startedAt: timestamp, completedAt: timestamp,
@@ -471,12 +641,12 @@ export class OcrJobService {
       provider: options.provider,
       gateway: options.gateway,
       model: options.model,
-      usage: getProviderUsage(),
+      usage: providerRuntime.getUsage(),
       costLimitUsd: options.maxCostUsd,
-      costLimitReached,
+      costLimitReached: costLimitReached || providerRuntime.wasCostLimitDenied(),
       results: finishedResults,
     };
-    if (inputs.length > 1 && !options.dryRun) {
+    if (shouldWriteFiles && inputs.length > 1 && !options.dryRun) {
       await writeBatchSummary(
         { ...summary, results: summary.results.map((result) => ({ ...result, artifacts: undefined })) },
         defaultOutputDirectory(options),

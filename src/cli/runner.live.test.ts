@@ -20,6 +20,7 @@ import { runBatch } from './runner';
 import { BatchOutputLock } from './output';
 import { cliExitCode } from './errors';
 import { recordGeminiUsage } from '../lib/gemini/usage';
+import type { GeminiClientConfig } from '../lib/gemini/types';
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 let directory: string;
@@ -241,10 +242,14 @@ describe('CLI live batch orchestration', () => {
   it('stops scheduling new documents when the estimated cost ceiling is reached', async () => {
     await writeFile(path.join(directory, 'a.jpg'), JPEG_BYTES);
     await writeFile(path.join(directory, 'b.jpg'), JPEG_BYTES);
-    mockExtractTextFromFile.mockImplementation(() => {
+    mockExtractTextFromFile.mockImplementation((
+      _fileData: string,
+      _mimeType: string,
+      clientConfig: GeminiClientConfig,
+    ) => {
       recordGeminiUsage({
         usageMetadata: { promptTokenCount: 1_000, candidatesTokenCount: 100, totalTokenCount: 1_100 },
-      }, 'gemini-3.5-flash');
+      }, 'gemini-3.5-flash', clientConfig.runtime);
       return Promise.resolve({ sections: [{ content: ['Costed result'] }] });
     });
     const options = resolveCliOptions({

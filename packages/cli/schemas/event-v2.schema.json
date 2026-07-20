@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-ocr.dev/schemas/event-v2.schema.json",
+  "title": "Open OCR event v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "type", "runId", "sequence", "timestamp"],
+  "properties": {
+    "protocolVersion": { "const": 2 },
+    "type": { "enum": ["run.started", "document.started", "document.progress", "document.completed", "document.partial", "document.failed", "document.skipped", "run.completed", "run.failed"] },
+    "runId": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "total": { "type": "integer", "minimum": 0 },
+    "provider": { "enum": ["gemini", "kimi", "muse", "openrouter", "openai-compatible"] },
+    "gateway": { "enum": ["direct", "cloudflare"] },
+    "model": { "type": "string", "minLength": 1 },
+    "mode": { "enum": ["simple", "template", "agentic"] },
+    "dryRun": { "type": "boolean" },
+    "documentId": { "type": "string", "minLength": 1 },
+    "index": { "type": "integer", "minimum": 0 },
+    "source": { "type": "string", "minLength": 1 },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "status"],
+      "properties": {
+        "kind": { "enum": ["runtime", "thought_summary", "reasoning", "model_output", "tool_call", "tool_result", "error"] },
+        "status": { "enum": ["started", "in_progress", "completed", "failed", "skipped"] },
+        "stepId": { "type": "string", "minLength": 1 },
+        "callId": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "text": { "type": "string" },
+        "delta": { "type": "boolean" },
+        "arguments": { "type": "object" },
+        "result": {},
+        "error": { "$ref": "error-v2.schema.json" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "delta": { "const": true } },
+            "required": ["delta"]
+          },
+          "then": { "required": ["stepId", "text"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "tool_call" } }, "required": ["kind"] },
+          "then": {
+            "required": ["callId", "name"],
+            "properties": { "status": { "const": "started" } }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "tool_result" } }, "required": ["kind"] },
+          "then": {
+            "required": ["callId", "name"],
+            "properties": { "status": { "enum": ["completed", "failed"] } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "enum": ["runtime", "thought_summary", "reasoning", "model_output", "error"] }
+            },
+            "required": ["kind"]
+          },
+          "then": { "required": ["text"] }
+        }
+      ]
+    },
+    "document": { "$ref": "result-v2.schema.json#/$defs/document" },
+    "result": { "$ref": "result-v2.schema.json#/$defs/success" },
+    "error": { "$ref": "error-v2.schema.json" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "run.started" } } },
+      "then": { "required": ["total", "provider", "gateway", "model", "mode", "dryRun"] }
+    },
+    {
+      "if": { "properties": { "type": { "enum": ["document.started", "document.progress"] } } },
+      "then": { "required": ["documentId", "index", "total", "source"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "document.progress" } } },
+      "then": { "required": ["step"] }
+    },
+    {
+      "if": { "properties": { "type": { "enum": ["document.completed", "document.partial", "document.failed", "document.skipped"] } } },
+      "then": { "required": ["document"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "document.completed" } } },
+      "then": { "properties": { "document": { "type": "object", "properties": { "status": { "const": "succeeded" } } } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "document.partial" } } },
+      "then": { "properties": { "document": { "type": "object", "properties": { "status": { "const": "partial" } } } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "document.failed" } } },
+      "then": { "properties": { "document": { "type": "object", "properties": { "status": { "const": "failed" } } } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "document.skipped" } } },
+      "then": { "properties": { "document": { "type": "object", "properties": { "status": { "const": "skipped" } } } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "run.completed" } } },
+      "then": {
+        "required": ["result"],
+        "not": { "required": ["error"] }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "run.failed" } } },
+      "then": {
+        "required": ["error"],
+        "not": { "required": ["result"] }
+      }
+    }
+  ]
+}

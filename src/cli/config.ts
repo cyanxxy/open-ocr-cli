@@ -4,11 +4,16 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 
-import type { ThinkingLevel } from '../lib/gemini';
+import {
+  defaultThinkingLevelForModel,
+  type GeminiModel,
+  type ThinkingLevel,
+} from '../lib/gemini';
 import {
   GATEWAY_IDS,
   GEMINI_MODELS,
   PROVIDER_IDS,
+  isKimiK3Route,
   isLocalBaseUrl,
   providerDefaultApiKeyEnv,
   providerDefaultModel,
@@ -37,6 +42,7 @@ const DEFAULT_CONFIG: Required<Pick<
   | 'model'
   | 'thinking'
   | 'includeThoughts'
+  | 'progress'
   | 'mode'
   | 'format'
   | 'concurrency'
@@ -65,6 +71,7 @@ const DEFAULT_CONFIG: Required<Pick<
   model: 'gemini-3.5-flash',
   thinking: 'MEDIUM',
   includeThoughts: false,
+  progress: 'standard',
   mode: 'simple',
   format: 'markdown',
   concurrency: 2,
@@ -80,7 +87,7 @@ const DEFAULT_CONFIG: Required<Pick<
   dryRun: false,
   quiet: false,
   verbose: false,
-  stdinName: 'stdin.pdf',
+  stdinName: 'stdin',
   detectImages: false,
   detectMath: false,
   maxTokens: 32768,
@@ -91,7 +98,7 @@ const DEFAULT_CONFIG: Required<Pick<
 
 function pickConfig(value: Record<string, unknown>, label: string): CliConfigFile {
   const stringKeys = [
-    'provider', 'gateway', 'model', 'baseUrl', 'thinking', 'mode', 'preset', 'format', 'output',
+    'provider', 'gateway', 'model', 'baseUrl', 'thinking', 'progress', 'mode', 'preset', 'format', 'output',
     'apiKeyEnv', 'schema', 'cloudflareAccountId', 'cloudflareGatewayId', 'cloudflareTokenEnv',
     'cloudflareByokAlias', 'cloudflareProvider',
   ] as const;
@@ -151,7 +158,49 @@ async function readConfigFile(filePath: string, required: boolean): Promise<CliC
   }
 }
 
-export async function loadCliConfig(cwd: string, explicitPath?: string): Promise<CliConfigFile> {
+export function environmentDisablesConfig(): boolean {
+  const value = process.env.OPEN_OCR_NO_CONFIG?.trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
+
+export function cliConfigDisabled(value?: string | false, disabled = false): boolean {
+  // Explicit --no-config / request.noConfig always wins. An explicit config path
+  // still allows loading that one file under hermetic ambient mode (see
+  // loadCliConfig), but does not re-enable user/project merges or .env.
+  return disabled || value === false || (value === undefined && environmentDisablesConfig());
+}
+
+export function defaultCliThinkingLevel(provider: ProviderId, model: string): ThinkingLevel {
+  if (isKimiK3Route(provider, model)) return 'MAX';
+  if (provider === 'kimi' && (/^kimi-k2\.7-code/u.test(model) || model === 'kimi-k2.6')) return 'HIGH';
+  if (provider === 'gemini') return defaultThinkingLevelForModel(model as GeminiModel);
+  return DEFAULT_CONFIG.thinking;
+}
+
+export function cliThinkingLevels(provider: ProviderId, model: string): readonly ThinkingLevel[] {
+  if (isKimiK3Route(provider, model)) return ['LOW', 'HIGH', 'MAX'];
+  if (provider === 'kimi' && /^kimi-k2\.7-code/u.test(model)) return ['HIGH'];
+  if (provider === 'kimi' && model === 'kimi-k2.6') return ['MINIMAL', 'HIGH'];
+  if (provider === 'openrouter') return ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH', 'XHIGH', 'MAX'];
+  if (provider === 'muse') return ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH', 'XHIGH'];
+  if (provider === 'gemini' && model === 'gemini-3.1-pro-preview') return ['LOW', 'MEDIUM', 'HIGH'];
+  return ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'];
+}
+
+export async function loadCliConfig(
+  cwd: string,
+  explicitPath?: string,
+  disabled = false,
+): Promise<CliConfigFile> {
+  const hermetic = disabled || environmentDisablesConfig();
+  if (hermetic && !explicitPath) return {};
+  const explicit = explicitPath
+    ? await readConfigFile(path.resolve(cwd, explicitPath), true)
+    : {};
+  // Hermetic mode may still load one explicit config file, but never ambient
+  // user/project files that could reintroduce baseUrl or credential env names.
+  if (hermetic) return explicit;
+
   const legacyUserPath = path.join(homedir(), '.config', 'gemini-ocr', 'config.json');
   const userPath = path.join(homedir(), '.config', 'open-ocr-cli', 'config.json');
   const legacyProjectPath = path.join(cwd, '.gemini-ocr.json');
@@ -162,13 +211,13 @@ export async function loadCliConfig(cwd: string, explicitPath?: string): Promise
     readConfigFile(legacyProjectPath, false),
     readConfigFile(projectPath, false),
   ]);
-  const explicit = explicitPath
-    ? await readConfigFile(path.resolve(cwd, explicitPath), true)
-    : {};
   return { ...legacyUser, ...user, ...legacyProject, ...project, ...explicit };
 }
 
-export function loadLocalEnv(cwd: string): void {
+export function loadLocalEnv(cwd: string, disabled = false): void {
+  // Ambient OPEN_OCR_NO_CONFIG always blocks project .env, even when a caller
+  // passes an explicit config path for option resolution.
+  if (disabled || environmentDisablesConfig()) return;
   const envPath = path.join(cwd, '.env');
   if (existsSync(envPath) && typeof process.loadEnvFile === 'function') {
     process.loadEnvFile(envPath);
@@ -255,16 +304,18 @@ export function resolveCliOptions(
   if (provider === 'gemini' && !GEMINI_MODELS.includes(model as (typeof GEMINI_MODELS)[number])) {
     throw new Error(`--model must be one of: ${SUPPORTED_MODELS.join(', ')}`);
   }
+  const modelContextMatches = providerContextMatches
+    && (selectedModel === undefined || selectedModel === configuredModel);
+  const configuredThinking = flags.thinking
+    ?? process.env.OPEN_OCR_THINKING
+    ?? (provider === 'gemini' ? process.env.GEMINI_OCR_THINKING : undefined)
+    ?? (modelContextMatches ? fileConfig.thinking : undefined);
+  const isKimiK3 = isKimiK3Route(provider, model);
   let thinking = oneOf<ThinkingLevel>(
-    (
-      flags.thinking
-      ?? process.env.OPEN_OCR_THINKING
-      ?? (provider === 'gemini' ? process.env.GEMINI_OCR_THINKING : undefined)
-      ?? fileConfig.thinking
-    )?.toUpperCase(),
-    ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'],
+    configuredThinking?.toUpperCase(),
+    ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH', 'XHIGH', 'MAX'],
     '--thinking',
-    DEFAULT_CONFIG.thinking,
+    defaultCliThinkingLevel(provider, model),
   );
   const schemaPath = flags.schema ?? fileConfig.schema;
   const hasCustomSchema = flags.customSchema ?? false;
@@ -278,16 +329,60 @@ export function resolveCliOptions(
   );
   const preset = flags.preset ?? fileConfig.preset;
   const effectiveMode: CliMode = preset && !flags.mode && !fileConfig.mode ? 'template' : mode;
+  const progress = oneOf<ResolvedCliOptions['progress']>(
+    flags.progress
+      ?? fileConfig.progress
+      // Legacy --include-thoughts requested thought summaries only; map to
+      // standard progress so tool argument/result payloads stay opt-in via
+      // explicit --progress detailed / extraction.progress.
+      ?? (flags.includeThoughts || fileConfig.includeThoughts ? 'standard' : undefined),
+    ['off', 'standard', 'detailed'],
+    '--progress',
+    DEFAULT_CONFIG.progress,
+  );
 
-  if (provider === 'gemini' && model === 'gemini-3.1-pro-preview' && thinking === 'MINIMAL') thinking = 'LOW';
-  if (effectiveMode === 'agentic' && thinking === 'MINIMAL') thinking = 'MEDIUM';
+  if (!isKimiK3 && provider !== 'openrouter' && thinking === 'MAX') {
+    throw new Error('--thinking max is supported by Kimi K3 and model-dependent OpenRouter routes');
+  }
+  if (provider !== 'openrouter' && provider !== 'muse' && thinking === 'XHIGH') {
+    throw new Error('--thinking xhigh is supported by Muse and model-dependent OpenRouter routes');
+  }
+  if (provider === 'gemini' && model === 'gemini-3.1-pro-preview' && thinking === 'MINIMAL') {
+    throw new Error('Gemini 3.1 Pro supports --thinking low, medium, or high; minimal is not supported');
+  }
+  if (isKimiK3 && thinking === 'MEDIUM') {
+    throw new Error('Kimi K3 supports --thinking low, high, or max; medium would be an ambiguous silent upgrade');
+  }
+  if (isKimiK3 && thinking === 'XHIGH') {
+    throw new Error('Kimi K3 supports --thinking low, high, or max; xhigh is not a Kimi K3 effort');
+  }
+  if (isKimiK3 && thinking === 'MINIMAL') {
+    thinking = 'LOW';
+  }
+  if (provider === 'kimi' && /^kimi-k2\.7-code/u.test(model) && thinking !== 'HIGH') {
+    throw new Error('Kimi K2.7 Code always thinks and does not expose configurable reasoning effort; use --thinking high');
+  }
+  if (provider === 'kimi' && model === 'kimi-k2.6' && thinking !== 'MINIMAL' && thinking !== 'HIGH') {
+    throw new Error('Direct Kimi K2.6 supports only instant mode (--thinking minimal) or thinking mode (--thinking high)');
+  }
   if (hasSchema && preset) throw new Error('--schema cannot be combined with --preset');
   if (effectiveMode === 'template' && !preset) throw new Error('--preset is required when --mode template is selected');
   if (preset) getExtractionPreset(preset);
   if (format === 'csv' && effectiveMode !== 'template') throw new Error('--format csv is only available in template mode');
   if (hasSchema && effectiveMode !== 'simple') throw new Error('--schema is only available in simple mode');
   if (hasSchema && format !== 'json') throw new Error('--schema requires --format json');
-  const maxTokens = integer(flags.maxTokens ?? fileConfig.maxTokens, DEFAULT_CONFIG.maxTokens, '--max-tokens', 256, 65536);
+  const defaultMaxTokens = isKimiK3
+    // Agentic K3 can issue many continuations; keep a safer default budget
+    // unless the operator opts into the full protocol ceiling.
+    ? (effectiveMode === 'agentic' ? 32_768 : 131_072)
+    : DEFAULT_CONFIG.maxTokens;
+  const maxTokens = integer(
+    flags.maxTokens ?? (modelContextMatches ? fileConfig.maxTokens : undefined),
+    defaultMaxTokens,
+    '--max-tokens',
+    256,
+    provider === 'gemini' ? 65536 : 1048576,
+  );
   if (
     effectiveMode === 'agentic'
     && thinking !== 'MINIMAL'
@@ -319,10 +414,10 @@ export function resolveCliOptions(
     ?? providerDefaultApiKeyEnv(provider);
   const apiKey = process.env[apiKeyEnv]?.trim() || '';
   const cloudflareByok = flags.cloudflareByok
-    ?? (gatewayContextMatches ? fileConfig.cloudflareByok : undefined)
+    ?? (providerContextMatches && gatewayContextMatches ? fileConfig.cloudflareByok : undefined)
     ?? false;
   const cloudflareByokAlias = flags.cloudflareByokAlias
-    ?? (gatewayContextMatches ? fileConfig.cloudflareByokAlias : undefined);
+    ?? (providerContextMatches && gatewayContextMatches ? fileConfig.cloudflareByokAlias : undefined);
   if (cloudflareByok && gateway !== 'cloudflare') {
     throw new Error('--cloudflare-byok requires --gateway cloudflare');
   }
@@ -341,8 +436,6 @@ export function resolveCliOptions(
   if (gateway === 'cloudflare' && cloudflareByok && !gatewayToken && !flags.dryRun) {
     throw new Error(`Cloudflare BYOK requires ${gatewayTokenEnv} for gateway authentication`);
   }
-  const modelContextMatches = providerContextMatches
-    && (selectedModel === undefined || selectedModel === configuredModel);
   const hasFlagPrice = flags.inputPrice !== undefined || flags.outputPrice !== undefined;
   const inputPricePerMillionUsd = optionalNumberInRange(
     hasFlagPrice
@@ -369,12 +462,12 @@ export function resolveCliOptions(
     0.000001,
     1_000_000,
   );
-  const canAccountCost = provider === 'openrouter' || Boolean(providerTokenPrice({
+  const canAccountCost = provider === 'openrouter' || providerTokenPrice({
     provider,
     model,
     inputPricePerMillionUsd,
     outputPricePerMillionUsd,
-  }, 0));
+  }, 0) !== undefined;
   if (maxCostUsd !== undefined && !canAccountCost) {
     throw new Error(
       `--max-cost for ${provider}/${model} requires both --input-price and --output-price because the API does not report a portable cost`,
@@ -398,7 +491,11 @@ export function resolveCliOptions(
     inputPricePerMillionUsd,
     outputPricePerMillionUsd,
     thinking,
-    includeThoughts: flags.includeThoughts ?? fileConfig.includeThoughts ?? DEFAULT_CONFIG.includeThoughts,
+    // Thought summaries are an agent progress surface. Simple/template/web
+    // extraction has no consumer for them, so requesting hidden summaries
+    // would only spend output tokens without changing the returned artifact.
+    includeThoughts: effectiveMode === 'agentic' && progress !== 'off',
+    progress,
     mode: effectiveMode,
     preset,
     format,

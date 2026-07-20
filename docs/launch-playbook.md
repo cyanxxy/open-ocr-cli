@@ -77,7 +77,7 @@ workflow counts when deeper product learning is needed.
 ## Launch copy
 
 > Open OCR CLI extracts text and structured data from images, PDFs, and URLs
-> with Gemini, Kimi K2.6, Muse Spark 1.1, OpenRouter, or your own compatible
+> with Gemini, Kimi K3, Muse Spark 1.1, OpenRouter, or your own compatible
 > endpoint. It is resumable, pipeline-safe, schema-validated, cost-aware, and
 > can route through Cloudflare AI Gateway.
 

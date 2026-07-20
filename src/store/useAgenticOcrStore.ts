@@ -412,11 +412,7 @@ export const useAgenticOcrStore = create<AgenticOcrState>((set, get) => ({
         {
           apiKey,
           model: userModel,
-          // Agentic extraction benefits from deeper reasoning; never use MINIMAL.
-          thinkingConfig: {
-            level: thinkingConfig.level === 'MINIMAL' ? 'MEDIUM' : thinkingConfig.level,
-            includeThoughts: thinkingConfig.includeThoughts,
-          },
+          thinkingConfig,
           abortSignal: abortController.signal,
           regionCropper: cropDocumentRegion,
         },

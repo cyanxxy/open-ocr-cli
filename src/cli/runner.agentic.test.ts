@@ -25,6 +25,14 @@ function partialAgentRun(documentName: string): AsyncGenerator<AgentStep, AgentM
   return (async function* (): AsyncGenerator<AgentStep, AgentMemory, void> {
     await Promise.resolve();
     yield { type: 'thinking', content: 'Inspecting document', timestamp: 1 };
+    yield {
+      type: 'thinking', source: 'model_output', id: 'completion-1', delta: true,
+      content: 'Invoice ', timestamp: 2,
+    };
+    yield {
+      type: 'thinking', source: 'model_output', id: 'completion-1', delta: true,
+      content: 'recognized.', timestamp: 3,
+    };
     return {
       sessionId: 'session-1',
       documentName,
@@ -73,10 +81,18 @@ describe('CLI agentic batch orchestration', () => {
     const first = await runBatch(inputs, options, {
       abortController: new AbortController(), writeStdout: () => undefined, writeStderr: () => undefined,
     });
+    expect(mockAgentLoop.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ throwOnFailure: true }));
     expect(first).toMatchObject({ total: 2, succeeded: 0, partial: 2, failed: 0 });
     expect(await readFile(path.join(output, 'one.md'), 'utf8')).toContain('INV-42');
     expect(await readFile(path.join(output, 'one.json'), 'utf8')).toContain('max_iterations');
-    expect(await readFile(path.join(output, 'one.steps.json'), 'utf8')).toContain('Inspecting document');
+    const trace = JSON.parse(await readFile(path.join(output, 'one.steps.json'), 'utf8')) as AgentStep[];
+    expect(trace).toEqual([
+      expect.objectContaining({ content: 'Inspecting document' }),
+      expect.objectContaining({
+        id: 'completion-1', source: 'model_output', content: 'Invoice recognized.',
+      }),
+    ]);
+    expect(trace[1]).not.toHaveProperty('delta');
 
     const resumed = await runBatch(inputs, options, {
       abortController: new AbortController(), writeStdout: () => undefined, writeStderr: () => undefined,

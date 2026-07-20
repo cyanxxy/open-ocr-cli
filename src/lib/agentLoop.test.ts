@@ -212,6 +212,17 @@ describe('agentLoop', () => {
     expect(steps.some((s) => s.type === 'error')).toBe(true);
   });
 
+  it('rethrows a terminal Gemini error for machine-facing callers', async () => {
+    mockExecuteAgentTurn.mockRejectedValue(new Error('API key invalid'));
+
+    await expect(drainLoop(agentLoop(
+      FIXTURE_FILE(),
+      FIXTURE_DATA,
+      { apiKey: 'test-key', model: 'gemini-3-flash-preview' },
+      { maxIterations: 3, ...BASE_CONFIG, throwOnFailure: true },
+    ))).rejects.toThrow('API key invalid');
+  });
+
   it('preserves partial agent output when the next request is blocked by the cost limit', async () => {
     mockExecuteAgentTurn.mockRejectedValue(new GeminiCostLimitError(0.01));
 

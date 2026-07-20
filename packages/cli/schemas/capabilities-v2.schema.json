@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-ocr.dev/schemas/capabilities-v2.schema.json",
+  "title": "Open OCR capabilities v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "supportedProtocolVersions", "cliVersion", "operations", "inputKinds", "modes", "contentFormats", "responseFormats", "deliveryModes", "progressLevels", "progressStepKinds", "features", "errorCodes", "exitCodes", "providers", "presets", "limits", "schemas", "schemaAccess"],
+  "properties": {
+    "protocolVersion": { "const": 2 },
+    "supportedProtocolVersions": { "const": [1, 2] },
+    "cliVersion": { "type": "string", "minLength": 1 },
+    "operations": { "type": "array", "items": { "enum": ["extract"] } },
+    "inputKinds": { "type": "array", "items": { "enum": ["path", "stdin"] } },
+    "modes": { "type": "array", "items": { "enum": ["simple", "template", "agentic"] } },
+    "contentFormats": { "type": "array", "items": { "enum": ["markdown", "json", "csv", "all"] } },
+    "responseFormats": { "type": "array", "items": { "enum": ["json", "jsonl"] } },
+    "deliveryModes": { "type": "array", "items": { "enum": ["inline", "reference"] } },
+    "progressLevels": { "const": ["off", "standard", "detailed"] },
+    "progressStepKinds": { "const": ["runtime", "thought_summary", "reasoning", "model_output", "tool_call", "tool_result", "error"] },
+    "features": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "errorCodes": { "type": "array", "items": { "$ref": "error-v2.schema.json#/properties/code" } },
+    "exitCodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["success", "incomplete", "invalid", "interrupted", "terminated"],
+      "properties": {
+        "success": { "const": 0 },
+        "incomplete": { "const": 1 },
+        "invalid": { "const": 2 },
+        "interrupted": { "const": 130 },
+        "terminated": { "const": 143 }
+      }
+    },
+    "providers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "defaultModel", "models", "capabilities"],
+        "properties": {
+          "id": { "enum": ["gemini", "kimi", "muse", "openrouter", "openai-compatible"] },
+          "label": { "type": "string", "minLength": 1 },
+          "defaultModel": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              { "type": "null" }
+            ]
+          },
+          "models": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          },
+          "inputImageMimeTypes": {
+            "type": "array",
+            "items": { "enum": ["image/png", "image/jpeg", "image/webp", "image/gif", "image/heic", "image/heif"] },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "capabilities": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["images", "pdfs", "structuredOutput", "toolCalling", "reasoning", "webUrls"],
+            "properties": {
+              "images": { "enum": [true, false, "model-dependent", "unknown"] },
+              "pdfs": { "enum": [true, false, "model-dependent", "unknown"] },
+              "structuredOutput": { "enum": [true, false, "model-dependent", "unknown"] },
+              "toolCalling": { "enum": [true, false, "model-dependent", "unknown"] },
+              "reasoning": { "enum": [true, false, "model-dependent", "unknown"] },
+              "webUrls": { "enum": [true, false, "model-dependent", "unknown"] }
+            }
+          }
+        }
+      }
+    },
+    "presets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "description", "outputShape"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "label": { "type": "string", "minLength": 1 },
+          "description": { "type": "string", "minLength": 1 },
+          "outputShape": { "enum": ["record", "table"] }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["imageBytes", "pdfBytes", "pdfPages", "batchFiles", "concurrency", "customSchemaBytes", "customSchemaDepth"],
+      "properties": {
+        "imageBytes": { "type": "integer", "minimum": 1 },
+        "pdfBytes": { "type": "integer", "minimum": 1 },
+        "pdfPages": { "type": "integer", "minimum": 1 },
+        "batchFiles": { "type": "integer", "minimum": 1 },
+        "concurrency": { "type": "integer", "minimum": 1 },
+        "customSchemaBytes": { "type": "integer", "minimum": 1 },
+        "customSchemaDepth": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "schemas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request", "result", "event", "error", "capabilities"],
+      "properties": {
+        "request": { "type": "string" },
+        "result": { "type": "string" },
+        "event": { "type": "string" },
+        "error": { "type": "string" },
+        "capabilities": { "type": "string" }
+      }
+    },
+    "schemaAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "packageDirectory", "networkFetch"],
+      "properties": {
+        "command": { "const": "open-ocr-cli schema <name>" },
+        "packageDirectory": { "const": "schemas" },
+        "networkFetch": { "const": false }
+      }
+    }
+  }
+}

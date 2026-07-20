@@ -108,6 +108,18 @@ describe('useAgenticOcrStore', () => {
     );
 
     await flushPromises();
+    expect(mockAgentLoop).toHaveBeenCalledWith(
+      expect.any(File),
+      'data:application/pdf;base64,ZmFrZQ==',
+      expect.objectContaining({
+        thinkingConfig: {
+          level: 'MINIMAL',
+          includeThoughts: false,
+        },
+      }),
+      expect.any(Object),
+      expect.any(Function),
+    );
     await waitFor(() => {
       expect(useAgenticOcrStore.getState().extractedFields.invoice_number?.value).toBe('INV-42');
     });

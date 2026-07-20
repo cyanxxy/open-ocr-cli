@@ -37,6 +37,7 @@ function geminiConfig(config: ProviderRuntimeConfig): GeminiClientConfig {
     thinkingConfig: config.thinkingConfig,
     baseUrl: usesCustomTransport ? config.baseUrl : undefined,
     headers: config.gateway === 'cloudflare' ? providerRequestHeaders(config) : undefined,
+    runtime: config.runtime,
   };
 }
 

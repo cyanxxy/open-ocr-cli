@@ -23,6 +23,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await rm(directory, { recursive: true, force: true });
 });
 
@@ -88,15 +89,76 @@ describe('CLI init', () => {
     const result = await runInit({ skipValidation: true }, {
       cwd: directory,
       env: {},
-      prompter: answers(['2', '1', '2', 'kimi-custom-vision', '3']),
+      prompter: answers(['2', '1', '5', 'kimi-custom-vision', '3']),
       writeOutput: (text) => output.push(text),
     });
 
     expect(result).toMatchObject({ written: true, provider: 'kimi', gateway: 'direct' });
     const config = JSON.parse(await readFile(result.configPath, 'utf8')) as Record<string, unknown>;
     expect(config.model).toBe('kimi-custom-vision');
-    expect(output.join('')).toContain('1. kimi-k2.6 (default)');
-    expect(output.join('')).toContain('2. Enter a custom model ID');
+    expect(output.join('')).toContain('1. kimi-k3 (default)');
+    expect(output.join('')).toContain('5. Enter a custom model ID');
+  });
+
+  it('uses Kimi K3 reasoning and published pricing defaults during setup', async () => {
+    const result = await runInit({
+      yes: true,
+      provider: 'kimi',
+      skipValidation: true,
+    }, {
+      cwd: directory,
+      env: {},
+      prompter: answers([]),
+      writeOutput: () => undefined,
+    });
+
+    const config = JSON.parse(await readFile(result.configPath, 'utf8')) as Record<string, unknown>;
+    expect(config).toMatchObject({ model: 'kimi-k3', thinking: 'MAX' });
+    expect(config).not.toHaveProperty('inputPricePerMillionUsd');
+    expect(config).not.toHaveProperty('outputPricePerMillionUsd');
+  });
+
+  it('validates a Kimi K3 credential with low effort without changing the saved MAX default', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+      choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'OK' } }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await runInit({ yes: true, provider: 'kimi' }, {
+      cwd: directory,
+      env: { MOONSHOT_API_KEY: 'secret-value' },
+      prompter: answers([]),
+      writeOutput: () => undefined,
+    });
+
+    expect(result.credentialStatus).toBe('valid');
+    const config = JSON.parse(await readFile(result.configPath, 'utf8')) as Record<string, unknown>;
+    expect(config.thinking).toBe('MAX');
+    const init = fetchMock.mock.calls[0]?.[1];
+    if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body');
+    expect(JSON.parse(init.body)).toMatchObject({ reasoning_effort: 'low', max_completion_tokens: 1024 });
+  });
+
+  it('uses the Kimi K3 effort contract when routed through OpenRouter', async () => {
+    const result = await runInit({
+      yes: true,
+      provider: 'openrouter',
+      model: 'moonshotai/kimi-k3',
+      skipValidation: true,
+    }, {
+      cwd: directory,
+      env: {},
+      prompter: answers([]),
+      writeOutput: () => undefined,
+    });
+
+    const config = JSON.parse(await readFile(result.configPath, 'utf8')) as Record<string, unknown>;
+    expect(config).toMatchObject({
+      provider: 'openrouter',
+      model: 'moonshotai/kimi-k3',
+      thinking: 'MAX',
+    });
   });
 
   it('maps Ctrl-C during interactive setup to exit code 130', async () => {

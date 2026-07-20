@@ -115,7 +115,7 @@ export async function extractStructuredDataFromFile(
   instructions?: ExtractionInstruction[],
   options?: Pick<ExtractionOptions, 'abortSignal' | 'maxTokens' | 'detectImages' | 'detectMathEquations'>,
 ): Promise<JsonValue> {
-  const { apiKey, model, thinkingConfig, baseUrl, headers } = clientConfig;
+  const { apiKey, model, thinkingConfig, baseUrl, headers, runtime } = clientConfig;
   if (!apiKey) throw new Error('Please configure your Gemini API key in settings');
 
   const prompt = [
@@ -137,7 +137,7 @@ export async function extractStructuredDataFromFile(
   generationConfig = applyThinkingConfig(generationConfig, model, thinkingConfig);
 
   const genAI = getGenAIClient(apiKey, { baseUrl, headers });
-  await waitForGeminiRequestSlot(options?.abortSignal);
+  await waitForGeminiRequestSlot(options?.abortSignal, runtime);
   const response = await genAI.models.generateContent({
     model,
     contents: [{
@@ -149,7 +149,7 @@ export async function extractStructuredDataFromFile(
     }],
     config: generationConfig,
   });
-  recordGeminiUsage(response, model);
+  recordGeminiUsage(response, model, runtime);
   assertCompleteGeminiResponse(response, 'Schema extraction');
   const text = response.text?.trim() ?? '';
   if (!text) throw new Error('Schema extraction returned an empty response');
@@ -225,9 +225,7 @@ export const EXTRACTED_CONTENT_RESPONSE_SCHEMA: Record<string, unknown> = {
   },
 };
 
-/**
- * Build generation configuration for Gemini preview API calls
- */
+/** Build generation configuration for Gemini 3 generateContent calls. */
 function buildGenerationConfig(
   modelName: GeminiModel,
   options?: ExtractionOptions,
@@ -258,40 +256,90 @@ function buildGenerationConfig(
   return config;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedKeys = new Set(allowed);
+  return Object.keys(value).every((key) => allowedKeys.has(key));
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isExtractedContent(value: unknown): value is ExtractedContent {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    'title',
+    'sections',
+    'content',
+    'headings',
+    'tables',
+    'code',
+    'lists',
+    'markdown',
+  ])) {
+    return false;
+  }
+
+  if (!Array.isArray(value.sections) || !value.sections.every((section) => (
+    isRecord(section)
+    && hasOnlyKeys(section, ['heading', 'content'])
+    && (section.heading === undefined || typeof section.heading === 'string')
+    && isStringArray(section.content)
+  ))) {
+    return false;
+  }
+
+  if (
+    (value.title !== undefined && typeof value.title !== 'string')
+    || (value.content !== undefined && typeof value.content !== 'string')
+    || (value.headings !== undefined && !isStringArray(value.headings))
+    || (value.code !== undefined && !isStringArray(value.code))
+    || (value.markdown !== undefined && typeof value.markdown !== 'string')
+  ) {
+    return false;
+  }
+
+  if (value.tables !== undefined && (
+    !Array.isArray(value.tables)
+    || !value.tables.every((table) => (
+      isRecord(table)
+      && hasOnlyKeys(table, ['headers', 'rows', 'content'])
+      && isStringArray(table.headers)
+      && Array.isArray(table.rows)
+      && table.rows.every(isStringArray)
+      && typeof table.content === 'string'
+    ))
+  )) {
+    return false;
+  }
+
+  if (value.lists !== undefined && (
+    !Array.isArray(value.lists)
+    || !value.lists.every((list) => (
+      isRecord(list)
+      && hasOnlyKeys(list, ['type', 'items'])
+      && (list.type === 'ordered' || list.type === 'unordered')
+      && isStringArray(list.items)
+    ))
+  )) {
+    return false;
+  }
+
+  return true;
+}
+
 function parseExtractedContentFromJson(text: string): ExtractedContent | null {
   try {
-    const parsed = JSON.parse(text) as Partial<ExtractedContent>;
-    const sections = Array.isArray(parsed.sections)
-      ? parsed.sections.map((section) => ({
-          heading: section?.heading,
-          content: Array.isArray(section?.content)
-            ? section.content
-            : typeof section?.content === 'string'
-              ? [section.content]
-              : []
-        }))
-      : [];
-
-    return {
-      title: parsed.title,
-      sections,
-      content: parsed.content,
-      headings: parsed.headings,
-      tables: parsed.tables,
-      code: parsed.code,
-      lists: parsed.lists,
-      markdown: parsed.markdown
-    };
+    const parsed: unknown = JSON.parse(text);
+    return isExtractedContent(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-/**
- * Reject responses that did not complete normally (safety block, recitation,
- * or an empty/malformed candidate) instead of silently treating them as a
- * successful empty extraction (audit G-02).
- */
 /**
  * Turn raw model output into an ExtractedContent according to the requested
  * contract. When JSON was explicitly requested, an unparseable response is a
@@ -306,7 +354,7 @@ export function coerceExtractionResult(text: string, wantsJson: boolean): Extrac
   if (wantsJson) {
     const parsed = parseExtractedContentFromJson(trimmed);
     if (!parsed) {
-      throw new Error('Extraction requested JSON but the model returned invalid JSON');
+      throw new Error('Extraction requested JSON but the response was invalid JSON or did not match the OCR schema');
     }
     return parsed;
   }
@@ -334,7 +382,7 @@ export async function extractTextFromFile(
   callbacks?: StreamingCallbacks
 ): Promise<ExtractedContent> {
   try {
-    const { apiKey, model, thinkingConfig, baseUrl, headers } = clientConfig;
+    const { apiKey, model, thinkingConfig, baseUrl, headers, runtime } = clientConfig;
     
     if (!apiKey) {
       throw new Error('Please configure your Gemini API key in settings');
@@ -402,7 +450,7 @@ export async function extractTextFromFile(
     // Handle streaming if callbacks are provided
     if (callbacks) {
       callbacks.onStart?.();
-      await waitForGeminiRequestSlot(options?.abortSignal);
+      await waitForGeminiRequestSlot(options?.abortSignal, runtime);
       const result = await genAI.models.generateContentStream({
         model,
         contents,
@@ -423,7 +471,7 @@ export async function extractTextFromFile(
         try {
           completion.observe(lastChunk);
         } catch (error) {
-          recordGeminiUsage(lastChunk, model);
+          recordGeminiUsage(lastChunk, model, runtime);
           throw error;
         }
         const chunkText = chunk.text || '';
@@ -434,7 +482,7 @@ export async function extractTextFromFile(
       // STOP can appear before a final usage-only chunk, so completion is
       // tracked across the stream rather than inferred from the last event.
       if (lastChunk) {
-        recordGeminiUsage(lastChunk, model);
+        recordGeminiUsage(lastChunk, model, runtime);
       }
       completion.assertComplete();
       const finalContent = coerceExtractionResult(fullText, wantsJson);
@@ -442,14 +490,14 @@ export async function extractTextFromFile(
       return finalContent;
 
     } else {
-      await waitForGeminiRequestSlot(options?.abortSignal);
+      await waitForGeminiRequestSlot(options?.abortSignal, runtime);
       const response = await genAI.models.generateContent({
         model,
         contents,
         config: generationConfig
       });
 
-      recordGeminiUsage(response, model);
+      recordGeminiUsage(response, model, runtime);
       assertCompleteGeminiResponse(response, 'Extraction');
       return coerceExtractionResult(response.text || '', wantsJson);
     }

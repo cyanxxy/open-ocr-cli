@@ -21,6 +21,7 @@ export const PROVIDER_PROFILES: Record<ProviderId, ProviderProfile> = {
     defaultBaseUrl: 'https://generativelanguage.googleapis.com',
     defaultApiKeyEnv: 'GEMINI_API_KEY',
     models: GEMINI_MODELS,
+    inputImageMimeTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif'],
     capabilities: {
       images: true,
       pdfs: true,
@@ -33,10 +34,11 @@ export const PROVIDER_PROFILES: Record<ProviderId, ProviderProfile> = {
   kimi: {
     id: 'kimi',
     label: 'Moonshot Kimi',
-    defaultModel: 'kimi-k2.6',
+    defaultModel: 'kimi-k3',
     defaultBaseUrl: 'https://api.moonshot.ai/v1',
     defaultApiKeyEnv: 'MOONSHOT_API_KEY',
-    models: ['kimi-k2.6'],
+    models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.7-code-highspeed', 'kimi-k2.6'],
+    inputImageMimeTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
     capabilities: {
       images: true,
       pdfs: true,
@@ -53,8 +55,11 @@ export const PROVIDER_PROFILES: Record<ProviderId, ProviderProfile> = {
     defaultBaseUrl: 'https://api.meta.ai/v1',
     defaultApiKeyEnv: 'META_API_KEY',
     models: ['muse-spark-1.1'],
+    inputImageMimeTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
     capabilities: {
       images: true,
+      // Meta documents Chat Completions PDF parts as
+      // { type: "file", file: { filename, file_data } } (same family as OpenRouter).
       pdfs: true,
       structuredOutput: true,
       toolCalling: true,
@@ -68,14 +73,20 @@ export const PROVIDER_PROFILES: Record<ProviderId, ProviderProfile> = {
     defaultModel: 'google/gemini-3.5-flash',
     defaultBaseUrl: 'https://openrouter.ai/api/v1',
     defaultApiKeyEnv: 'OPENROUTER_API_KEY',
-    models: ['google/gemini-3.5-flash', 'moonshotai/kimi-k2.6'],
+    models: [
+      'google/gemini-3.5-flash',
+      'moonshotai/kimi-k3',
+      'moonshotai/kimi-k2.7-code',
+      'moonshotai/kimi-k2.6',
+    ],
+    inputImageMimeTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
     capabilities: {
-      images: true,
-      pdfs: true,
-      structuredOutput: true,
-      toolCalling: true,
-      reasoning: true,
-      webUrls: true,
+      images: 'model-dependent',
+      pdfs: 'model-dependent',
+      structuredOutput: 'model-dependent',
+      toolCalling: 'model-dependent',
+      reasoning: 'model-dependent',
+      webUrls: 'model-dependent',
     },
   },
   'openai-compatible': {
@@ -85,12 +96,12 @@ export const PROVIDER_PROFILES: Record<ProviderId, ProviderProfile> = {
     defaultApiKeyEnv: 'OPEN_OCR_API_KEY',
     models: [],
     capabilities: {
-      images: true,
+      images: 'unknown',
       pdfs: false,
-      structuredOutput: true,
-      toolCalling: true,
-      reasoning: false,
-      webUrls: true,
+      structuredOutput: 'unknown',
+      toolCalling: 'unknown',
+      reasoning: 'unknown',
+      webUrls: 'unknown',
     },
   },
 };
@@ -109,6 +120,15 @@ export function providerDefaultApiKeyEnv(provider: ProviderId): string {
 
 export function providerDefaultBaseUrl(provider: ProviderId): string {
   return providerProfile(provider).defaultBaseUrl;
+}
+
+/** True when the selected route targets Kimi K3's current reasoning contract. */
+export function isKimiK3Route(provider: ProviderId, model: string): boolean {
+  if (provider === 'kimi') return /^kimi-k3(?:$|-)/u.test(model);
+  // OpenRouter model variants use a colon suffix (for example routing
+  // variants). They still target K3 and therefore keep K3's exact effort
+  // contract instead of the gateway's generic effort vocabulary.
+  return provider === 'openrouter' && /^moonshotai\/kimi-k3(?:$|[-:])/u.test(model);
 }
 
 export function isLocalBaseUrl(baseUrl: string): boolean {
@@ -172,6 +192,25 @@ export function providerTokenPrice(
   }
   const model = config.model.replace(/^google\//, '').replace(/^moonshotai\//, '');
   switch (model) {
+    // Verified against Kimi's public platform pricing on 2026-07-20.
+    case 'kimi-k3':
+      return {
+        inputPerMillionUsd: 3,
+        cachedInputPerMillionUsd: 0.3,
+        outputPerMillionUsd: 15,
+      };
+    case 'kimi-k2.7-code':
+      return {
+        inputPerMillionUsd: 0.95,
+        cachedInputPerMillionUsd: 0.19,
+        outputPerMillionUsd: 4,
+      };
+    case 'kimi-k2.7-code-highspeed':
+      return {
+        inputPerMillionUsd: 1.9,
+        cachedInputPerMillionUsd: 0.38,
+        outputPerMillionUsd: 8,
+      };
     // Verified against Moonshot's Kimi K2.6 pricing page on 2026-07-15.
     case 'kimi-k2.6':
       return {
@@ -179,19 +218,28 @@ export function providerTokenPrice(
         cachedInputPerMillionUsd: 0.16,
         outputPerMillionUsd: 4,
       };
-    // Verified against Meta Model API pricing on 2026-07-15.
-    case 'muse-spark-1.1':
-      return { inputPerMillionUsd: 1.25, outputPerMillionUsd: 4.25 };
     case 'gemini-3.5-flash':
-      return { inputPerMillionUsd: 1.5, outputPerMillionUsd: 9 };
+      return {
+        inputPerMillionUsd: 1.5,
+        cachedInputPerMillionUsd: 0.15,
+        outputPerMillionUsd: 9,
+      };
     case 'gemini-3.1-flash-lite':
-      return { inputPerMillionUsd: 0.25, outputPerMillionUsd: 1.5 };
+      return {
+        inputPerMillionUsd: 0.25,
+        cachedInputPerMillionUsd: 0.025,
+        outputPerMillionUsd: 1.5,
+      };
     case 'gemini-3-flash-preview':
-      return { inputPerMillionUsd: 0.5, outputPerMillionUsd: 3 };
+      return {
+        inputPerMillionUsd: 0.5,
+        cachedInputPerMillionUsd: 0.05,
+        outputPerMillionUsd: 3,
+      };
     case 'gemini-3.1-pro-preview':
       return inputTokens > 200_000
-        ? { inputPerMillionUsd: 4, outputPerMillionUsd: 18 }
-        : { inputPerMillionUsd: 2, outputPerMillionUsd: 12 };
+        ? { inputPerMillionUsd: 4, cachedInputPerMillionUsd: 0.4, outputPerMillionUsd: 18 }
+        : { inputPerMillionUsd: 2, cachedInputPerMillionUsd: 0.2, outputPerMillionUsd: 12 };
     default:
       return undefined;
   }

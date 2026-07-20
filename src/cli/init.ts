@@ -3,9 +3,10 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 
-import { getGenAIClient } from '../lib/gemini/client';
+import { applyThinkingConfig, getGenAIClient } from '../lib/gemini/client';
 import { waitForGeminiRequestSlot } from '../lib/gemini/requestPolicy';
 import type { GeminiModel, ThinkingLevel } from '../lib/gemini/types';
+import { recordGeminiUsage } from '../lib/gemini/usage';
 import {
   GATEWAY_IDS,
   GEMINI_MODELS,
@@ -16,13 +17,18 @@ import {
   providerDefaultBaseUrl,
   providerDefaultModel,
   providerRequestHeaders,
+  providerTokenPrice,
   resolveProviderBaseUrl,
   type GatewayId,
   type ProviderId,
   type ProviderRuntimeConfig,
 } from '../lib/providers';
 import type { CliConfigFile } from './types';
-import { credentialSetupGuidance } from './config';
+import {
+  cliThinkingLevels,
+  credentialSetupGuidance,
+  defaultCliThinkingLevel,
+} from './config';
 import { asCliExitError } from './errors';
 import {
   isPromptAbort,
@@ -168,11 +174,16 @@ function optionalPositiveNumber(value: string, label: string, max: number): numb
 export async function validateGeminiCredentials(apiKey: string, model: GeminiModel): Promise<void> {
   const client = getGenAIClient(apiKey);
   await waitForGeminiRequestSlot();
-  await client.models.generateContent({
+  const response = await client.models.generateContent({
     model,
     contents: 'Reply with OK.',
-    config: { maxOutputTokens: 8 },
+    config: applyThinkingConfig(
+      { maxOutputTokens: 1024 },
+      model,
+      { level: 'LOW' },
+    ),
   });
+  recordGeminiUsage(response, model);
 }
 
 async function writeConfig(configPath: string, config: CliConfigFile): Promise<void> {
@@ -188,22 +199,38 @@ async function writeConfig(configPath: string, config: CliConfigFile): Promise<v
 }
 
 async function validateProviderCredentials(config: ProviderRuntimeConfig): Promise<void> {
+  // Credential validation proves endpoint access; it is not an extraction
+  // quality evaluation. Use the lowest supported effort so modern reasoning
+  // models cannot exhaust this small probe response before returning `OK`.
+  const probeThinkingLevel = cliThinkingLevels(config.provider, config.model)[0]
+    ?? defaultCliThinkingLevel(config.provider, config.model);
   if (config.provider === 'gemini') {
-    const client = getGenAIClient(config.apiKey || config.gatewayToken || 'cloudflare-byok', {
-      baseUrl: config.gateway === 'cloudflare' ? config.baseUrl : undefined,
-      headers: config.gateway === 'cloudflare' ? providerRequestHeaders(config) : undefined,
-    });
+    const client = getGenAIClient(
+      config.apiKey || (config.cloudflareByok ? 'cloudflare-byok' : ''),
+      {
+        baseUrl: config.gateway === 'cloudflare' ? config.baseUrl : undefined,
+        headers: config.gateway === 'cloudflare' ? providerRequestHeaders(config) : undefined,
+      },
+    );
     await waitForGeminiRequestSlot();
-    await client.models.generateContent({
+    const response = await client.models.generateContent({
       model: config.model,
       contents: 'Reply with OK.',
-      config: { maxOutputTokens: 8 },
+      config: applyThinkingConfig(
+        { maxOutputTokens: 1024 },
+        config.model as GeminiModel,
+        { level: probeThinkingLevel },
+      ),
     });
+    recordGeminiUsage(response, config.model as GeminiModel);
     return;
   }
-  await createChatCompletion(config, {
+  await createChatCompletion({
+    ...config,
+    thinkingConfig: { level: probeThinkingLevel },
+  }, {
     messages: [{ role: 'user', content: 'Reply with OK.' }],
-    maxTokens: 8,
+    maxTokens: 1024,
   });
 }
 
@@ -285,14 +312,15 @@ export async function runInit(flags: InitFlags, runtime: InitRuntime = {}): Prom
     if (provider === 'gemini' && !GEMINI_MODELS.includes(model as GeminiModel)) {
       throw new Error(`Default model must be one of: ${GEMINI_MODELS.join(', ')}`);
     }
-    const thinkingOptions: readonly ThinkingLevel[] = ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'];
+    const thinkingOptions = cliThinkingLevels(provider, model);
+    const defaultThinking = defaultCliThinkingLevel(provider, model);
     const thinking = flags.yes
-      ? 'MEDIUM'
+      ? defaultThinking
       : await promptChoice(
           prompter,
           writeOutput,
           'Thinking level',
-          'MEDIUM',
+          defaultThinking,
           thinkingOptions,
           (value) => value.toUpperCase(),
           (value) => {
@@ -300,7 +328,9 @@ export async function runInit(flags: InitFlags, runtime: InitRuntime = {}): Prom
               MINIMAL: 'MINIMAL — fastest, least reasoning',
               LOW: 'LOW — light reasoning',
               MEDIUM: 'MEDIUM — balanced (recommended)',
-              HIGH: 'HIGH — maximum reasoning',
+              HIGH: 'HIGH — strong reasoning',
+              XHIGH: 'XHIGH — extra-high model-dependent reasoning',
+              MAX: 'MAX — maximum reasoning effort',
             };
             return descriptions[value];
           },
@@ -317,7 +347,9 @@ export async function runInit(flags: InitFlags, runtime: InitRuntime = {}): Prom
       'Maximum cost',
       1_000_000,
     );
-    const needsCustomPrice = maxCostUsd !== undefined && provider !== 'gemini' && provider !== 'openrouter';
+    const needsCustomPrice = maxCostUsd !== undefined
+      && provider !== 'openrouter'
+      && providerTokenPrice({ provider, model }, 0) === undefined;
     const inputPricePerMillionUsd = needsCustomPrice
       ? optionalPositiveNumber(
           await ask('Input price per million tokens in USD', ''),

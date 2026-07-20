@@ -51,8 +51,75 @@ const JSON_ONLY_INSTRUCTION = [
   'Confidence scores must be numbers between 0 and 1.',
 ].join(' ');
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Fail closed on malformed preset JSON. Models (and non-Gemini providers without
+ * responseJsonSchema) can return primitives, arrays, or half-shaped objects that
+ * would otherwise become empty-but-plausible extraction results.
+ *
+ * Partial extraction remains valid: `fields` may be `{}` and individual preset
+ * rules may be omitted — those become validationErrors later, not schema failures.
+ */
+function assertValidPresetPayload(value: unknown): RawPresetPayload {
+  const schemaError = new Error('Preset extraction response did not match the expected schema');
+
+  if (!isRecord(value)) {
+    throw schemaError;
+  }
+
+  if (!isRecord(value.fields)) {
+    throw schemaError;
+  }
+
+  if (value.documentType !== undefined && typeof value.documentType !== 'string') {
+    throw schemaError;
+  }
+
+  if (value.summary !== undefined && typeof value.summary !== 'string') {
+    throw schemaError;
+  }
+
+  if (value.rows !== undefined && !Array.isArray(value.rows)) {
+    throw schemaError;
+  }
+
+  if (value.warnings !== undefined) {
+    if (!Array.isArray(value.warnings) || !value.warnings.every((entry) => typeof entry === 'string')) {
+      throw schemaError;
+    }
+  }
+
+  for (const field of Object.values(value.fields)) {
+    if (!isRecord(field) || !('value' in field)) {
+      throw schemaError;
+    }
+    if (
+      typeof field.confidence !== 'number'
+      || !Number.isFinite(field.confidence)
+      || field.confidence < 0
+      || field.confidence > 1
+    ) {
+      throw schemaError;
+    }
+  }
+
+  return value as RawPresetPayload;
+}
+
 function parsePresetPayload(rawText: string): RawPresetPayload {
-  return parseJsonPayload<RawPresetPayload>(rawText, 'Preset extraction');
+  // Prefer a direct JSON parse so primitives/arrays reach shape validation with a
+  // clear schema error (instead of failing earlier as "not an object"). Fall back
+  // to extractJsonPayload for fenced or prose-wrapped model responses.
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText.trim());
+  } catch {
+    parsed = parseJsonPayload<unknown>(rawText, 'Preset extraction');
+  }
+  return assertValidPresetPayload(parsed);
 }
 
 function clampConfidence(value: unknown): number {
@@ -502,7 +569,7 @@ export async function runExtractionPreset(
   callbacks?: PresetStreamingCallbacks,
 ): Promise<PresetRunResult> {
   try {
-    const { apiKey, model, thinkingConfig, baseUrl, headers } = clientConfig;
+    const { apiKey, model, thinkingConfig, baseUrl, headers, runtime } = clientConfig;
 
     if (!apiKey) {
       throw new Error('Please configure your Gemini API key in settings');
@@ -546,7 +613,7 @@ export async function runExtractionPreset(
     let rawText = '';
 
     if (callbacks) {
-      await waitForGeminiRequestSlot(options?.abortSignal);
+      await waitForGeminiRequestSlot(options?.abortSignal, runtime);
       const stream = await genAI.models.generateContentStream({
         model,
         contents,
@@ -560,23 +627,23 @@ export async function runExtractionPreset(
         try {
           completion.observe(chunk);
         } catch (error) {
-          recordGeminiUsage(chunk, model);
+          recordGeminiUsage(chunk, model, runtime);
           throw error;
         }
         const chunkText = chunk.text || '';
         rawText += chunkText;
         callbacks.onProgress?.(chunkText);
       }
-      recordGeminiUsage(lastChunk, model);
+      recordGeminiUsage(lastChunk, model, runtime);
       completion.assertComplete();
     } else {
-      await waitForGeminiRequestSlot(options?.abortSignal);
+      await waitForGeminiRequestSlot(options?.abortSignal, runtime);
       const response = await genAI.models.generateContent({
         model,
         contents,
         config: generationConfig,
       });
-      recordGeminiUsage(response, model);
+      recordGeminiUsage(response, model, runtime);
       assertCompleteGeminiResponse(response, 'Preset extraction');
       rawText = response.text || '';
     }

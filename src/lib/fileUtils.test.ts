@@ -123,8 +123,15 @@ describe('fileUtils', () => {
       expect(result.valid).toBe(true);
     });
 
-    it('should reject unsupported image MIME types', () => {
+    it('should reject GIF files in the Gemini-only browser uploader', () => {
       const file = new File(['dummy content'], 'test.gif', { type: 'image/gif' });
+      const result = validateFile(file);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Supported formats: PNG, JPEG, WEBP, HEIC, HEIF, and PDF');
+    });
+
+    it('should reject unsupported image MIME types', () => {
+      const file = new File(['dummy content'], 'test.bmp', { type: 'image/bmp' });
       const result = validateFile(file);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('Supported formats: PNG, JPEG, WEBP, HEIC, HEIF, and PDF');
@@ -186,6 +193,7 @@ describe('fileUtils', () => {
       const result = await validateFileMagicBytes(pdf);
       expect(result.valid).toBe(true);
     });
+
   });
 
   describe('validatePdfPageCount', () => {

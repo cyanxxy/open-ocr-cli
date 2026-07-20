@@ -6,6 +6,12 @@ const { mockGenerateContent, mockGenerateContentStream } = vi.hoisted(() => ({
 }));
 
 vi.mock('@google/genai', () => ({
+  ThinkingLevel: {
+    MINIMAL: 'MINIMAL',
+    LOW: 'LOW',
+    MEDIUM: 'MEDIUM',
+    HIGH: 'HIGH',
+  },
   GoogleGenAI: vi.fn(function (this: { models: Record<string, unknown> }) {
     this.models = {
       generateContent: mockGenerateContent,
@@ -19,7 +25,9 @@ import {
   applyThinkingConfig,
   getGenAIClient,
   getModelClient,
+  isFatalGeminiError,
   isGemini3Model,
+  isRetryableGeminiError,
 } from './client';
 import { OcrError, OcrErrorType } from './types';
 
@@ -78,18 +86,16 @@ describe('getModelClient', () => {
     expect(result.response.candidates).toEqual([{ index: 0, finishReason: 'STOP' }]);
   });
 
-  it('returns an empty string when the response has no text', async () => {
+  it('rejects a response with no candidate instead of returning an empty success', async () => {
     mockGenerateContent.mockResolvedValueOnce({ text: undefined, candidates: undefined });
 
     const model = getModelClient('model-test-key');
-    const result = await model.generateContent({ contents: 'hello' });
+    await expect(model.generateContent({ contents: 'hello' })).rejects.toThrow(/no candidate/i);
 
     expect(mockGenerateContent).toHaveBeenCalledWith({
       model: 'gemini-3.5-flash',
       contents: 'hello',
     });
-    expect(result.response.text()).toBe('');
-    expect(result.response.candidates).toEqual([]);
   });
 
   it('streams chunks that expose their text', async () => {
@@ -158,20 +164,52 @@ describe('isGemini3Model', () => {
   });
 });
 
+describe('Gemini error classification', () => {
+  it('uses structured status before misleading message prose', () => {
+    const transient = Object.assign(new Error('API key service unavailable'), { status: 503 });
+    expect(isFatalGeminiError(transient)).toBe(false);
+    expect(isRetryableGeminiError(transient)).toBe(true);
+
+    const invalid = Object.assign(new Error('request rejected'), { status: 401 });
+    expect(isFatalGeminiError(invalid)).toBe(true);
+    expect(isRetryableGeminiError(invalid)).toBe(false);
+  });
+
+  it('recognizes current structured RPC error codes through wrapper causes', () => {
+    const exhausted = new Error('provider request failed', {
+      cause: Object.assign(new Error('busy'), { code: 'RESOURCE_EXHAUSTED' }),
+    });
+    const denied = Object.assign(new Error('request rejected'), { code: 'PERMISSION_DENIED' });
+    expect(isRetryableGeminiError(exhausted)).toBe(true);
+    expect(isFatalGeminiError(denied)).toBe(true);
+  });
+
+  it('treats a credential-specific Gemini HTTP 400 as fatal without classifying every 400 that way', () => {
+    expect(isFatalGeminiError(Object.assign(
+      new Error('API key not valid. Please pass a valid API key.'),
+      { status: 400 },
+    ))).toBe(true);
+    expect(isFatalGeminiError(Object.assign(
+      new Error('Invalid request parameter'),
+      { status: 400 },
+    ))).toBe(false);
+  });
+});
+
 describe('applyThinkingConfig', () => {
   it('defaults thinking by model family when no config is provided', () => {
     expect(applyThinkingConfig({}, 'gemini-3.1-pro-preview').thinkingConfig).toEqual({
-      thinkingLevel: 'high',
+      thinkingLevel: 'HIGH',
     });
     expect(applyThinkingConfig({}, 'gemini-3.5-flash').thinkingConfig).toEqual({
-      thinkingLevel: 'medium',
+      thinkingLevel: 'MEDIUM',
     });
     expect(applyThinkingConfig({}, 'gemini-3.1-flash-lite').thinkingConfig).toEqual({
-      thinkingLevel: 'minimal',
+      thinkingLevel: 'MINIMAL',
     });
   });
 
-  it('lowercases the configured level and preserves the base config', () => {
+  it('uses the SDK thinking enum and preserves the base config', () => {
     const result = applyThinkingConfig(
       { temperature: 0.2 },
       'gemini-3-flash-preview',
@@ -179,18 +217,21 @@ describe('applyThinkingConfig', () => {
     );
     expect(result).toEqual({
       temperature: 0.2,
-      thinkingConfig: { thinkingLevel: 'medium', includeThoughts: true },
+      thinkingConfig: { thinkingLevel: 'MEDIUM', includeThoughts: true },
     });
   });
 
-  it('allows minimal on Flash models but falls back to high on Pro', () => {
+  it('allows minimal on Flash models but rejects it on Pro instead of silently upgrading it', () => {
     const flash = applyThinkingConfig({}, 'gemini-3.5-flash', { level: 'MINIMAL' });
-    expect(flash.thinkingConfig.thinkingLevel).toBe('minimal');
+    expect(flash.thinkingConfig.thinkingLevel).toBe('MINIMAL');
 
     const lite = applyThinkingConfig({}, 'gemini-3.1-flash-lite', { level: 'MINIMAL' });
-    expect(lite.thinkingConfig.thinkingLevel).toBe('minimal');
+    expect(lite.thinkingConfig.thinkingLevel).toBe('MINIMAL');
 
-    const pro = applyThinkingConfig({}, 'gemini-3.1-pro-preview', { level: 'MINIMAL' });
-    expect(pro.thinkingConfig.thinkingLevel).toBe('high');
+    expect(() => applyThinkingConfig(
+      {},
+      'gemini-3.1-pro-preview',
+      { level: 'MINIMAL' },
+    )).toThrow('gemini-3.1-pro-preview supports thinking levels low, medium, high');
   });
 });

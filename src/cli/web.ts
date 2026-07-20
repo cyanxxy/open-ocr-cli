@@ -15,11 +15,16 @@ import {
   providerDefaultBaseUrl,
   providerRequestHeaders,
   type OpenAIContentPart,
+  type ProviderExecutionContext,
   type ProviderRuntimeConfig,
 } from '../lib/providers';
 import { getUnsupportedUrls } from '../lib/urlValidation';
+import { FILE_CONSTRAINTS } from '../constants';
+import { CliExitError } from './errors';
+import { sniffDocumentMimeType } from './inputs';
 import type { ResolvedCliOptions } from './types';
 import { writeTextFileAtomically } from './output';
+import { assertProviderMediaTypeSupported } from './providerInputs';
 import { secureFetchPublicUrl } from './secureFetch';
 
 export const WEB_ANALYSIS_MODES = ['individual', 'combined', 'comparison'] as const;
@@ -32,7 +37,10 @@ export interface WebExtractionResult {
   comparisonAnalysis?: string;
 }
 
-function runtimeConfig(options: ResolvedCliOptions): ProviderRuntimeConfig {
+function runtimeConfig(
+  options: ResolvedCliOptions,
+  runtime?: ProviderExecutionContext,
+): ProviderRuntimeConfig {
   return {
     provider: options.provider,
     gateway: options.gateway,
@@ -50,6 +58,7 @@ function runtimeConfig(options: ResolvedCliOptions): ProviderRuntimeConfig {
     cloudflareProvider: options.cloudflareProvider,
     inputPricePerMillionUsd: options.inputPricePerMillionUsd,
     outputPricePerMillionUsd: options.outputPricePerMillionUsd,
+    runtime,
   };
 }
 
@@ -116,13 +125,97 @@ const WEB_RESULTS_SCHEMA: Record<string, unknown> = {
   },
 };
 
+const KNOWN_MEDIA_TYPES = new Set<string>([
+  ...FILE_CONSTRAINTS.SUPPORTED_IMAGE_MIME_TYPES,
+  ...FILE_CONSTRAINTS.SUPPORTED_DOCUMENT_MIME_TYPES,
+]);
+
+function isTextualContentType(contentType: string): boolean {
+  return contentType.startsWith('text/')
+    || contentType === 'application/json'
+    || contentType === 'application/xml'
+    || contentType === 'application/xhtml+xml'
+    || contentType.endsWith('+json')
+    || contentType.endsWith('+xml');
+}
+
+function looksLikeUtf8Text(bytes: Uint8Array): boolean {
+  const sample = bytes.subarray(0, 4096);
+  let decoded: string;
+  try {
+    decoded = new TextDecoder('utf-8', { fatal: true }).decode(sample);
+  } catch {
+    return false;
+  }
+  if (decoded.includes('\0')) return false;
+  const disallowedControls = [...decoded].filter((character) => {
+    const code = character.charCodeAt(0);
+    return code < 0x20 && character !== '\t' && character !== '\n' && character !== '\r' && character !== '\f';
+  }).length;
+  return disallowedControls <= Math.max(1, Math.floor(decoded.length / 100));
+}
+
+function unsupportedFetchedType(declaredType: string): CliExitError {
+  return new CliExitError(
+    `URL returned unsupported binary content (${declaredType})`,
+    2,
+    {
+      code: 'INPUT_INVALID',
+      category: 'input',
+      retryable: false,
+      hint: 'Use a textual webpage or a supported image/PDF URL.',
+    },
+  );
+}
+
+function fetchedContentType(declaredType: string, bytes: Uint8Array): string {
+  const sniffedType = sniffDocumentMimeType(bytes.subarray(0, 256));
+  if (declaredType === 'application/octet-stream') {
+    if (sniffedType) return sniffedType;
+    if (looksLikeUtf8Text(bytes)) return 'text/plain';
+    throw unsupportedFetchedType(declaredType);
+  }
+  if (KNOWN_MEDIA_TYPES.has(declaredType) && sniffedType !== declaredType) {
+    throw new CliExitError(
+      `URL response does not match its declared type (${declaredType})`,
+      2,
+      {
+        code: 'INPUT_INVALID',
+        category: 'input',
+        retryable: false,
+        hint: 'Use a URL whose media type matches its document bytes.',
+      },
+    );
+  }
+  if (isTextualContentType(declaredType)) {
+    if (sniffedType || !looksLikeUtf8Text(bytes)) {
+      throw new CliExitError(
+        `URL response does not contain plausible text for its declared type (${declaredType})`,
+        2,
+        {
+          code: 'INPUT_INVALID',
+          category: 'input',
+          retryable: false,
+          hint: 'Use a textual UTF-8 webpage or a correctly typed supported image/PDF URL.',
+        },
+      );
+    }
+    return declaredType;
+  }
+  if (!KNOWN_MEDIA_TYPES.has(declaredType)) {
+    throw unsupportedFetchedType(declaredType);
+  }
+  return declaredType;
+}
+
 async function runCompatibleWebExtraction(
   urls: string[],
   analysis: WebAnalysisMode,
   options: ResolvedCliOptions,
   signal: AbortSignal,
+  runtime?: ProviderExecutionContext,
 ): Promise<WebExtractionResult> {
-  const config = runtimeConfig(options);
+  const config = runtimeConfig(options, runtime);
   const parts: OpenAIContentPart[] = [{ type: 'text', text: webPrompt(urls, analysis) }];
   let totalBytes = 0;
   let hasPdf = false;
@@ -130,8 +223,9 @@ async function runCompatibleWebExtraction(
     const fetched = await secureFetchPublicUrl(url, signal);
     totalBytes += fetched.bytes.byteLength;
     if (totalBytes > 30 * 1024 * 1024) throw new Error('Web OCR source data exceeds the 30 MB combined limit');
-    const contentType = fetched.contentType;
+    const contentType = fetchedContentType(fetched.contentType, fetched.bytes);
     if (contentType === 'application/pdf' || contentType.startsWith('image/')) {
+      assertProviderMediaTypeSupported(contentType, options);
       hasPdf ||= contentType === 'application/pdf';
       const dataUrl = `data:${contentType};base64,${Buffer.from(fetched.bytes).toString('base64')}`;
       parts.push({ type: 'text', text: `Source ${index + 1}: ${url}` });
@@ -210,11 +304,12 @@ export async function runWebExtraction(
   analysis: WebAnalysisMode,
   options: ResolvedCliOptions,
   signal: AbortSignal,
+  runtime?: ProviderExecutionContext,
 ): Promise<WebExtractionResult> {
   if (options.provider !== 'gemini') {
-    return runCompatibleWebExtraction(urls, analysis, options, signal);
+    return runCompatibleWebExtraction(urls, analysis, options, signal, runtime);
   }
-  const config = runtimeConfig(options);
+  const config = runtimeConfig(options, runtime);
   return extractTextFromUrls(
     urls,
     options.apiKey || (options.cloudflareByok ? options.gatewayToken || 'cloudflare-byok' : ''),
@@ -227,7 +322,8 @@ export async function runWebExtraction(
           baseUrl: options.baseUrl,
           ...(options.gateway === 'cloudflare' ? { headers: providerRequestHeaders(config) } : {}),
         }
-      : undefined,
+        : undefined,
+    runtime,
   );
 }
 

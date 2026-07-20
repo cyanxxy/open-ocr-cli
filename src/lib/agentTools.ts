@@ -340,7 +340,7 @@ export async function executeReOcrRegion(
         baseUrl: clientConfig.baseUrl,
         headers: clientConfig.headers,
       });
-      await waitForGeminiRequestSlot(clientConfig.abortSignal);
+      await waitForGeminiRequestSlot(clientConfig.abortSignal, clientConfig.runtime);
       const response = await genAI.models.generateContent({
         model: clientConfig.model,
         contents: [{
@@ -357,7 +357,7 @@ export async function executeReOcrRegion(
         }],
         config: generationConfig,
       });
-      recordGeminiUsage(response, clientConfig.model as GeminiModel);
+      recordGeminiUsage(response, clientConfig.model as GeminiModel, clientConfig.runtime);
       assertCompleteGeminiResponse(response, 'Region re-OCR');
       rawResponseText = response.text || '';
     }

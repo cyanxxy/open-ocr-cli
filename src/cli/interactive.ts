@@ -8,7 +8,12 @@ import {
   type ProviderId,
 } from '../lib/providers';
 import { asCliExitError } from './errors';
-import { loadCliConfig, loadLocalEnv } from './config';
+import {
+  cliThinkingLevels,
+  defaultCliThinkingLevel,
+  loadCliConfig,
+  loadLocalEnv,
+} from './config';
 import {
   isPromptAbort,
   promptSelect,
@@ -29,6 +34,7 @@ interface InteractiveRuntime {
 }
 
 type MenuChoice<T extends string> = PromptChoice<T>;
+type InteractiveThinkingLevel = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 type InteractiveCommand =
   | 'extract'
@@ -158,22 +164,29 @@ async function providerArguments(
     ?? (providerContextMatches ? config.model : undefined)
     ?? PROVIDER_PROFILES[provider].defaultModel;
   const model = await chooseModel(prompter, writeOutput, provider, preferredModel);
+  const modelContextMatches = providerContextMatches && (!config.model || config.model === model);
   const configuredThinking = (
     env.OPEN_OCR_THINKING
     ?? (provider === 'gemini' ? env.GEMINI_OCR_THINKING : undefined)
-    ?? config.thinking
+    ?? (modelContextMatches ? config.thinking : undefined)
   )?.toLowerCase();
-  const thinking = await promptSelect(
+  const thinkingValues: readonly InteractiveThinkingLevel[] = cliThinkingLevels(provider, model)
+    .map((value) => value.toLowerCase() as InteractiveThinkingLevel);
+  const thinkingLabels: Record<InteractiveThinkingLevel, string> = {
+    minimal: 'MINIMAL — fastest, least reasoning',
+    low: 'LOW — light reasoning',
+    medium: 'MEDIUM — balanced',
+    high: 'HIGH — strong reasoning',
+    xhigh: 'XHIGH — extra-high model-dependent reasoning',
+    max: 'MAX — maximum reasoning effort',
+  };
+  const defaultThinking = defaultCliThinkingLevel(provider, model).toLowerCase() as InteractiveThinkingLevel;
+  const thinking = await promptSelect<InteractiveThinkingLevel>(
     prompter,
     writeOutput,
     'Thinking level',
-    [
-      { value: 'minimal', label: 'MINIMAL — fastest, least reasoning' },
-      { value: 'low', label: 'LOW — light reasoning' },
-      { value: 'medium', label: 'MEDIUM — balanced' },
-      { value: 'high', label: 'HIGH — maximum reasoning' },
-    ],
-    configuredChoice(configuredThinking, ['minimal', 'low', 'medium', 'high'] as const, 'medium'),
+    thinkingValues.map((value) => ({ value, label: thinkingLabels[value] })),
+    configuredChoice(configuredThinking, thinkingValues, defaultThinking),
   );
   const apiKeyEnv = await required(
     prompter,
@@ -230,7 +243,10 @@ async function providerArguments(
       );
       args.push('--cloudflare-provider', cloudflareProvider);
     }
-    const defaultByok = configuredGateway === 'cloudflare' && config.cloudflareByok === true;
+    const defaultByok = providerContextMatches
+      && gateway === 'cloudflare'
+      && configuredGateway === 'cloudflare'
+      && config.cloudflareByok === true;
     if (await prompter.confirm('Use a provider key stored in Cloudflare?', defaultByok)) {
       args.push('--cloudflare-byok');
       const alias = await prompter.ask(
@@ -328,7 +344,7 @@ async function extractArguments(
     [
       { value: 'markdown', label: 'Markdown' },
       { value: 'json', label: 'JSON' },
-      { value: 'csv', label: 'CSV' },
+      ...(mode === 'template' ? [{ value: 'csv' as const, label: 'CSV' }] : []),
       { value: 'all', label: 'All formats' },
     ],
     configuredChoice(

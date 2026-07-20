@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { asCliExitError, CliExitError, cliExitCode, cliSignalExitCode, ocrErrorPayload } from './errors';
+import { ProviderApiError } from '../lib/providers';
+import {
+  asCliExitError,
+  CliExitError,
+  cliBatchExitCode,
+  cliExitCode,
+  cliRunStatusExitCode,
+  cliSignalExitCode,
+  ocrErrorPayload,
+} from './errors';
 
 describe('CLI exit errors', () => {
   it('classifies expected runtime failures without changing their message', () => {
@@ -10,6 +19,16 @@ describe('CLI exit errors', () => {
     expect(error.message).toBe('Gemini request timed out');
     expect(error.cause).toBe(cause);
     expect(cliExitCode(error)).toBe(1);
+  });
+
+  it('redacts credential-like fragments in provider error text', () => {
+    const error = asCliExitError(
+      new Error('Upstream said Authorization: Bearer sk-live-supersecret-token-value'),
+      1,
+    );
+    expect(error.message).not.toContain('sk-live');
+    expect(error.message).not.toContain('supersecret');
+    expect(error.message).toContain('[REDACTED');
   });
 
   it('defaults unexpected command failures to exit code 2', () => {
@@ -32,6 +51,11 @@ describe('CLI exit errors', () => {
       category: 'authentication',
       retryable: false,
     });
+    expect(ocrErrorPayload(new TypeError('fetch failed'), 1)).toMatchObject({
+      code: 'PROVIDER_FAILURE',
+      category: 'provider',
+      retryable: true,
+    });
   });
 
   it('does not classify configuration or output prose as a custom-schema failure', () => {
@@ -47,6 +71,119 @@ describe('CLI exit errors', () => {
       code: 'OUTPUT_CONFLICT',
       category: 'output',
       hint: 'Choose a new output path or resume a matching job.',
+    });
+  });
+
+  it('prefers typed provider metadata over misleading message text', () => {
+    expect(ocrErrorPayload(new ProviderApiError(
+      'Upstream mentioned a cost limit while its service was unavailable',
+      503,
+    ), 1)).toMatchObject({
+      code: 'PROVIDER_FAILURE',
+      category: 'provider',
+      retryable: true,
+    });
+    expect(ocrErrorPayload(new ProviderApiError('Unauthorized', 401), 1)).toMatchObject({
+      code: 'AUTH_INVALID',
+      category: 'authentication',
+      retryable: false,
+    });
+    expect(ocrErrorPayload(new ProviderApiError('Forbidden', 403), 1)).toMatchObject({
+      code: 'PERMISSION_DENIED',
+      category: 'authorization',
+      retryable: false,
+    });
+    expect(ocrErrorPayload(new ProviderApiError('Conflict', 409), 1)).toMatchObject({
+      code: 'PROVIDER_FAILURE',
+      category: 'provider',
+      retryable: true,
+    });
+  });
+
+  it('classifies current Gemini credential and RPC error shapes without relying on HTTP 401', () => {
+    expect(ocrErrorPayload(Object.assign(
+      new Error('API key not valid. Please pass a valid API key.'),
+      { name: 'ApiError', status: 400 },
+    ), 1)).toMatchObject({
+      code: 'AUTH_INVALID',
+      category: 'authentication',
+      retryable: false,
+    });
+    expect(ocrErrorPayload(Object.assign(
+      new Error('quota exhausted'),
+      { code: 'RESOURCE_EXHAUSTED' },
+    ), 1)).toMatchObject({
+      code: 'RATE_LIMITED',
+      retryable: true,
+    });
+    expect(ocrErrorPayload(new ProviderApiError(
+      'router capacity exhausted',
+      undefined,
+      'RATE_LIMITED',
+    ), 1)).toMatchObject({
+      code: 'RATE_LIMITED',
+      retryable: true,
+    });
+    expect(ocrErrorPayload(new ProviderApiError(
+      'balance depleted',
+      429,
+      'exceeded_current_quota_error',
+    ), 1)).toMatchObject({
+      code: 'RATE_LIMITED',
+      retryable: false,
+      hint: 'Check the provider account balance and quota before retrying.',
+    });
+    expect(ocrErrorPayload(new ProviderApiError(
+      'incorrect key',
+      401,
+      'incorrect_api_key_error',
+    ), 1)).toMatchObject({
+      code: 'AUTH_INVALID',
+      retryable: false,
+    });
+    expect(ocrErrorPayload(new ProviderApiError(
+      'router capacity exhausted',
+      200,
+      'provider_overloaded',
+    ), 1)).toMatchObject({
+      code: 'RATE_LIMITED',
+      category: 'provider',
+      retryable: true,
+    });
+    expect(ocrErrorPayload(new ProviderApiError(
+      'could not decode image',
+      200,
+      'invalid_image',
+    ), 1)).toMatchObject({
+      code: 'INPUT_INVALID',
+      category: 'input',
+      retryable: false,
+    });
+  });
+
+  it('preserves exit code 1 for every incomplete v1 execution', () => {
+    expect(cliBatchExitCode({
+      total: 2, succeeded: 0, partial: 0, failed: 2, skipped: 0, costLimitReached: false,
+    })).toBe(1);
+    expect(cliBatchExitCode({
+      total: 100, succeeded: 98, partial: 0, failed: 2, skipped: 0, costLimitReached: false,
+    })).toBe(1);
+    expect(cliRunStatusExitCode('partial')).toBe(1);
+    expect(cliRunStatusExitCode('cost_limited')).toBe(1);
+    expect(cliRunStatusExitCode('failed')).toBe(1);
+  });
+
+  it('preserves typed details through wrapper error causes', () => {
+    const inputFailure = new CliExitError('Invalid PDF structure', 2, {
+      code: 'INPUT_INVALID',
+      category: 'input',
+      retryable: false,
+    });
+    const wrapped = new Error('Invalid PDF structure', { cause: inputFailure });
+    expect(ocrErrorPayload(wrapped, 1)).toMatchObject({
+      code: 'INPUT_INVALID',
+      category: 'input',
+      retryable: false,
     });
   });
 });

@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 describe('CLI batch runner', () => {
-  it('changes the resume fingerprint when the provider or gateway route changes', () => {
+  it('fingerprints output behavior without invalidating resume for display-only progress', () => {
     const gemini = resolveCliOptions({ dryRun: true }, {}, directory);
     const kimi = resolveCliOptions({ dryRun: true, provider: 'kimi' }, {}, directory);
     const cloudflare = resolveCliOptions({
@@ -29,9 +29,18 @@ describe('CLI batch runner', () => {
       cloudflareAccountId: 'account',
       cloudflareGatewayId: 'gateway',
     }, {}, directory);
+    const withThoughts = resolveCliOptions({ dryRun: true, includeThoughts: true }, {}, directory);
+    const traceStandard = resolveCliOptions({
+      dryRun: true, format: 'all', progress: 'standard',
+    }, {}, directory);
+    const traceDetailed = resolveCliOptions({
+      dryRun: true, format: 'all', progress: 'detailed',
+    }, {}, directory);
 
     expect(modeFingerprint(kimi)).not.toBe(modeFingerprint(gemini));
     expect(modeFingerprint(cloudflare)).not.toBe(modeFingerprint(gemini));
+    expect(modeFingerprint(withThoughts)).toBe(modeFingerprint(gemini));
+    expect(modeFingerprint(traceDetailed)).not.toBe(modeFingerprint(traceStandard));
   });
 
   it('validates every document in a credential-free dry run', async () => {
@@ -43,7 +52,7 @@ describe('CLI batch runner', () => {
     const stderr: string[] = [];
     const summary = await runBatch(inputs, options, {
       abortController: new AbortController(),
-      writeStdout: (text) => stdout.push(text),
+      writeStdout: (text) => { stdout.push(text); },
       writeStderr: (text) => stderr.push(text),
     });
     expect(summary).toMatchObject({ total: 2, failed: 0, skipped: 2 });
@@ -61,14 +70,31 @@ describe('CLI batch runner', () => {
     const options = resolveCliOptions({ dryRun: true, quiet: true, jsonl: true }, {}, directory);
     const inputs = await discoverInputs(['.'], options);
     const stdout: string[] = [];
+    let activeWrites = 0;
+    let maximumActiveWrites = 0;
     const summary = await runBatch(inputs, options, {
       abortController: new AbortController(),
-      writeStdout: (text) => stdout.push(text),
+      writeStdout: async (text) => {
+        activeWrites += 1;
+        maximumActiveWrites = Math.max(maximumActiveWrites, activeWrites);
+        await Promise.resolve();
+        stdout.push(text);
+        activeWrites -= 1;
+      },
       writeStderr: () => undefined,
     });
     expect(summary.failed).toBe(1);
     expect(summary.skipped).toBe(1);
+    const records = stdout.join('').trim().split('\n').map((line) => JSON.parse(line) as {
+      type: string;
+      status?: string;
+      error?: string;
+    });
+    expect(records).toHaveLength(3);
+    expect(records.slice(0, 2).map((record) => record.type)).toEqual(['document', 'document']);
+    expect(records.slice(0, 2).map((record) => record.status).sort()).toEqual(['failed', 'skipped']);
+    expect(records.at(-1)?.type).toBe('summary');
     expect(stdout.join('')).toContain('does not match its declared type');
-    expect(stdout.join('')).toContain('"type":"summary"');
+    expect(maximumActiveWrites).toBe(1);
   });
 });

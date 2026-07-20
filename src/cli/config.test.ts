@@ -18,6 +18,7 @@ afterEach(() => {
   delete process.env.OPEN_OCR_GATEWAY;
   delete process.env.OPEN_OCR_MODEL;
   delete process.env.OPEN_OCR_THINKING;
+  delete process.env.OPEN_OCR_NO_CONFIG;
   delete process.env.MOONSHOT_API_KEY;
   delete process.env.OPENROUTER_API_KEY;
   if (originalGatewayToken === undefined) delete process.env.CLOUDFLARE_AI_GATEWAY_TOKEN;
@@ -57,9 +58,11 @@ describe('CLI configuration', () => {
     process.env.MOONSHOT_API_KEY = 'kimi-key';
     expect(resolveCliOptions({ provider: 'kimi' }, {}, '/workspace')).toMatchObject({
       provider: 'kimi',
-      model: 'kimi-k2.6',
+      model: 'kimi-k3',
       apiKeyEnv: 'MOONSHOT_API_KEY',
       baseUrl: 'https://api.moonshot.ai/v1',
+      thinking: 'MAX',
+      maxTokens: 131_072,
     });
     process.env.OPENROUTER_API_KEY = 'router-key';
     expect(resolveCliOptions(
@@ -67,6 +70,62 @@ describe('CLI configuration', () => {
       {},
       '/workspace',
     )).toMatchObject({ provider: 'openrouter', model: 'vendor/custom-vision' });
+    expect(resolveCliOptions(
+      { provider: 'openrouter', model: 'moonshotai/kimi-k3' },
+      {},
+      '/workspace',
+    )).toMatchObject({ thinking: 'MAX', maxTokens: 131_072 });
+    expect(resolveCliOptions(
+      { provider: 'openrouter', model: 'vendor/model-with-max', thinking: 'max', dryRun: true },
+      {},
+      '/workspace',
+    )).toMatchObject({ thinking: 'MAX' });
+    expect(resolveCliOptions(
+      {
+        provider: 'openrouter',
+        model: 'vendor/current-coding-model',
+        thinking: 'xhigh',
+        maxTokens: '131072',
+        dryRun: true,
+      },
+      {},
+      '/workspace',
+    )).toMatchObject({ thinking: 'XHIGH', maxTokens: 131_072 });
+    expect(resolveCliOptions(
+      { provider: 'kimi', thinking: 'minimal', dryRun: true },
+      {},
+      '/workspace',
+    )).toMatchObject({ thinking: 'LOW' });
+    expect(() => resolveCliOptions(
+      { provider: 'kimi', thinking: 'medium', dryRun: true },
+      {},
+      '/workspace',
+    )).toThrow('ambiguous silent upgrade');
+    expect(resolveCliOptions(
+      { provider: 'openrouter', model: 'moonshotai/kimi-k3', thinking: 'minimal', dryRun: true },
+      {},
+      '/workspace',
+    )).toMatchObject({ thinking: 'LOW' });
+    expect(() => resolveCliOptions(
+      { provider: 'openrouter', model: 'moonshotai/kimi-k3', thinking: 'medium', dryRun: true },
+      {},
+      '/workspace',
+    )).toThrow('ambiguous silent upgrade');
+    expect(() => resolveCliOptions(
+      { provider: 'openrouter', model: 'moonshotai/kimi-k3', thinking: 'xhigh', dryRun: true },
+      {},
+      '/workspace',
+    )).toThrow('not a Kimi K3 effort');
+    expect(resolveCliOptions(
+      { provider: 'openrouter', model: 'moonshotai/kimi-k3:exacto', dryRun: true },
+      {},
+      '/workspace',
+    )).toMatchObject({ thinking: 'MAX', maxTokens: 131_072 });
+    expect(() => resolveCliOptions(
+      { provider: 'openrouter', model: 'moonshotai/kimi-k3:exacto', thinking: 'medium', dryRun: true },
+      {},
+      '/workspace',
+    )).toThrow('ambiguous silent upgrade');
   });
 
   it('does not carry provider-coupled legacy settings across a provider switch', () => {
@@ -75,17 +134,36 @@ describe('CLI configuration', () => {
       model: 'gemini-3.1-flash-lite',
       apiKeyEnv: 'GEMINI_API_KEY',
       baseUrl: 'https://legacy-gemini.example/v1',
+      thinking: 'MINIMAL',
+      maxTokens: 1024,
       inputPricePerMillionUsd: 99,
       outputPricePerMillionUsd: 999,
     }, '/workspace');
     expect(options).toMatchObject({
       provider: 'kimi',
-      model: 'kimi-k2.6',
+      model: 'kimi-k3',
       apiKeyEnv: 'MOONSHOT_API_KEY',
       baseUrl: 'https://api.moonshot.ai/v1',
+      thinking: 'MAX',
+      maxTokens: 131_072,
       inputPricePerMillionUsd: undefined,
       outputPricePerMillionUsd: undefined,
     });
+  });
+
+  it('does not invent effort tiers for direct Kimi models with boolean or mandatory thinking', () => {
+    expect(resolveCliOptions({
+      provider: 'kimi', model: 'kimi-k2.7-code', dryRun: true,
+    }, {}, '/workspace')).toMatchObject({ thinking: 'HIGH' });
+    expect(() => resolveCliOptions({
+      provider: 'kimi', model: 'kimi-k2.7-code', thinking: 'low', dryRun: true,
+    }, {}, '/workspace')).toThrow('does not expose configurable reasoning effort');
+    expect(resolveCliOptions({
+      provider: 'kimi', model: 'kimi-k2.6', thinking: 'minimal', dryRun: true,
+    }, {}, '/workspace')).toMatchObject({ thinking: 'MINIMAL' });
+    expect(() => resolveCliOptions({
+      provider: 'kimi', model: 'kimi-k2.6', thinking: 'medium', dryRun: true,
+    }, {}, '/workspace')).toThrow('instant mode');
   });
 
   it('does not carry a direct base URL across a gateway switch', () => {
@@ -102,6 +180,28 @@ describe('CLI configuration', () => {
     expect(options.baseUrl).toBe('https://gateway.ai.cloudflare.com/v1/account/gateway/google-ai-studio');
   });
 
+  it('does not carry a provider-specific Cloudflare BYOK alias across a provider switch', () => {
+    const options = resolveCliOptions({
+      provider: 'kimi',
+      cloudflareProvider: 'moonshot',
+      dryRun: true,
+    }, {
+      provider: 'gemini',
+      gateway: 'cloudflare',
+      cloudflareAccountId: 'account',
+      cloudflareGatewayId: 'gateway',
+      cloudflareByok: true,
+      cloudflareByokAlias: 'gemini-production',
+    }, '/workspace');
+
+    expect(options).toMatchObject({
+      provider: 'kimi',
+      gateway: 'cloudflare',
+      cloudflareByok: false,
+      cloudflareByokAlias: undefined,
+    });
+  });
+
   it('requires an explicit price pair when a configured model is overridden', () => {
     expect(() => resolveCliOptions({
       provider: 'kimi',
@@ -116,17 +216,35 @@ describe('CLI configuration', () => {
     }, '/workspace')).toThrow('requires both --input-price and --output-price');
   });
 
-  it('enables max-cost controls with the published Kimi and Muse defaults', () => {
+  it('enables max-cost for published Kimi prices and requires explicit Muse prices', () => {
     expect(resolveCliOptions({
       provider: 'kimi',
       maxCost: '1',
       dryRun: true,
     }, {}, '/workspace').maxCostUsd).toBe(1);
-    expect(resolveCliOptions({
+    expect(() => resolveCliOptions({
       provider: 'muse',
       maxCost: '1',
       dryRun: true,
-    }, {}, '/workspace').maxCostUsd).toBe(1);
+    }, {}, '/workspace')).toThrow('requires both --input-price and --output-price');
+  });
+
+  it('accepts an explicit zero-price route with a cost ceiling', () => {
+    const options = resolveCliOptions({
+      provider: 'openai-compatible',
+      model: 'local-vision',
+      baseUrl: 'https://example.test/v1',
+      maxCost: '1',
+      inputPrice: '0',
+      outputPrice: '0',
+      dryRun: true,
+    }, {}, '/workspace');
+
+    expect(options).toMatchObject({
+      maxCostUsd: 1,
+      inputPricePerMillionUsd: 0,
+      outputPricePerMillionUsd: 0,
+    });
   });
 
   it('builds Cloudflare native and custom-provider routes without serializing keys', () => {
@@ -179,10 +297,64 @@ describe('CLI configuration', () => {
     expect(options.format).toBe('csv');
   });
 
-  it('raises minimal thinking for agentic and Pro runs', () => {
+  it('preserves an explicit minimal effort for agentic Flash runs', () => {
     process.env.GEMINI_API_KEY = 'test-key';
-    expect(resolveCliOptions({ mode: 'agentic', thinking: 'minimal' }, {}, '/workspace').thinking).toBe('MEDIUM');
-    expect(resolveCliOptions({ model: 'gemini-3.1-pro-preview', thinking: 'minimal' }, {}, '/workspace').thinking).toBe('LOW');
+    expect(resolveCliOptions({ mode: 'agentic', thinking: 'minimal' }, {}, '/workspace').thinking).toBe('MINIMAL');
+  });
+
+  it('uses model-aware Gemini defaults and rejects unsupported Pro minimal effort', () => {
+    process.env.GEMINI_API_KEY = 'test-key';
+    expect(resolveCliOptions({ model: 'gemini-3.1-flash-lite' }, {}, '/workspace').thinking).toBe('MINIMAL');
+    expect(resolveCliOptions({ model: 'gemini-3-flash-preview' }, {}, '/workspace').thinking).toBe('HIGH');
+    expect(resolveCliOptions({ model: 'gemini-3.1-pro-preview' }, {}, '/workspace').thinking).toBe('HIGH');
+    expect(() => resolveCliOptions(
+      { model: 'gemini-3.1-pro-preview', thinking: 'minimal' },
+      {},
+      '/workspace',
+    )).toThrow('minimal is not supported');
+  });
+
+  it('keeps progress visibility scoped to agentic extraction', () => {
+    const simple = resolveCliOptions({ dryRun: true }, {}, '/workspace');
+    const agentic = resolveCliOptions({ dryRun: true, mode: 'agentic' }, {}, '/workspace');
+    const silentAgent = resolveCliOptions({ dryRun: true, mode: 'agentic', progress: 'off' }, {}, '/workspace');
+    const legacyAlias = resolveCliOptions({ dryRun: true, mode: 'agentic', includeThoughts: true }, {}, '/workspace');
+    const irrelevantSimpleAlias = resolveCliOptions({ dryRun: true, includeThoughts: true }, {}, '/workspace');
+
+    expect(simple).toMatchObject({ progress: 'standard', includeThoughts: false });
+    expect(agentic).toMatchObject({ progress: 'standard', includeThoughts: true });
+    expect(silentAgent).toMatchObject({ progress: 'off', includeThoughts: false });
+    expect(legacyAlias).toMatchObject({ progress: 'standard', includeThoughts: true });
+    expect(irrelevantSimpleAlias).toMatchObject({ progress: 'standard', includeThoughts: false });
+  });
+
+  it('accepts Muse xhigh thinking and rejects it for Gemini', () => {
+    process.env.META_API_KEY = 'muse-key';
+    expect(resolveCliOptions(
+      { provider: 'muse', thinking: 'xhigh', dryRun: true },
+      {},
+      '/workspace',
+    )).toMatchObject({ thinking: 'XHIGH' });
+    process.env.GEMINI_API_KEY = 'test-key';
+    expect(() => resolveCliOptions(
+      { thinking: 'xhigh', dryRun: true },
+      {},
+      '/workspace',
+    )).toThrow('xhigh is supported by Muse and model-dependent OpenRouter routes');
+  });
+
+  it('uses a lower default max-tokens budget for agentic Kimi K3', () => {
+    process.env.MOONSHOT_API_KEY = 'kimi-key';
+    expect(resolveCliOptions(
+      { provider: 'kimi', mode: 'agentic', dryRun: true },
+      {},
+      '/workspace',
+    ).maxTokens).toBe(32_768);
+    expect(resolveCliOptions(
+      { provider: 'kimi', dryRun: true },
+      {},
+      '/workspace',
+    ).maxTokens).toBe(131_072);
   });
 
   it('allows credential-free dry runs but rejects live runs without a key', () => {
@@ -258,6 +430,49 @@ describe('CLI configuration', () => {
       expect(process.env.PROJECT_GEMINI_KEY).toBe('from-project-env');
     } finally {
       delete process.env.PROJECT_GEMINI_KEY;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('supports hermetic runs that ignore config files and project .env', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-hermetic-'));
+    delete process.env.HERMETIC_TEST_KEY;
+    try {
+      await writeFile(path.join(directory, '.open-ocr-cli.json'), JSON.stringify({ concurrency: 9 }));
+      await writeFile(path.join(directory, '.env'), 'HERMETIC_TEST_KEY=from-project-env\n');
+      process.env.OPEN_OCR_NO_CONFIG = '1';
+      expect(await loadCliConfig(directory)).toEqual({});
+      loadLocalEnv(directory);
+      expect(process.env.HERMETIC_TEST_KEY).toBeUndefined();
+
+      delete process.env.OPEN_OCR_NO_CONFIG;
+      expect(await loadCliConfig(directory, undefined, true)).toEqual({});
+      loadLocalEnv(directory, true);
+      expect(process.env.HERMETIC_TEST_KEY).toBeUndefined();
+    } finally {
+      delete process.env.HERMETIC_TEST_KEY;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('loads only an explicit config under ambient hermetic mode without ambient merge or .env', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-explicit-config-'));
+    const configPath = path.join(directory, 'agent-config.json');
+    delete process.env.EXPLICIT_CONFIG_TEST_KEY;
+    try {
+      await writeFile(configPath, JSON.stringify({ concurrency: 7 }));
+      await writeFile(path.join(directory, '.open-ocr-cli.json'), JSON.stringify({
+        concurrency: 99,
+        baseUrl: 'https://attacker.example/v1',
+      }));
+      await writeFile(path.join(directory, '.env'), 'EXPLICIT_CONFIG_TEST_KEY=loaded\n');
+      process.env.OPEN_OCR_NO_CONFIG = '1';
+
+      expect(await loadCliConfig(directory, configPath)).toEqual({ concurrency: 7 });
+      loadLocalEnv(directory, false);
+      expect(process.env.EXPLICIT_CONFIG_TEST_KEY).toBeUndefined();
+    } finally {
+      delete process.env.EXPLICIT_CONFIG_TEST_KEY;
       await rm(directory, { recursive: true, force: true });
     }
   });

@@ -3,7 +3,7 @@
  * Handles API client creation and model configuration
  */
 
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel as GoogleThinkingLevel } from '@google/genai';
 import { logger } from '../logger';
 import { waitForGeminiRequestSlot } from './requestPolicy';
 import { GeminiModel, OcrError, OcrErrorType, ThinkingLevel } from './types';
@@ -174,7 +174,9 @@ export function assertCompleteGeminiResponse(
 ): void {
   assertPromptNotBlocked(response, operation);
   const candidate = response.candidates?.[0];
-  if (!candidate) return;
+  if (!candidate) {
+    throw new Error(`${operation} returned no candidate and cannot be treated as complete`);
+  }
   if (!candidate.finishReason) {
     throw new Error(`${operation} returned a candidate without a terminal finish reason and may be incomplete`);
   }
@@ -361,17 +363,6 @@ export function generateContentMediaResolution(
 }
 
 /**
- * Apply thinking configuration for Gemini preview models.
- *
- * Per the Gemini 3 API docs, `thinkingLevel` is sent as a lowercase string
- * (`"minimal" | "low" | "medium" | "high"`). The internal `ThinkingLevel` type
- * is uppercase to match how settings are stored in the UI, so we lowercase
- * only at the wire boundary here.
- *
- * - Gemini 3.1 Pro supports: low, medium, high
- * - Gemini 3 Flash / Gemini 3.5 Flash support: minimal, low, medium, high
- */
-/**
  * Detect terminal Gemini API failures (bad/missing key, permission). These can
  * never succeed on retry, so the agent loop stops entirely rather than burning
  * iterations against an endpoint that will keep rejecting every request.
@@ -379,9 +370,46 @@ export function generateContentMediaResolution(
  * Note: rate-limit / quota / 5xx are intentionally NOT here — they are transient
  * and handled by isRetryableGeminiError with backoff (audit H-17).
  */
+function structuredErrorMetadata(error: unknown): { status?: number; code?: string } {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  let firstCode: string | undefined;
+  for (let depth = 0; current !== null && current !== undefined && depth < 8; depth += 1) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (typeof current === 'object') {
+      const record = current as Record<string, unknown>;
+      const status = record.status ?? record.statusCode;
+      const code = record.code;
+      const numericStatus = typeof status === 'number'
+        ? status
+        : typeof code === 'number'
+          ? code
+          : typeof code === 'string' && /^\d{3}$/u.test(code)
+            ? Number(code)
+            : undefined;
+      if (typeof code === 'string') firstCode ??= code.toUpperCase();
+      if (numericStatus !== undefined) {
+        return {
+          status: numericStatus,
+          ...(firstCode ? { code: firstCode } : {}),
+        };
+      }
+      current = record.cause;
+      continue;
+    }
+    break;
+  }
+  return firstCode ? { code: firstCode } : {};
+}
+
 export function isFatalGeminiError(error: unknown): boolean {
+  const { status, code } = structuredErrorMetadata(error);
+  if (code && ['API_KEY_INVALID', 'UNAUTHENTICATED', 'PERMISSION_DENIED'].includes(code)) {
+    return true;
+  }
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-  return (
+  const credentialFailure = (
     message.includes('api key')
     || message.includes('api_key_invalid')
     || message.includes('invalid api key')
@@ -391,6 +419,13 @@ export function isFatalGeminiError(error: unknown): boolean {
     || message.includes('401')
     || message.includes('403')
   );
+  if (status !== undefined) {
+    // Google AI Studio can report an invalid API key as HTTP 400 rather than
+    // 401. Use the credential-specific message only for that otherwise broad
+    // status so unrelated INVALID_ARGUMENT errors are not misclassified.
+    return status === 401 || status === 403 || (status === 400 && credentialFailure);
+  }
+  return credentialFailure;
 }
 
 /**
@@ -401,6 +436,22 @@ export function isFatalGeminiError(error: unknown): boolean {
  */
 export function isRetryableGeminiError(error: unknown): boolean {
   if (isFatalGeminiError(error)) return false;
+  const { status, code } = structuredErrorMetadata(error);
+  if (status !== undefined) {
+    return status === 408 || status === 409 || status === 429 || status >= 500;
+  }
+  if (code && [
+    'ABORTED',
+    'DEADLINE_EXCEEDED',
+    'EAI_AGAIN',
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'INTERNAL',
+    'RESOURCE_EXHAUSTED',
+    'UNAVAILABLE',
+  ].includes(code)) {
+    return true;
+  }
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
   return (
     message.includes('resource_exhausted')
@@ -423,17 +474,6 @@ export function isRetryableGeminiError(error: unknown): boolean {
 }
 
 /**
- * Resolve a UI `ThinkingLevel` to the lowercase wire value the Gemini API
- * expects (`"minimal" | "low" | "medium" | "high"`), clamped to what the given
- * model supports. Shared by both the `generateContent` path (applyThinkingConfig)
- * and the Interactions API path (createInteractionGenerationConfig) so they
- * never diverge.
- *
- * - Gemini 3.1 Pro supports: low, medium, high
- * - Gemini 3 Flash / Gemini 3.5 Flash support: minimal, low, medium, high
- * - Unsupported/unknown levels fall back to `high`.
- */
-/**
  * Model-aware default thinking level when the UI has not set one.
  * - 3.1 Flash-Lite: minimal (API default; cheap/high-volume)
  * - 3.5 Flash: medium
@@ -446,6 +486,11 @@ export function defaultThinkingLevelForModel(modelName: GeminiModel): ThinkingLe
   return 'HIGH';
 }
 
+/**
+ * Resolve a UI `ThinkingLevel` to the lowercase Gemini wire value, validated
+ * against the selected model. Unsupported levels fail locally; they are never
+ * silently rewritten.
+ */
 export function normalizeThinkingLevel(
   level: ThinkingLevel | undefined,
   modelName: GeminiModel,
@@ -455,11 +500,31 @@ export function normalizeThinkingLevel(
   const allowed = isFlashFamilyModel(modelName)
     ? (['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'] as const)
     : (['LOW', 'MEDIUM', 'HIGH'] as const);
-  const fallback = defaultThinkingLevelForModel(modelName);
-  const resolved = (allowed as readonly string[]).includes(normalized) ? normalized : fallback;
-  return resolved.toLowerCase() as 'minimal' | 'low' | 'medium' | 'high';
+  if (!(allowed as readonly string[]).includes(normalized)) {
+    throw new Error(
+      `${modelName} supports thinking levels ${allowed.map((entry) => entry.toLowerCase()).join(', ')}; `
+      + `${String(rawLevel).toLowerCase()} is not supported`,
+    );
+  }
+  return normalized.toLowerCase() as 'minimal' | 'low' | 'medium' | 'high';
 }
 
+function generateContentThinkingLevel(
+  level: ThinkingLevel | undefined,
+  modelName: GeminiModel,
+): GoogleThinkingLevel {
+  switch (normalizeThinkingLevel(level, modelName)) {
+    case 'minimal': return GoogleThinkingLevel.MINIMAL;
+    case 'low': return GoogleThinkingLevel.LOW;
+    case 'medium': return GoogleThinkingLevel.MEDIUM;
+    case 'high': return GoogleThinkingLevel.HIGH;
+  }
+}
+
+/**
+ * Apply thinking configuration to the generateContent SDK contract. The
+ * Interactions API uses lowercase values through normalizeThinkingLevel().
+ */
 export function applyThinkingConfig(
   generationConfig: Record<string, unknown>,
   modelName: GeminiModel,
@@ -468,7 +533,7 @@ export function applyThinkingConfig(
   return {
     ...generationConfig,
     thinkingConfig: {
-      thinkingLevel: normalizeThinkingLevel(thinkingConfig?.level, modelName),
+      thinkingLevel: generateContentThinkingLevel(thinkingConfig?.level, modelName),
       ...(thinkingConfig?.includeThoughts && { includeThoughts: true }),
     },
   };

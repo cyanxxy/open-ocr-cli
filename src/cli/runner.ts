@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import process from 'node:process';
 
 import { agentLoop } from '../lib/agentLoop';
 import type { AgentMemory, AgentStep } from '../lib/agentTypes';
+import { waitForAbortableAgentDelay } from '../lib/agentStepStream';
 import { isRetryableGeminiError } from '../lib/gemini/client';
 import type { ExtractedContent, ExtractionInstruction } from '../lib/gemini/types';
 import {
@@ -13,12 +15,13 @@ import {
   providerAgentLoop,
   providerDefaultBaseUrl,
   providerRequestHeaders,
+  type ProviderExecutionContext,
   type ProviderRuntimeConfig,
 } from '../lib/providers';
 import { getExtractionPreset } from '../lib/templates';
 import { readAndValidateInput } from './inputs';
 import { nodeRegionCropper } from './nodeRegionCropper';
-import { OcrJobService, modeFingerprint } from './ocrJobService';
+import { agentProgressMessage, OcrJobService, modeFingerprint } from './ocrJobService';
 import { assertCustomSchemaOutput } from './schema';
 import { jsonlResult, primaryArtifact } from './output';
 import type {
@@ -61,7 +64,37 @@ function agentMemoryToMarkdown(memory: AgentMemory): string {
   return lines.join('\n');
 }
 
-function providerConfig(options: ResolvedCliOptions): ProviderRuntimeConfig {
+function appendAgentTrace(steps: AgentStep[], step: AgentStep): void {
+  const previous = steps.at(-1);
+  if (
+    step.delta
+    && previous?.delta
+    && previous.type === step.type
+    && previous.source === step.source
+    && previous.id === step.id
+    && !previous.functionCall
+    && !step.functionCall
+  ) {
+    previous.content += step.content;
+    return;
+  }
+  steps.push({ ...step });
+}
+
+function finalizeAgentTrace(steps: AgentStep[]): AgentStep[] {
+  for (const step of steps) {
+    // Deltas are coalesced while the run is live. Once the document is
+    // terminal, the retained artifact contains completed text steps rather
+    // than an orphaned `in_progress` stream with no future event to close it.
+    if (step.delta) delete step.delta;
+  }
+  return steps;
+}
+
+function providerConfig(
+  options: ResolvedCliOptions,
+  runtime: ProviderExecutionContext,
+): ProviderRuntimeConfig {
   return {
     provider: options.provider,
     gateway: options.gateway,
@@ -70,6 +103,7 @@ function providerConfig(options: ResolvedCliOptions): ProviderRuntimeConfig {
     model: options.model,
     baseUrl: options.baseUrl,
     thinkingConfig: { level: options.thinking, includeThoughts: options.includeThoughts },
+    progress: options.progress,
     gatewayToken: options.gatewayToken,
     gatewayTokenEnv: options.gatewayTokenEnv,
     cloudflareAccountId: options.cloudflareAccountId,
@@ -79,6 +113,7 @@ function providerConfig(options: ResolvedCliOptions): ProviderRuntimeConfig {
     cloudflareProvider: options.cloudflareProvider,
     inputPricePerMillionUsd: options.inputPricePerMillionUsd,
     outputPricePerMillionUsd: options.outputPricePerMillionUsd,
+    runtime,
   };
 }
 
@@ -88,8 +123,9 @@ async function runAgentic(
   options: ResolvedCliOptions,
   signal: AbortSignal,
   onStep: (step: AgentStep) => void,
+  runtime: ProviderExecutionContext,
 ): Promise<OcrArtifacts> {
-  const config = providerConfig(options);
+  const config = providerConfig(options, runtime);
   const generator = options.provider === 'gemini' ? agentLoop(
     { name: input.name, type: input.mimeType },
     dataUrl,
@@ -97,18 +133,21 @@ async function runAgentic(
       apiKey: options.apiKey || (options.cloudflareByok ? options.gatewayToken || 'cloudflare-byok' : ''),
       model: options.model,
       thinkingConfig: { level: options.thinking, includeThoughts: options.includeThoughts },
+      progress: options.progress,
       baseUrl: options.gateway === 'cloudflare' || options.baseUrl !== providerDefaultBaseUrl('gemini')
         ? options.baseUrl
         : undefined,
       headers: options.gateway === 'cloudflare' ? providerRequestHeaders(config) : undefined,
       abortSignal: signal,
       regionCropper: nodeRegionCropper,
+      runtime,
     },
     {
       maxIterations: options.maxIterations,
       confidenceThreshold: options.confidenceThreshold,
       maxTokens: options.maxTokens,
       maxDurationMs: options.timeoutSeconds * 1000,
+      throwOnFailure: true,
     },
   ) : providerAgentLoop(
     { name: input.name, type: input.mimeType },
@@ -119,14 +158,17 @@ async function runAgentic(
       confidenceThreshold: options.confidenceThreshold,
       maxTokens: options.maxTokens,
       maxDurationMs: options.timeoutSeconds * 1000,
+      throwOnFailure: true,
     },
     nodeRegionCropper,
     signal,
   );
-  const steps: AgentStep[] = [];
+  // Live deltas belong to the event stream. Retain a compact, lossless trace
+  // only when the caller explicitly requested the `all` artifact set.
+  const steps: AgentStep[] | undefined = options.format === 'all' ? [] : undefined;
   let state = await generator.next();
   while (!state.done) {
-    steps.push(state.value);
+    if (steps) appendAgentTrace(steps, state.value);
     onStep(state.value);
     state = await generator.next();
   }
@@ -137,7 +179,7 @@ async function runAgentic(
   return {
     markdown: agentMemoryToMarkdown(memory),
     json: memory,
-    agentSteps: steps,
+    ...(steps ? { agentSteps: finalizeAgentTrace(steps) } : {}),
   };
 }
 
@@ -146,9 +188,10 @@ async function extractOnce(
   options: ResolvedCliOptions,
   signal: AbortSignal,
   onStep: (step: AgentStep) => void,
+  runtime: ProviderExecutionContext,
 ): Promise<OcrArtifacts> {
   const { dataUrl } = await readAndValidateInput(input);
-  const clientConfig = providerConfig(options);
+  const clientConfig = providerConfig(options, runtime);
 
   if (options.mode === 'template') {
     const result = await extractPresetWithProvider(
@@ -161,7 +204,7 @@ async function extractOnce(
     );
     return { markdown: result.markdown, json: result.json, csv: result.csv };
   }
-  if (options.mode === 'agentic') return runAgentic(input, dataUrl, options, signal, onStep);
+  if (options.mode === 'agentic') return runAgentic(input, dataUrl, options, signal, onStep, runtime);
 
   const instructions: ExtractionInstruction[] = options.instructions.map((prompt) => ({ prompt }));
   if (options.customSchema) {
@@ -205,11 +248,12 @@ async function extractWithRetries(
   options: ResolvedCliOptions,
   signal: AbortSignal,
   onStep: (step: AgentStep) => void,
+  runtime: ProviderExecutionContext,
 ): Promise<{ artifacts: OcrArtifacts; attempts: number }> {
   const allowedAttempts = options.mode === 'agentic' ? 1 : options.retries + 1;
   for (let attempt = 1; attempt <= allowedAttempts; attempt += 1) {
     try {
-      return { artifacts: await extractOnce(input, options, signal, onStep), attempts: attempt };
+      return { artifacts: await extractOnce(input, options, signal, onStep, runtime), attempts: attempt };
     } catch (error) {
       if (
         signal.aborted
@@ -220,13 +264,7 @@ async function extractWithRetries(
       }
       const delayMs = 750 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
       try {
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(resolve, delayMs);
-          signal.addEventListener('abort', () => {
-            clearTimeout(timeout);
-            reject(new DOMException('Operation aborted', 'AbortError'));
-          }, { once: true });
-        });
+        await waitForAbortableAgentDelay(delayMs, signal);
       } catch (waitError) {
         throw new ExtractionAttemptsError(waitError, attempt);
       }
@@ -260,7 +298,7 @@ function statusLine(index: number, total: number, result: OcrJobResult): string 
 
 interface BatchRuntime {
   abortController: AbortController;
-  writeStdout?: (text: string) => void;
+  writeStdout?: (text: string) => void | Promise<void>;
   writeStderr?: (text: string) => void;
 }
 
@@ -273,7 +311,19 @@ export async function runBatch(
   options: ResolvedCliOptions,
   runtime: BatchRuntime,
 ): Promise<BatchSummary> {
-  const writeStdout = runtime.writeStdout ?? ((text: string) => process.stdout.write(text));
+  const rawWriteStdout = runtime.writeStdout ?? (async (text: string): Promise<void> => {
+    if (process.stdout.write(text)) return;
+    await once(process.stdout, 'drain');
+  });
+  // Documents can finish concurrently. Serialize result records so one slow
+  // pipe applies real backpressure instead of allowing every worker to keep
+  // buffering behind a full stdout stream.
+  let stdoutQueue: Promise<void> = Promise.resolve();
+  const writeStdout = (text: string): Promise<void> => {
+    const delivery = stdoutQueue.then(() => rawWriteStdout(text));
+    stdoutQueue = delivery;
+    return delivery;
+  };
   const writeStderr = runtime.writeStderr ?? ((text: string) => process.stderr.write(text));
   const service = createOcrJobService();
   const { summary } = await service.run(inputs, options, {
@@ -282,18 +332,20 @@ export async function runBatch(
     onWarning: (message) => writeStderr(`${message}\n`),
     onAgentStep: (input, step) => {
       if (options.verbose && !options.quiet) {
-        writeStderr(`  ${input.displayPath}: ${step.type}: ${step.content}\n`);
+        writeStderr(`  ${input.displayPath}: ${step.type}: ${agentProgressMessage(step)}\n`);
       }
     },
-    onDocumentResult: (index, total, result) => {
-      if (options.jsonl) writeStdout(`${jsonlResult(result)}\n`);
+    onDocumentResult: async (index, total, result): Promise<void> => {
+      if (options.jsonl) await writeStdout(`${jsonlResult(result)}\n`);
       if (!options.quiet) writeStderr(`${statusLine(index, total, result)}\n`);
     },
   });
   const shouldWriteFiles = inputs.length > 1 || Boolean(options.output) || options.format === 'all';
   if (inputs.length === 1 && !shouldWriteFiles && !options.jsonl && summary.results[0]?.artifacts) {
-    writeStdout(primaryArtifact(summary.results[0].artifacts, options.format));
+    await writeStdout(primaryArtifact(summary.results[0].artifacts, options.format));
   }
-  if (options.jsonl) writeStdout(`${JSON.stringify({ type: 'summary', ...summary, results: undefined })}\n`);
+  if (options.jsonl) {
+    await writeStdout(`${JSON.stringify({ type: 'summary', ...summary, results: undefined })}\n`);
+  }
   return summary;
 }

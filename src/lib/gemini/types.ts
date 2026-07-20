@@ -205,20 +205,21 @@ export type GeminiModel =
   | 'gemini-3.1-flash-lite';
 
 /**
- * Thinking levels for Gemini 3 models (uppercase for UI/storage; lowercased at wire).
+ * Provider-neutral reasoning effort (uppercase for UI/storage; lowercased at wire).
  * - MINIMAL: Lightest reasoning (Flash / Flash-Lite)
  * - LOW: Light reasoning, faster response
  * - MEDIUM: Balanced reasoning (3.5 Flash API default)
  * - HIGH: Full reasoning (3.1 Pro default; best for hard agent tasks)
+ * - XHIGH / MAX: Compatible-provider efforts; CLI validation keeps them away from Gemini
  *
  * Official support:
  * - Gemini 3.1 Pro: LOW, MEDIUM, HIGH
  * - Gemini 3 Flash / 3.5 Flash / 3.1 Flash-Lite: MINIMAL, LOW, MEDIUM, HIGH
  */
-export type ThinkingLevel = 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH';
+export type ThinkingLevel = 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH' | 'XHIGH' | 'MAX';
 
 /**
- * Configuration for thinking mode (Gemini 3 models)
+ * Configuration for model thinking/reasoning.
  */
 export interface ThinkingConfig {
   /** Thinking level - availability depends on model */
@@ -242,6 +243,8 @@ export interface GeminiClientConfig {
   baseUrl?: string;
   /** Optional transport headers such as Cloudflare gateway authentication. */
   headers?: Record<string, string>;
+  /** Per-job provider accounting and request policy. */
+  runtime?: import('../providers/runtime').ProviderExecutionContext;
 }
 
 /**

@@ -81,6 +81,12 @@ export interface AgentDocumentInput {
  */
 export interface AgentStep {
   type: 'thinking' | 'function_call' | 'result' | 'error';
+  /** Semantic origin; `type` remains for the browser UI and persisted v1 traces. */
+  source?: 'runtime' | 'thought_summary' | 'reasoning' | 'model_output' | 'tool_call' | 'tool_result';
+  /** Provider step identifier when one exists. */
+  id?: string;
+  /** True when content is a live stream delta rather than a completed step. */
+  delta?: boolean;
   content: string;
   functionCall?: AgentFunctionCall;
   functionResult?: AgentFunctionResult;
@@ -95,8 +101,11 @@ export interface AgentClientConfig {
   apiKey: string;
   model: string;
   thinkingConfig?: ThinkingConfig;
+  progress?: 'off' | 'standard' | 'detailed';
   baseUrl?: string;
   headers?: Record<string, string>;
+  /** Per-job provider accounting and request policy. */
+  runtime?: import('./providers/runtime').ProviderExecutionContext;
   abortSignal?: AbortSignal;
   /** Runtime-specific rasterizer for the re_ocr_region tool. */
   regionCropper?: RegionCropper;
@@ -131,6 +140,8 @@ export interface AgentLoopConfig {
   retryBaseDelayMs?: number;
   /** Pause (ms) between iterations. Overridable (e.g. 0 in tests). */
   iterationPauseMs?: number;
+  /** Re-throw terminal provider failures after emitting progress, for machine-facing callers. */
+  throwOnFailure?: boolean;
 }
 
 /**

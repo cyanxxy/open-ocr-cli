@@ -1,12 +1,18 @@
 import type { Content, FunctionDeclaration, Interactions } from '@google/genai';
 import { getGenAIClient, normalizeThinkingLevel } from './client';
 import type { GeminiModel, ThinkingConfig } from './types';
-import { recordGeminiUsage } from './usage';
+import {
+  recordGeminiInteractionStepUsages,
+  recordGeminiInteractionUsage,
+} from './usage';
 import { waitForGeminiRequestSlot } from './requestPolicy';
 
 type InteractionToolChoice = 'auto' | 'any' | 'none' | 'validated';
 
-/** Media / text content blocks accepted inside user_input / model_output steps. */
+/**
+ * Media / text blocks accepted by the shared Gemini transport. The OCR CLI's
+ * public input contract is intentionally narrower: images and PDFs only.
+ */
 export type InteractionMediaContent =
   | { type: 'text'; text: string }
   | {
@@ -73,16 +79,18 @@ export type InteractionStep =
   | InteractionUrlContextResultStep
   | { type: string; [key: string]: unknown };
 
-/** @deprecated Use InteractionStep — kept as a type alias for call-site migration. */
-export type InteractionTurn = InteractionStep;
-
 export interface InteractionResult {
   id: string;
   status?: string;
   steps?: InteractionStep[];
-  /** Legacy field kept only for defensive fallback while migrating tests/mocks. */
-  outputs?: InteractionStep[];
   output_text?: string | null;
+  streamedProgressKinds?: Array<'thought_summary' | 'model_output'>;
+}
+
+export interface InteractionProgressDelta {
+  kind: 'thought_summary' | 'model_output';
+  text: string;
+  stepId: string;
 }
 
 export interface UrlContextResultSummary {
@@ -108,7 +116,11 @@ interface InteractionRequest {
   responseMimeType?: 'application/json' | 'text/plain';
   abortSignal?: AbortSignal;
   store?: boolean;
+  runtime?: import('../providers/runtime').ProviderExecutionContext;
+  onProgress?: (delta: InteractionProgressDelta) => void;
 }
+
+let nextInteractionStreamSequence = 1;
 
 /**
  * Pick Interactions media resolution for OCR quality.
@@ -216,56 +228,30 @@ export function createUserInputStep(content: InteractionMediaContent[]): Interac
   return { type: 'user_input', content };
 }
 
-/** @deprecated Prefer createUserInputStep — role-based turns are no longer the Interactions wire shape. */
-export function createInteractionTurn(
-  _role: 'user' | 'model',
-  content: InteractionMediaContent[] | InteractionStep[],
-): InteractionStep {
-  // Historical API: role user + content blocks → user_input step.
-  // Model turns should use appendModelStepsFromInteraction instead.
-  if (content.length > 0 && typeof content[0] === 'object' && content[0] !== null && 'type' in content[0]) {
-    const first = content[0] as { type: string };
-    if (
-      first.type === 'function_result'
-      || first.type === 'thought'
-      || first.type === 'function_call'
-      || first.type === 'model_output'
-      || first.type === 'user_input'
-    ) {
-      return content[0] as InteractionStep;
-    }
-  }
-  return createUserInputStep(content as InteractionMediaContent[]);
-}
-
 /**
  * Canonical correlation id for a model function call. Used by BOTH
  * model-step replay and extractInteractionFunctionCalls so the id on the
  * model step always matches the id on the function_result we send back.
  */
 export function interactionCallId(
-  step: { id?: string; call_id?: string; name?: string },
-  index: number,
+  step: { id?: string },
 ): string {
-  return step.id || step.call_id || `${step.name || 'call'}-${index + 1}`;
+  if (typeof step.id !== 'string' || !step.id) {
+    throw new Error('Gemini interaction returned a function call without an ID');
+  }
+  return step.id;
 }
 
 function toArgsObject(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Gemini interaction returned non-object function-call arguments');
+  }
+  return value as Record<string, unknown>;
 }
 
-/** Normalize steps from either the new `steps` field or legacy `outputs` mocks. */
+/** Read the current post-May 2026 Interactions `steps` transcript. */
 export function getInteractionSteps(interaction: InteractionResult | null | undefined): InteractionStep[] {
-  if (!interaction) return [];
-  if (Array.isArray(interaction.steps) && interaction.steps.length > 0) {
-    return interaction.steps;
-  }
-  if (Array.isArray(interaction.outputs)) {
-    return interaction.outputs;
-  }
-  return [];
+  return Array.isArray(interaction?.steps) ? interaction.steps : [];
 }
 
 /**
@@ -289,12 +275,6 @@ export function selectModelStepsForReplay(steps?: InteractionStep[]): Interactio
   );
 }
 
-/** @deprecated Use selectModelStepsForReplay */
-export function outputsToModelTurn(outputs?: InteractionStep[]): InteractionStep | null {
-  const steps = selectModelStepsForReplay(outputs);
-  return steps[0] ?? null;
-}
-
 export function extractInteractionText(
   steps?: InteractionStep[],
   fallbackOutputText?: string | null,
@@ -309,11 +289,6 @@ export function extractInteractionText(
           if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
             parts.push(block.text.trim());
           }
-        }
-      } else if (step.type === 'text') {
-        const legacyText = (step as Record<string, unknown>).text;
-        if (typeof legacyText === 'string' && legacyText.trim()) {
-          parts.push(legacyText.trim());
         }
       }
     }
@@ -364,21 +339,29 @@ export function extractInteractionFunctionCalls(steps?: InteractionStep[]): Arra
     return [];
   }
 
-  return steps.flatMap((step, index) => {
+  const calls = steps.flatMap((step) => {
     if (step?.type !== 'function_call') {
       return [];
     }
     const fc = step as InteractionFunctionCallStep & { name?: string; arguments?: unknown };
     if (typeof fc.name !== 'string' || fc.name.length === 0) {
-      return [];
+      throw new Error('Gemini interaction returned a function call without a name');
     }
 
     return [{
-      id: interactionCallId(fc, index),
+      id: interactionCallId(fc),
       name: fc.name,
       arguments: toArgsObject(fc.arguments),
     }];
   });
+  const seenIds = new Set<string>();
+  for (const call of calls) {
+    if (seenIds.has(call.id)) {
+      throw new Error(`Gemini interaction returned duplicate function-call ID ${call.id}`);
+    }
+    seenIds.add(call.id);
+  }
+  return calls;
 }
 
 export function summarizeUrlContextResults(steps?: InteractionStep[]): UrlContextResultSummary {
@@ -440,13 +423,13 @@ export async function runModelInteraction({
   responseMimeType,
   abortSignal,
   store,
+  runtime,
+  onProgress,
 }: InteractionRequest): Promise<InteractionResult> {
   const genAI = getGenAIClient(apiKey, { baseUrl, headers });
   const responseFormat = buildResponseFormat(responseSchema, responseMimeType);
-
-  const params: Interactions.CreateModelInteractionParamsNonStreaming = {
+  const common = {
     model,
-    stream: false,
     input: input as Interactions.CreateModelInteractionParamsNonStreaming['input'],
     ...(store !== undefined ? { store } : {}),
     ...(systemInstruction ? { system_instruction: systemInstruction } : {}),
@@ -462,16 +445,227 @@ export async function runModelInteraction({
       : {}),
   };
 
-  await waitForGeminiRequestSlot(abortSignal);
-  const interaction = await genAI.interactions.create(
+  await waitForGeminiRequestSlot(abortSignal, runtime);
+  if (!onProgress) {
+    const params: Interactions.CreateModelInteractionParamsNonStreaming = {
+      ...common,
+      stream: false,
+    };
+    const interaction = await genAI.interactions.create(
+      params,
+      abortSignal ? { fetchOptions: { signal: abortSignal } } : undefined,
+    ) as Interactions.Interaction;
+    recordGeminiInteractionUsage(
+      interaction,
+      model,
+      runtime,
+    );
+    return {
+      id: interaction.id,
+      status: interaction.status,
+      steps: interaction.steps as InteractionStep[] | undefined,
+      output_text: interaction.output_text,
+    };
+  }
+
+  const params: Interactions.CreateModelInteractionParamsStreaming = {
+    ...common,
+    stream: true,
+  };
+  const stream = await genAI.interactions.create(
     params,
     abortSignal ? { fetchOptions: { signal: abortSignal } } : undefined,
-  ) as Interactions.Interaction;
-  recordGeminiUsage(interaction, model);
+  ) as AsyncIterable<Interactions.InteractionSSEEvent>;
+  const steps = new Map<number, InteractionStep>();
+  const argumentDeltas = new Map<number, string>();
+  const streamedKinds = new Set<'thought_summary' | 'model_output'>();
+  let interactionId = '';
+  let status: string | undefined;
+  let outputText = '';
+  let completedOutputText: string | undefined;
+  let completedSteps: InteractionStep[] | undefined;
+  let receivedCompletion = false;
+  let usagePayload: unknown;
+  let latestInteractionUsage: unknown;
+  const stepUsages: unknown[] = [];
+  const progressStepIds = new Map<number, string>();
+  const localStreamId = `interaction-stream-${nextInteractionStreamSequence++}`;
+
+  const progressStepId = (index: number): string => {
+    const existing = progressStepIds.get(index);
+    if (existing) return existing;
+    // interaction.created normally precedes deltas. Keep a local per-stream
+    // fallback so an out-of-order gateway cannot change a channel's ID midway.
+    const created = `${interactionId || localStreamId}:${index}`;
+    progressStepIds.set(index, created);
+    return created;
+  };
+
+  const appendModelText = (index: number, text: string): void => {
+    const step = steps.get(index);
+    if (!step || step.type !== 'model_output') return;
+    const modelOutput = step as InteractionModelOutputStep;
+    const last = modelOutput.content.at(-1);
+    if (last?.type === 'text') last.text += text;
+    else modelOutput.content.push({ type: 'text', text });
+    outputText += text;
+  };
+  const appendThoughtSummary = (index: number, content: unknown): string => {
+    const step = steps.get(index);
+    if (!step || step.type !== 'thought' || typeof content !== 'object' || content === null) return '';
+    const text = 'text' in content && typeof content.text === 'string' ? content.text : '';
+    if (!text) return '';
+    const thought = step as InteractionThoughtStep;
+    thought.summary ??= [];
+    const last = thought.summary.at(-1);
+    if (last && typeof last.text === 'string') last.text += text;
+    else thought.summary.push({ type: 'text', text });
+    return text;
+  };
+
+  try {
+    for await (const event of stream) {
+      if ('metadata' in event && event.metadata?.total_usage) {
+        latestInteractionUsage = event.metadata.total_usage;
+      }
+      if (event.event_type === 'step.stop') {
+        if (event.usage) latestInteractionUsage = event.usage;
+        else if (event.step_usage) stepUsages.push({ usage: event.step_usage });
+      }
+      if (event.event_type === 'interaction.created') {
+        interactionId = event.interaction.id;
+        status = event.interaction.status;
+        continue;
+      }
+      if (event.event_type === 'interaction.status_update') {
+        interactionId ||= event.interaction_id;
+        status = event.status;
+        continue;
+      }
+      if (event.event_type === 'interaction.completed') {
+        receivedCompletion = true;
+        interactionId = event.interaction.id;
+        status = event.interaction.status;
+        if (event.interaction.usage) usagePayload = event.interaction;
+        const terminalOutputText = (event.interaction as { output_text?: unknown }).output_text;
+        if (typeof terminalOutputText === 'string') {
+          completedOutputText = terminalOutputText;
+        }
+        if (Array.isArray(event.interaction.steps)) {
+          completedSteps = event.interaction.steps as InteractionStep[];
+        }
+        continue;
+      }
+      if (event.event_type === 'error') {
+        const message = event.error?.message ?? event.error?.code ?? 'Gemini interaction stream failed';
+        const error = new Error(message);
+        if (event.error?.code) Object.assign(error, { code: event.error.code });
+        throw error;
+      }
+      if (event.event_type === 'step.start') {
+        const step = structuredClone(event.step) as InteractionStep;
+        if (step.type === 'model_output') {
+          (step as InteractionModelOutputStep).content ??= [];
+        } else if (step.type === 'thought') {
+          (step as InteractionThoughtStep).summary ??= [];
+        }
+        steps.set(event.index, step);
+        continue;
+      }
+      if (event.event_type === 'step.delta') {
+        const delta = event.delta;
+        if (delta.type === 'text' && delta.text) {
+          appendModelText(event.index, delta.text);
+          streamedKinds.add('model_output');
+          onProgress({
+            kind: 'model_output',
+            text: delta.text,
+            stepId: progressStepId(event.index),
+          });
+        } else if (delta.type === 'thought_summary') {
+          const text = appendThoughtSummary(event.index, delta.content);
+          if (text) {
+            streamedKinds.add('thought_summary');
+            onProgress({
+              kind: 'thought_summary',
+              text,
+              stepId: progressStepId(event.index),
+            });
+          }
+        } else if (delta.type === 'thought_signature') {
+          const step = steps.get(event.index);
+          if (step?.type === 'thought' && delta.signature) {
+            (step as InteractionThoughtStep).signature = delta.signature;
+          }
+        } else if (delta.type === 'arguments_delta' && delta.arguments) {
+          argumentDeltas.set(event.index, (argumentDeltas.get(event.index) ?? '') + delta.arguments);
+        }
+        continue;
+      }
+      if (event.event_type === 'step.stop') {
+        const argumentsText = argumentDeltas.get(event.index);
+        const step = steps.get(event.index);
+        if (argumentsText && step?.type === 'function_call') {
+          try {
+            const parsed = JSON.parse(argumentsText) as unknown;
+            (step as InteractionFunctionCallStep).arguments = toArgsObject(parsed);
+          } catch (error) {
+            throw new Error(
+              `Gemini interaction streamed invalid function-call arguments: ${error instanceof Error ? error.message : String(error)}`,
+              { cause: error },
+            );
+          }
+        }
+      }
+    }
+  } catch (error) {
+    // A provider can bill and report usage before a terminal stream error or
+    // transport failure. Preserve that accounting even though no OCR result is
+    // accepted from the incomplete interaction.
+    if (usagePayload) {
+      recordGeminiInteractionUsage(usagePayload, model, runtime);
+    } else if (latestInteractionUsage) {
+      recordGeminiInteractionUsage(
+        { usage: latestInteractionUsage },
+        model,
+        runtime,
+      );
+    } else if (stepUsages.length > 0) {
+      recordGeminiInteractionStepUsages(
+        stepUsages,
+        model,
+        runtime,
+      );
+    }
+    throw error;
+  }
+
+  if (usagePayload) {
+    recordGeminiInteractionUsage(usagePayload, model, runtime);
+  } else if (latestInteractionUsage) {
+    recordGeminiInteractionUsage(
+      { usage: latestInteractionUsage },
+      model,
+      runtime,
+    );
+  } else if (stepUsages.length > 0) {
+    recordGeminiInteractionStepUsages(
+      stepUsages,
+      model,
+      runtime,
+    );
+  }
+  if (!receivedCompletion) {
+    throw new Error('Gemini interaction stream ended without a terminal interaction.completed event');
+  }
+  if (!interactionId) throw new Error('Gemini interaction stream returned no interaction ID');
+  const finalSteps = completedSteps
+    ?? [...steps.entries()].sort(([left], [right]) => left - right).map(([, step]) => step);
   return {
-    id: interaction.id,
-    status: interaction.status,
-    steps: interaction.steps as InteractionStep[] | undefined,
-    output_text: interaction.output_text,
+    id: interactionId,
+    status,
+    steps: finalSteps,
+    output_text: completedOutputText || outputText || extractInteractionText(finalSteps) || null,
+    streamedProgressKinds: [...streamedKinds],
   };
 }

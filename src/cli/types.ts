@@ -36,6 +36,7 @@ export interface CliConfigFile {
   outputPricePerMillionUsd?: number;
   thinking?: ThinkingLevel;
   includeThoughts?: boolean;
+  progress?: 'off' | 'standard' | 'detailed';
   mode?: CliMode;
   preset?: string;
   format?: CliFormat;
@@ -63,7 +64,8 @@ export interface CliConfigFile {
 }
 
 export interface ExtractCommandFlags {
-  config?: string;
+  /** String for --config; Commander's negated --no-config form stores `false`. */
+  config?: string | false;
   provider?: string;
   gateway?: string;
   baseUrl?: string;
@@ -83,6 +85,7 @@ export interface ExtractCommandFlags {
   model?: string;
   thinking?: string;
   includeThoughts?: boolean;
+  progress?: string;
   concurrency?: string;
   retries?: string;
   timeout?: string;
@@ -131,6 +134,7 @@ export interface ResolvedCliOptions {
   outputPricePerMillionUsd?: number;
   thinking: ThinkingLevel;
   includeThoughts: boolean;
+  progress: 'off' | 'standard' | 'detailed';
   mode: CliMode;
   preset?: string;
   format: CliFormat;

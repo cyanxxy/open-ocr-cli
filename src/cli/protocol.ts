@@ -5,43 +5,79 @@ import Ajv2020, { type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.
 import addFormats from 'ajv-formats';
 
 import { FILE_CONSTRAINTS } from '../constants';
-import { PROVIDER_PROFILES, type GatewayId, type ProviderId, type ProviderUsageSnapshot } from '../lib/providers';
+import type { AgentStep } from '../lib/agentTypes';
+import {
+  PROVIDER_PROFILES,
+  type GatewayId,
+  type ProviderCapabilities,
+  type ProviderId,
+  type ProviderUsageSnapshot,
+} from '../lib/providers';
 import { listExtractionPresets } from '../lib/templates';
-import capabilitiesSchema from '../../packages/cli/schemas/capabilities-v1.schema.json';
-import errorSchema from '../../packages/cli/schemas/error-v1.schema.json';
-import eventSchema from '../../packages/cli/schemas/event-v1.schema.json';
-import requestSchema from '../../packages/cli/schemas/request-v1.schema.json';
-import resultSchema from '../../packages/cli/schemas/result-v1.schema.json';
+import capabilitiesV1Schema from '../../packages/cli/schemas/capabilities-v1.schema.json';
+import capabilitiesV2Schema from '../../packages/cli/schemas/capabilities-v2.schema.json';
+import errorV1Schema from '../../packages/cli/schemas/error-v1.schema.json';
+import errorV2Schema from '../../packages/cli/schemas/error-v2.schema.json';
+import eventV1Schema from '../../packages/cli/schemas/event-v1.schema.json';
+import eventV2Schema from '../../packages/cli/schemas/event-v2.schema.json';
+import requestV1Schema from '../../packages/cli/schemas/request-v1.schema.json';
+import requestV2Schema from '../../packages/cli/schemas/request-v2.schema.json';
+import resultV1Schema from '../../packages/cli/schemas/result-v1.schema.json';
+import resultV2Schema from '../../packages/cli/schemas/result-v2.schema.json';
 import { CliExitError, OCR_ERROR_CODES, type OcrErrorCode, type OcrErrorPayload } from './errors';
 import type { BatchSummary, CliFormat, CliMode, OcrJobResult } from './types';
 
-export const OCR_PROTOCOL_VERSION = 1 as const;
+export const OCR_PROTOCOL_VERSION = 2 as const;
+export const OCR_PROTOCOL_VERSIONS = [1, 2] as const;
+export type OcrProtocolVersion = (typeof OCR_PROTOCOL_VERSIONS)[number];
 export const OCR_PROTOCOL_SCHEMA_IDS = {
-  request: requestSchema.$id,
-  result: resultSchema.$id,
-  event: eventSchema.$id,
-  error: errorSchema.$id,
-  capabilities: capabilitiesSchema.$id,
+  request: requestV2Schema.$id,
+  result: resultV2Schema.$id,
+  event: eventV2Schema.$id,
+  error: errorV2Schema.$id,
+  capabilities: capabilitiesV2Schema.$id,
 } as const;
 
 export const OCR_PROTOCOL_SCHEMAS = {
-  request: requestSchema,
-  result: resultSchema,
-  event: eventSchema,
-  error: errorSchema,
-  capabilities: capabilitiesSchema,
+  request: requestV2Schema,
+  result: resultV2Schema,
+  event: eventV2Schema,
+  error: errorV2Schema,
+  capabilities: capabilitiesV2Schema,
+  'request-v1': requestV1Schema,
+  'result-v1': resultV1Schema,
+  'event-v1': eventV1Schema,
+  'error-v1': errorV1Schema,
+  'capabilities-v1': capabilitiesV1Schema,
+  'request-v2': requestV2Schema,
+  'result-v2': resultV2Schema,
+  'event-v2': eventV2Schema,
+  'error-v2': errorV2Schema,
+  'capabilities-v2': capabilitiesV2Schema,
 } as const;
 
-export interface OcrJobRequestInput {
+export interface OcrJobRequestPathInput {
   type: 'path';
   path: string;
 }
 
+export interface OcrJobRequestStdinInput {
+  type: 'stdin';
+  name?: string;
+  mimeType?: string;
+}
+
+export type OcrJobRequestInput = OcrJobRequestPathInput | OcrJobRequestStdinInput;
+
+export type OcrProgressLevel = 'off' | 'standard' | 'detailed';
+export type OcrDeliveryMode = 'inline' | 'reference';
+
 export interface OcrJobRequest {
-  protocolVersion: 1;
+  protocolVersion: OcrProtocolVersion;
   operation: 'extract';
   inputs: OcrJobRequestInput[];
   configPath?: string;
+  noConfig?: boolean;
   provider?: {
     id?: ProviderId;
     gateway?: GatewayId;
@@ -54,7 +90,8 @@ export interface OcrJobRequest {
     schema?: Record<string, unknown>;
     schemaPath?: string;
     instructions?: string[];
-    thinking?: 'minimal' | 'low' | 'medium' | 'high';
+    thinking?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    progress?: OcrProgressLevel;
     detectImages?: boolean;
     detectMath?: boolean;
     maxTokens?: number;
@@ -76,7 +113,7 @@ export interface OcrJobRequest {
     exclude?: string[];
   };
   delivery?: {
-    mode?: 'reference';
+    mode?: OcrDeliveryMode;
     outputDirectory?: string;
     resume?: boolean;
   };
@@ -104,11 +141,17 @@ export interface OcrProtocolDocument {
   skipReason?: OcrJobResult['skipReason'];
   artifacts: OcrArtifactReference[];
   plannedArtifacts: OcrArtifactReference[];
+  content?: {
+    markdown?: string;
+    json?: unknown;
+    csv?: string;
+    agentSteps?: OcrProtocolStep[];
+  };
   error?: OcrErrorPayload;
 }
 
 export interface OcrRunResult {
-  protocolVersion: 1;
+  protocolVersion: OcrProtocolVersion;
   type: 'run.result';
   ok: boolean;
   runId: string;
@@ -132,7 +175,7 @@ export interface OcrRunResult {
 }
 
 export interface OcrRunFailure {
-  protocolVersion: 1;
+  protocolVersion: OcrProtocolVersion;
   type: 'run.result';
   ok: false;
   runId: string;
@@ -153,8 +196,30 @@ export type OcrEventType =
   | 'run.completed'
   | 'run.failed';
 
+export type OcrProtocolStepKind =
+  | 'runtime'
+  | 'thought_summary'
+  | 'reasoning'
+  | 'model_output'
+  | 'tool_call'
+  | 'tool_result'
+  | 'error';
+
+export interface OcrProtocolStep {
+  kind: OcrProtocolStepKind;
+  status: 'started' | 'in_progress' | 'completed' | 'failed' | 'skipped';
+  stepId?: string;
+  callId?: string;
+  name?: string;
+  text?: string;
+  delta?: boolean;
+  arguments?: Record<string, unknown>;
+  result?: unknown;
+  error?: OcrErrorPayload;
+}
+
 export interface OcrJobEvent {
-  protocolVersion: 1;
+  protocolVersion: OcrProtocolVersion;
   type: OcrEventType;
   runId: string;
   sequence: number;
@@ -170,6 +235,7 @@ export interface OcrJobEvent {
   source?: string;
   phase?: string;
   message?: string;
+  step?: OcrProtocolStep;
   document?: OcrProtocolDocument;
   result?: OcrMachineResult;
   error?: OcrErrorPayload;
@@ -178,14 +244,17 @@ export interface OcrJobEvent {
 export type OcrJobEventSink = (event: OcrJobEvent) => void | Promise<void>;
 
 export interface OcrCapabilities {
-  protocolVersion: 1;
+  protocolVersion: 2;
+  supportedProtocolVersions: [1, 2];
   cliVersion: string;
   operations: ['extract'];
-  inputKinds: ['path'];
+  inputKinds: ['path', 'stdin'];
   modes: CliMode[];
   contentFormats: CliFormat[];
   responseFormats: ['json', 'jsonl'];
-  deliveryModes: ['reference'];
+  deliveryModes: ['inline', 'reference'];
+  progressLevels: ['off', 'standard', 'detailed'];
+  progressStepKinds: OcrProtocolStepKind[];
   features: string[];
   errorCodes: OcrErrorCode[];
   exitCodes: {
@@ -195,9 +264,29 @@ export interface OcrCapabilities {
     interrupted: 130;
     terminated: 143;
   };
-  providers: Array<Record<string, unknown>>;
-  presets: Array<Record<string, unknown>>;
-  limits: Record<string, unknown>;
+  providers: Array<{
+    id: ProviderId;
+    label: string;
+    defaultModel: string | null;
+    models: string[];
+    inputImageMimeTypes?: string[];
+    capabilities: ProviderCapabilities;
+  }>;
+  presets: Array<{
+    id: string;
+    label: string;
+    description: string;
+    outputShape: 'record' | 'table';
+  }>;
+  limits: {
+    imageBytes: number;
+    pdfBytes: number;
+    pdfPages: number;
+    batchFiles: number;
+    concurrency: number;
+    customSchemaBytes: number;
+    customSchemaDepth: number;
+  };
   schemas: typeof OCR_PROTOCOL_SCHEMA_IDS;
   schemaAccess: {
     command: 'open-ocr-cli schema <name>';
@@ -208,16 +297,21 @@ export interface OcrCapabilities {
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
 addFormats(ajv);
-ajv.addSchema(errorSchema);
-ajv.addSchema(resultSchema);
+ajv.addSchema(errorV1Schema);
+ajv.addSchema(errorV2Schema);
+ajv.addSchema(resultV1Schema);
+ajv.addSchema(resultV2Schema);
 function requireValidator<T>(validator: ValidateFunction<T> | undefined, label: string): ValidateFunction<T> {
   if (!validator) throw new Error(`Could not compile the ${label} schema`);
   return validator;
 }
-const requestValidator: ValidateFunction<OcrJobRequest> = ajv.compile(requestSchema);
-const resultValidator = requireValidator(ajv.getSchema<OcrMachineResult>(resultSchema.$id), 'OCR result');
-const eventValidator: ValidateFunction<OcrJobEvent> = ajv.compile(eventSchema);
-const capabilitiesValidator: ValidateFunction<OcrCapabilities> = ajv.compile(capabilitiesSchema);
+const requestV1Validator: ValidateFunction<OcrJobRequest> = ajv.compile(requestV1Schema);
+const requestV2Validator: ValidateFunction<OcrJobRequest> = ajv.compile(requestV2Schema);
+const resultV1Validator = requireValidator(ajv.getSchema<OcrMachineResult>(resultV1Schema.$id), 'OCR result v1');
+const resultV2Validator = requireValidator(ajv.getSchema<OcrMachineResult>(resultV2Schema.$id), 'OCR result v2');
+const eventV1Validator: ValidateFunction<OcrJobEvent> = ajv.compile(eventV1Schema);
+const eventV2Validator: ValidateFunction<OcrJobEvent> = ajv.compile(eventV2Schema);
+const capabilitiesValidator: ValidateFunction<OcrCapabilities> = ajv.compile(capabilitiesV2Schema);
 
 function validationMessage(errors: ErrorObject[] | null | undefined): string {
   return (errors ?? []).map((error) => `${error.instancePath || '/'} ${error.message ?? 'is invalid'}`).join('; ');
@@ -235,8 +329,8 @@ function assertValid<T>(
     category: requestPayload ? 'configuration' : 'schema',
     retryable: false,
     hint: requestPayload
-      ? 'Compare the request with protocol v1 using open-ocr-cli schema request.'
-      : `Compare the payload with ${label.toLowerCase()} schema v1.`,
+      ? 'Compare the request with a supported schema using open-ocr-cli schema request-v1 or request-v2.'
+      : `Compare the payload with the bundled ${label.toLowerCase()} schema.`,
   });
 }
 
@@ -245,7 +339,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function requestSemanticError(value: unknown): string | undefined {
-  if (!isRecord(value) || !isRecord(value.extraction)) return undefined;
+  if (!isRecord(value)) return undefined;
+  if (value.noConfig === true && typeof value.configPath === 'string') {
+    return 'OCR request noConfig and configPath are mutually exclusive.';
+  }
+  if (Array.isArray(value.inputs)) {
+    const stdinInputs = value.inputs.filter((input) => (
+      isRecord(input)
+      && (input.type === 'stdin' || (input.type === 'path' && input.path === '-'))
+    ));
+    if (stdinInputs.length > 0 && value.inputs.length !== 1) {
+      return 'An OCR stdin document must be the request\'s only input.';
+    }
+  }
+  if (!isRecord(value.extraction)) return undefined;
   const extraction = value.extraction;
   const hasSchema = isRecord(extraction.schema) || typeof extraction.schemaPath === 'string';
   const hasPreset = typeof extraction.preset === 'string';
@@ -275,6 +382,16 @@ function requestSemanticError(value: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Best-effort protocol version from a raw JSON body. Used so failure envelopes
+ * for invalid v1 requests are still labeled protocolVersion 1.
+ */
+export function peekOcrProtocolVersion(value: unknown): OcrProtocolVersion | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.protocolVersion === 1 || value.protocolVersion === 2) return value.protocolVersion;
+  return undefined;
+}
+
 export function parseOcrJobRequest(value: unknown): OcrJobRequest {
   const semanticError = requestSemanticError(value);
   if (semanticError) {
@@ -285,16 +402,40 @@ export function parseOcrJobRequest(value: unknown): OcrJobRequest {
       hint: 'Adjust the extraction fields and validate the request again before running OCR.',
     });
   }
-  assertValid(requestValidator, value, 'Invalid OCR request', true);
+  const version = isRecord(value) ? value.protocolVersion : undefined;
+  if (version !== 1 && version !== 2) {
+    throw new CliExitError(`Unsupported OCR protocol version: ${String(version)}`, 2, {
+      code: 'CONFIG_INVALID',
+      category: 'configuration',
+      retryable: false,
+      hint: 'Use protocolVersion 1 or 2 and inspect the bundled request schema.',
+    });
+  }
+  assertValid(
+    version === 1 ? requestV1Validator : requestV2Validator,
+    value,
+    `Invalid OCR request v${version}`,
+    true,
+  );
   return value;
 }
 
 export function assertOcrMachineResult(value: unknown): asserts value is OcrMachineResult {
-  assertValid(resultValidator, value, 'Invalid OCR result');
+  const version = isRecord(value) ? value.protocolVersion : undefined;
+  assertValid(
+    version === 1 ? resultV1Validator : resultV2Validator,
+    value,
+    `Invalid OCR result v${String(version)}`,
+  );
 }
 
 export function assertOcrJobEvent(value: unknown): asserts value is OcrJobEvent {
-  assertValid(eventValidator, value, 'Invalid OCR event');
+  const version = isRecord(value) ? value.protocolVersion : undefined;
+  assertValid(
+    version === 1 ? eventV1Validator : eventV2Validator,
+    value,
+    `Invalid OCR event v${String(version)}`,
+  );
 }
 
 export function assertOcrCapabilities(value: unknown): asserts value is OcrCapabilities {
@@ -308,13 +449,127 @@ function artifactReference(filePath: string): OcrArtifactReference {
   return { path: filePath, mediaType: 'text/markdown', kind: 'markdown' };
 }
 
-export function ocrDocumentId(result: Pick<OcrJobResult, 'input'>): string {
-  const identity = result.input.absolutePath ?? `${result.input.displayPath}:${result.input.size}:${result.input.mtimeMs}`;
-  return createHash('sha256').update(identity).digest('hex').slice(0, 16);
+export function agentProtocolStep(
+  step: AgentStep,
+  progress: OcrProgressLevel,
+): OcrProtocolStep | undefined {
+  if (progress === 'off') return undefined;
+  const source = step.source ?? (
+    step.type === 'function_call'
+      ? 'tool_call'
+      : step.functionResult ? 'tool_result' : 'runtime'
+  );
+  if (source === 'reasoning' && progress !== 'detailed') return undefined;
+  if (step.delta && !step.id) {
+    throw new Error('Streaming agent progress requires a stable step ID');
+  }
+  if (source === 'tool_call') {
+    const callId = step.functionCall?.id;
+    const name = step.functionCall?.name;
+    if (!callId || !name) {
+      throw new Error('Tool-call progress requires a call ID and function name');
+    }
+    return {
+      kind: 'tool_call',
+      status: 'started',
+      ...(step.id ? { stepId: step.id } : {}),
+      callId,
+      name,
+      ...(progress === 'detailed' && step.functionCall?.arguments
+        ? { arguments: step.functionCall.arguments }
+        : {}),
+    };
+  }
+  if (source === 'tool_result') {
+    const callId = step.functionCall?.id;
+    const name = step.functionCall?.name;
+    if (!callId || !name) {
+      throw new Error('Tool-result progress requires a call ID and function name');
+    }
+    return {
+      kind: 'tool_result',
+      status: step.functionResult?.success === false ? 'failed' : 'completed',
+      ...(step.id ? { stepId: step.id } : {}),
+      callId,
+      name,
+      ...(progress === 'detailed' && step.functionResult !== undefined
+        ? { result: step.functionResult }
+        : {}),
+    };
+  }
+  const kind = source === 'thought_summary'
+    || source === 'reasoning'
+    || source === 'model_output'
+    ? source
+    : step.type === 'error' ? 'error' : 'runtime';
+  return {
+    kind,
+    status: step.type === 'error'
+      ? 'failed'
+      : step.delta ? 'in_progress' : 'completed',
+    ...(step.id ? { stepId: step.id } : {}),
+    text: step.content,
+    ...(step.delta ? { delta: true } : {}),
+  };
 }
 
-export function toProtocolDocument(result: OcrJobResult): OcrProtocolDocument {
+export function ocrDocumentId(result: Pick<OcrJobResult, 'input'>): string {
+  const identity = result.input.absolutePath
+    ?? `${result.input.displayPath}:${result.input.relativePath}:${result.input.size}:${result.input.mtimeMs}`;
+  const hash = createHash('sha256').update(identity);
+  if (result.input.stdinBytes) hash.update('\0stdin-bytes\0').update(result.input.stdinBytes);
+  return hash.digest('hex').slice(0, 16);
+}
+
+export function errorPayloadForProtocol(
+  error: OcrErrorPayload,
+  protocolVersion: OcrProtocolVersion,
+): OcrErrorPayload {
+  if (protocolVersion === 2) return error;
+  if (error.code === 'AUTH_INVALID') {
+    return { ...error, code: 'AUTH_MISSING', category: 'authentication' };
+  }
+  if (error.code === 'PERMISSION_DENIED' || error.code === 'NOT_RUN') {
+    return { ...error, code: 'PROVIDER_FAILURE', category: 'provider' };
+  }
+  return error;
+}
+
+function inlineContent(
+  result: OcrJobResult,
+  contentFormat: CliFormat,
+  progress: OcrProgressLevel,
+): OcrProtocolDocument['content'] | undefined {
+  if (!result.artifacts) return undefined;
+  const content = {
+    ...((contentFormat === 'markdown' || contentFormat === 'all')
+      && result.artifacts.markdown !== undefined ? { markdown: result.artifacts.markdown } : {}),
+    ...((contentFormat === 'json' || contentFormat === 'all')
+      && result.artifacts.json !== undefined ? { json: result.artifacts.json } : {}),
+    ...((contentFormat === 'csv' || contentFormat === 'all')
+      && result.artifacts.csv !== undefined ? { csv: result.artifacts.csv } : {}),
+    ...(contentFormat === 'all' && result.artifacts.agentSteps !== undefined
+      ? {
+          agentSteps: result.artifacts.agentSteps
+            .map((step) => agentProtocolStep(step, progress))
+            .filter((step): step is OcrProtocolStep => step !== undefined),
+        }
+      : {}),
+  };
+  return Object.keys(content).length > 0 ? content : undefined;
+}
+
+export function toProtocolDocument(
+  result: OcrJobResult,
+  protocolVersion: OcrProtocolVersion = OCR_PROTOCOL_VERSION,
+  deliveryMode: OcrDeliveryMode = 'reference',
+  contentFormat: CliFormat = 'all',
+  progress: OcrProgressLevel = 'standard',
+): OcrProtocolDocument {
   if (!result.provider || !result.gateway) throw new Error('Protocol documents require provider and gateway metadata');
+  const content = protocolVersion === 2 && deliveryMode === 'inline'
+    ? inlineContent(result, contentFormat, progress)
+    : undefined;
   return {
     documentId: ocrDocumentId(result),
     source: result.input.displayPath,
@@ -330,7 +585,12 @@ export function toProtocolDocument(result: OcrJobResult): OcrProtocolDocument {
     ...(result.skipReason ? { skipReason: result.skipReason } : {}),
     artifacts: (result.outputFiles ?? []).map(artifactReference),
     plannedArtifacts: (result.plannedOutputFiles ?? []).map(artifactReference),
-    ...(result.errorDetails ? { error: result.errorDetails } : {}),
+    ...(content
+      ? { content }
+      : {}),
+    ...(result.errorDetails
+      ? { error: errorPayloadForProtocol(result.errorDetails, protocolVersion) }
+      : {}),
   };
 }
 
@@ -338,16 +598,30 @@ function runStatus(summary: BatchSummary): OcrRunResult['status'] {
   if (summary.costLimitReached) return 'cost_limited';
   if (summary.results.some((result) => result.skipReason === 'cancelled')) return 'cancelled';
   if (summary.results.every((result) => result.skipReason === 'validated')) return 'validated';
-  if (summary.failed > 0) return summary.succeeded > 0 || summary.partial > 0 ? 'partial' : 'failed';
+  if (summary.failed > 0) {
+    const hasUsableResult = summary.succeeded > 0
+      || summary.partial > 0
+      || summary.results.some((result) => (
+        result.skipReason === 'resumed' || result.skipReason === 'validated'
+      ));
+    return hasUsableResult ? 'partial' : 'failed';
+  }
   if (summary.partial > 0) return 'partial';
   return 'succeeded';
 }
 
-export function toOcrRunResult(runId: string, summary: BatchSummary): OcrRunResult {
+export function toOcrRunResult(
+  runId: string,
+  summary: BatchSummary,
+  protocolVersion: OcrProtocolVersion = OCR_PROTOCOL_VERSION,
+  deliveryMode: OcrDeliveryMode = 'reference',
+  contentFormat: CliFormat = 'all',
+  progress: OcrProgressLevel = 'standard',
+): OcrRunResult {
   if (!summary.provider || !summary.gateway) throw new Error('Protocol results require provider and gateway metadata');
   const status = runStatus(summary);
   const result: OcrRunResult = {
-    protocolVersion: OCR_PROTOCOL_VERSION,
+    protocolVersion,
     type: 'run.result',
     ok: status === 'succeeded' || status === 'validated',
     runId,
@@ -367,20 +641,26 @@ export function toOcrRunResult(runId: string, summary: BatchSummary): OcrRunResu
     usage: summary.usage,
     ...(summary.costLimitUsd !== undefined ? { costLimitUsd: summary.costLimitUsd } : {}),
     costLimitReached: summary.costLimitReached,
-    documents: summary.results.map(toProtocolDocument),
+    documents: summary.results.map((document) => (
+      toProtocolDocument(document, protocolVersion, deliveryMode, contentFormat, progress)
+    )),
   };
   assertOcrMachineResult(result);
   return result;
 }
 
-export function toOcrRunFailure(runId: string, error: OcrErrorPayload): OcrRunFailure {
+export function toOcrRunFailure(
+  runId: string,
+  error: OcrErrorPayload,
+  protocolVersion: OcrProtocolVersion = OCR_PROTOCOL_VERSION,
+): OcrRunFailure {
   const result: OcrRunFailure = {
-    protocolVersion: OCR_PROTOCOL_VERSION,
+    protocolVersion,
     type: 'run.result',
     ok: false,
     runId,
     status: 'failed',
-    error,
+    error: errorPayloadForProtocol(error, protocolVersion),
   };
   assertOcrMachineResult(result);
   return result;
@@ -389,22 +669,38 @@ export function toOcrRunFailure(runId: string, error: OcrErrorPayload): OcrRunFa
 export function createOcrCapabilities(cliVersion: string): OcrCapabilities {
   const capabilities: OcrCapabilities = {
     protocolVersion: OCR_PROTOCOL_VERSION,
+    supportedProtocolVersions: [1, 2],
     cliVersion,
     operations: ['extract'],
-    inputKinds: ['path'],
+    inputKinds: ['path', 'stdin'],
     modes: ['simple', 'template', 'agentic'],
     contentFormats: ['markdown', 'json', 'csv', 'all'],
     responseFormats: ['json', 'jsonl'],
-    deliveryModes: ['reference'],
+    deliveryModes: ['inline', 'reference'],
+    progressLevels: ['off', 'standard', 'detailed'],
+    progressStepKinds: [
+      'runtime',
+      'thought_summary',
+      'reasoning',
+      'model_output',
+      'tool_call',
+      'tool_result',
+      'error',
+    ],
     features: [
       'custom-json-schema',
       'credential-free-dry-run',
       'ordered-jsonl-events',
+      'typed-streaming-agent-progress',
+      'provider-reasoning-continuity',
+      'inline-or-reference-delivery',
       'reference-first-artifacts',
       'resume',
       'request-rate-limit',
       'cost-limit',
       'typed-errors',
+      'stdin-input',
+      'hermetic-config',
     ],
     errorCodes: [...OCR_ERROR_CODES],
     exitCodes: {
@@ -419,6 +715,9 @@ export function createOcrCapabilities(cliVersion: string): OcrCapabilities {
       label: profile.label,
       defaultModel: profile.defaultModel ?? null,
       models: [...profile.models],
+      ...(profile.inputImageMimeTypes
+        ? { inputImageMimeTypes: [...profile.inputImageMimeTypes] }
+        : {}),
       capabilities: profile.capabilities,
     })),
     presets: listExtractionPresets().map((preset) => ({

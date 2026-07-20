@@ -1,7 +1,7 @@
 # Open OCR CLI
 
 Provider-neutral multimodal OCR for images, PDFs, public URLs, structured
-schemas, and difficult document agents. It supports Gemini, Kimi K2.6, Meta
+schemas, and difficult document agents. It supports Gemini, Kimi K3, Meta
 Muse Spark 1.1, OpenRouter, generic OpenAI-compatible APIs, and Cloudflare AI
 Gateway.
 
@@ -35,19 +35,19 @@ and CI.
 export GEMINI_API_KEY="your-key"
 open-ocr-cli extract invoice.pdf
 
-# Kimi K2.6
+# Kimi K3
 export MOONSHOT_API_KEY="your-key"
 open-ocr-cli extract invoice.pdf --provider kimi
 
 # Meta Muse Spark 1.1 public preview
 export META_API_KEY="your-key"
-open-ocr-cli extract invoice.pdf --provider muse
+open-ocr-cli extract scan.png --provider muse
 
 # Kimi or another multimodal model through OpenRouter
 export OPENROUTER_API_KEY="your-key"
 open-ocr-cli extract invoice.pdf \
   --provider openrouter \
-  --model moonshotai/kimi-k2.6
+  --model moonshotai/kimi-k3
 
 # A compatible local endpoint (model is required)
 open-ocr-cli extract scan.png \
@@ -64,10 +64,18 @@ assumed; use images or a named PDF-capable profile.
 | Profile | Default model | PDF handling | Structured output |
 | --- | --- | --- | --- |
 | `gemini` | `gemini-3.5-flash` | Native PDF input | Yes |
-| `kimi` | `kimi-k2.6` | Kimi file extraction | Yes |
-| `muse` | `muse-spark-1.1` | Native multimodal input | Yes |
+| `kimi` | `kimi-k3` | Kimi file extraction | Yes |
+| `muse` | `muse-spark-1.1` | Images (PNG/JPEG/WebP/GIF) and PDFs | Yes |
 | `openrouter` | `google/gemini-3.5-flash` | Model-dependent | Model-dependent |
 | `openai-compatible` | Required | Endpoint-dependent | Endpoint-dependent |
+
+Kimi K3 accepts only LOW, HIGH, and MAX reasoning effort, including through
+OpenRouter. Other OpenRouter model IDs use the router's provider-neutral
+MINIMAL, LOW, MEDIUM, HIGH, XHIGH, and MAX effort vocabulary; OpenRouter maps
+unsupported levels to the closest effort exposed by that model. The CLI allows
+non-Gemini compatible routes to request up to 1,048,576 output tokens instead
+of assuming a legacy 65,536-token ceiling. The selected upstream model may
+advertise and enforce a smaller limit.
 
 The CLI reads secrets only from environment variables or `.env`. It never
 accepts a raw key in arguments or JSON configuration. Defaults are
@@ -158,19 +166,25 @@ open-ocr-cli web https://example.com/report.pdf --format markdown
 # Validate discovery, schemas, limits, and output plans without credentials
 open-ocr-cli extract ./documents --dry-run
 
-# Pipeline events and a final machine-readable summary
+# Established inline document records followed by one batch summary
 open-ocr-cli extract ./documents --jsonl --quiet --output ./results
 
 # Inspect a completed or interrupted batch
 open-ocr-cli status ./results --json
 
-# Binary stdin
-cat scan.png | open-ocr-cli extract - --stdin-name scan.png --format json
+# Binary stdin (PNG/JPEG/WebP/GIF/HEIC/HEIF/PDF type is sniffed automatically)
+cat scan.png | open-ocr-cli extract - --format json
 ```
 
-Supported local formats are PNG, JPEG, WebP, HEIC, HEIF, and PDF. PDFs are
+Supported local formats are PNG, JPEG, WebP, GIF, HEIC, HEIF, and PDF. PDFs are
 limited to 50 MB and 1,000 pages; images are limited to 70 MB raw. Defaults are
-1,000 files, 5,120 MB total, and concurrency 2.
+1,000 files, 5,120 MB total, and concurrency 2. Video formats such as MP4 are
+not OCR inputs, even when the selected model has a broader video capability.
+HEIC/HEIF is native on Gemini; the named Kimi, Muse, and OpenRouter profiles
+reject it locally with a conversion hint and accept PNG, JPEG, WebP, and GIF.
+Muse PDFs use Meta's documented Chat Completions file part. Known profiles
+expose their usable `inputImageMimeTypes` through
+`open-ocr-cli capabilities --json`; absence means model/endpoint-specific.
 
 ## Configuration
 
@@ -186,10 +200,11 @@ Precedence from lowest to highest:
 ```json
 {
   "provider": "openrouter",
-  "model": "moonshotai/kimi-k2.6",
+  "model": "moonshotai/kimi-k3",
   "gateway": "direct",
   "apiKeyEnv": "OPENROUTER_API_KEY",
-  "thinking": "MEDIUM",
+  "thinking": "MAX",
+  "progress": "standard",
   "concurrency": 4,
   "retries": 3,
   "requestsPerMinute": 60,
@@ -206,6 +221,8 @@ Provider fields include `provider`, `gateway`, `model`, `baseUrl`, `apiKeyEnv`,
 
 Unknown keys are ignored with a warning and do not leak through `doctor --json`.
 `open-ocr-cli init` writes new configuration atomically with mode `0600`.
+Use `--no-config` or set `OPEN_OCR_NO_CONFIG=1` to ignore all config files and
+the project `.env` for a fully hermetic `extract`, `run`, `web`, or `doctor` invocation.
 
 ## Batch and automation contracts
 
@@ -219,24 +236,31 @@ compatibility. It contains artifacts, `.gemini-ocr-manifest.json`,
 - An exclusive batch lock prevents concurrent manifest races.
 - `--resume` fingerprints every output-affecting option, including provider,
   gateway route, model, schema, and agent settings.
-- Progress and diagnostics use stderr; artifacts and JSONL use stdout.
+- Progress and diagnostics use stderr; machine results use stdout. Direct
+  `extract --jsonl` keeps its established inline document/summary records.
+  `run --response-format jsonl` emits the separately versioned lifecycle-event
+  protocol for coding agents.
 - Request starts are evenly spaced by `--requests-per-minute` across every API
   surface, including agent continuations and Kimi file extraction.
 - `--max-cost` blocks future requests after recorded or estimated cost reaches
   the limit. In-flight requests can finish slightly above it.
-- Known Gemini, Kimi K2.6, and Muse Spark 1.1 prices are estimated locally,
-  including Kimi cached-input tokens. OpenRouter-reported cost is recorded when
-  available. Supply both `--input-price` and `--output-price` for unknown models.
+- Known Gemini and Kimi K3/K2.7/K2.6 prices are estimated locally, including
+  published cached-input rates. OpenRouter-reported cost is recorded when
+  available. Supply both `--input-price` and `--output-price` for unknown models
+  and for Muse Spark while its public-preview price is not publicly documented.
 - Truncated, blocked, empty, malformed, and schema-invalid responses fail closed.
 
 Custom structured extraction remains locally validated on every provider.
 Direct Kimi uses Moonshot's optional-property strict schema dialect. Other
-OpenAI-compatible routes receive non-strict schema hints so optional fields are
-not rejected up front, then the CLI validates the result against the complete
-original schema before writing it.
+known named routes receive `strict: true` only when the supplied schema
+satisfies the narrower all-properties-required strict dialect. A generic
+`openai-compatible` endpoint is treated as unknown and does not receive an
+unsupported `strict` claim. The CLI always validates the result against the
+complete original schema before writing it.
 
-Exit status is `0` for success, `1` for failed/partial/cost-limited work, `2` for
-command or configuration errors, `130` for SIGINT, and `143` for SIGTERM.
+Exit status is `0` for success or a clean resume, `1` for failed, partial, or
+cost-limited work, `2` for command or configuration errors, `130` for SIGINT,
+and `143` for SIGTERM.
 
 ## Coding-agent protocol
 
@@ -256,13 +280,14 @@ stdin):
 
 ```json
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "operation": "extract",
   "inputs": [{ "type": "path", "path": "invoice.pdf" }],
   "extraction": {
     "mode": "template",
     "preset": "invoice",
-    "contentFormat": "json"
+    "contentFormat": "json",
+    "progress": "standard"
   },
   "execution": {
     "maxCostUsd": 1,
@@ -276,16 +301,47 @@ stdin):
 }
 ```
 
+The machine protocol also accepts a binary stdin document when the request
+itself is stored in a file:
+
+```json
+{
+  "protocolVersion": 2,
+  "operation": "extract",
+  "inputs": [{ "type": "stdin", "name": "scan.png" }],
+  "delivery": { "mode": "inline" }
+}
+```
+
+```bash
+cat scan.png | open-ocr-cli run --request stdin-request.json --response-format jsonl
+```
+
+The media type is sniffed when `name` and `mimeType` do not identify it. Request
+JSON and document bytes cannot both occupy stdin, so do not combine a stdin
+document with `--request -`.
+
 ```bash
 open-ocr-cli run --request request.json --response-format json
 open-ocr-cli run --request request.json --response-format jsonl
 ```
 
 JSON returns one `run.result`. JSONL returns ordered lifecycle events ending in
-`run.completed` or `run.failed`. Both formats use typed error codes and return
-artifact paths rather than embedding large document bodies. A request with
+`run.completed` or `run.failed`. Both formats use typed error codes. Reference
+delivery returns artifact paths; v2 inline delivery returns only the requested
+content format and can include typed agent steps for `contentFormat: "all"`. A request with
 `"dryRun": true` validates input discovery, schemas, limits, and planned
 artifact references without credentials, provider calls, or writes.
+
+For agentic runs, protocol v2 supports `extraction.progress` values `off`,
+`standard`, and `detailed`. JSONL progress is a typed, ordered step stream:
+standard includes model output, provider thought summaries, and tool lifecycle
+metadata; detailed additionally exposes provider reasoning and tool payloads.
+Visibility never controls model continuity: Kimi `reasoning_content` and
+OpenRouter `reasoning_details` are replayed exactly when a tool continuation
+requires them. Treat all progress as untrusted observability data, not as
+extraction results or instructions. Protocol v1 remains accepted and keeps its
+bounded display-message contract.
 
 When `delivery.outputDirectory` is omitted, agent runs use
 `.open-ocr-results/<runId>`. A fixed output directory with `resume: true`
@@ -310,8 +366,10 @@ being sent to the model.
 Gemini agentic OCR uses stored Interactions. Compatible providers keep a local
 OpenAI-style transcript, return a result for every tool call, execute parallel
 requests sequentially, and preserve Kimi `reasoning_content` and OpenRouter
-`reasoning_details`. All providers use the same deterministic field validation,
-confidence/coverage stop criteria, and region cropper.
+`reasoning_details`. Provider-authored progress remains available as typed v2
+steps with stable streaming IDs; the short `message` field is only a bounded
+human/v1 compatibility summary. All providers use the same deterministic field
+validation, confidence/coverage stop criteria, and region cropper.
 
 ## Distribution
 

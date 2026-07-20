@@ -34,7 +34,7 @@ vi.mock('./agentTools', async () => {
 });
 
 import { executeAgentTurn } from './agentGemini';
-import type { AgentMemory } from './agentTypes';
+import type { AgentMemory, AgentStep } from './agentTypes';
 import type { InteractionStep } from './gemini/interactions';
 
 function createMemory(): AgentMemory {
@@ -283,6 +283,7 @@ describe('executeAgentTurn', () => {
 
     const memory = createMemory();
     const transcript: InteractionStep[] = [];
+    const emittedSteps: AgentStep[] = [];
     const result = await executeAgentTurn(
       'system prompt',
       createImageInputContent(),
@@ -301,7 +302,7 @@ describe('executeAgentTurn', () => {
         confidenceThreshold: 0.8,
         maxTokens: 1024,
       },
-      vi.fn(),
+      (step) => emittedSteps.push(step),
     );
 
     expect(result.finished).toBe(true);
@@ -332,6 +333,10 @@ describe('executeAgentTurn', () => {
         is_error: true,
       }),
     );
+    const emittedCalls = emittedSteps.filter((step) => step.source === 'tool_call');
+    const emittedResults = emittedSteps.filter((step) => step.source === 'tool_result');
+    expect(emittedCalls.map((step) => step.functionCall?.id)).toEqual(['call-1', 'call-2', 'call-3']);
+    expect(emittedResults.map((step) => step.functionCall?.id)).toEqual(['call-1', 'call-2', 'call-3']);
     // Thought signature was preserved in the transcript
     expect(transcript.some((s) => s.type === 'thought' && (s as { signature?: string }).signature === 'sig-1')).toBe(true);
 
@@ -388,6 +393,7 @@ describe('executeAgentTurn', () => {
     memory.extractedFields.invoice_number = { value: 'INV-1', confidence: 0.95 };
     const transcript: InteractionStep[] = [];
     const interactionState: { previousInteractionId?: string; pendingInput?: InteractionStep[] } = {};
+    const emittedSteps: AgentStep[] = [];
     const agentConfig = {
       maxIterations: 4,
       confidenceThreshold: 0.8,
@@ -405,7 +411,7 @@ describe('executeAgentTurn', () => {
       memory,
       { apiKey: 'test-key', model: 'gemini-3.5-flash' },
       agentConfig,
-      vi.fn(),
+      (step) => emittedSteps.push(step),
     )).rejects.toThrow('429 rate limit');
 
     const queuedResult = interactionState.pendingInput?.[0];
@@ -419,6 +425,10 @@ describe('executeAgentTurn', () => {
     expect((queuedResult as { result: unknown }).result).toEqual([
       expect.objectContaining({ type: 'text', text: expect.stringContaining('Temporary Gemini API failure') }),
     ]);
+    expect(emittedSteps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'tool_call', functionCall: expect.objectContaining({ id: 'call-retry' }) }),
+      expect.objectContaining({ source: 'tool_result', type: 'error', functionCall: expect.objectContaining({ id: 'call-retry' }) }),
+    ]));
 
     await executeAgentTurn(
       'system prompt',
