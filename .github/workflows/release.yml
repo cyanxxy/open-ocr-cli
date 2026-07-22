@@ -60,6 +60,9 @@ jobs:
       - name: Verify release versions
         run: node scripts/assert-release-version.mjs
 
+      - name: Prepare GitHub release notes from changelog
+        run: node scripts/extract-release-notes.mjs "${GITHUB_REF_NAME}" release-notes.md
+
       - name: Smoke-test packed CLI installation
         run: npm run cli:install-smoke
 
@@ -111,6 +114,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release-notes.md
           generate_release_notes: true
           files: |
             open-gemini-ocr-*-dist.tar.gz

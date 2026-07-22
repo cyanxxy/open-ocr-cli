@@ -100,4 +100,31 @@ describe('machine request execution', () => {
     });
     expect(process.env.OPEN_OCR_PROVIDER).toBeUndefined();
   });
+
+  it('routes URL dry runs through the shared job service', async () => {
+    const execution = await executeOcrJobRequest({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [
+        { type: 'url', url: 'https://example.com/article' },
+        { type: 'url', url: 'https://example.com/report.pdf' },
+      ],
+      web: { analysis: 'comparison' },
+      extraction: { mode: 'simple', contentFormat: 'markdown' },
+      delivery: { mode: 'inline' },
+      dryRun: true,
+    }, {
+      cwd: directory,
+      runId: 'url-dry-run',
+      abortController: new AbortController(),
+      noConfig: true,
+    });
+
+    expect(execution.result).toMatchObject({
+      status: 'validated',
+      total: 1,
+      failed: 0,
+      documents: [{ status: 'skipped', skipReason: 'validated' }],
+    });
+  });
 });

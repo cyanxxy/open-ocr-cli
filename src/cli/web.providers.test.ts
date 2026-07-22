@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({ secureFetch: vi.fn() }));
 
 vi.mock('./secureFetch', () => ({ secureFetchPublicUrl: mocks.secureFetch }));
 
-import { runWebExtraction } from './web';
+import { runWebExtraction, runWebJob } from './web';
 
 function heicBytes(): Uint8Array {
   const bytes = Buffer.alloc(20);
@@ -64,6 +64,48 @@ afterEach(() => {
 });
 
 describe('compatible-provider Web OCR', () => {
+  it('runs URL extraction through the shared job lifecycle and usage context', async () => {
+    const url = 'https://example.com/article';
+    mocks.secureFetch.mockResolvedValueOnce({
+      url,
+      contentType: 'text/html',
+      bytes: new TextEncoder().encode('<main><h1>Quarterly report</h1><p>Revenue 42</p></main>'),
+    });
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      choices: [{
+        finish_reason: 'stop',
+        message: { content: JSON.stringify({ results: [{ url, type: 'webpage', content: 'Revenue 42' }] }) },
+      }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, cost: 0 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))));
+    const events: string[] = [];
+
+    const execution = await runWebJob([url], 'individual', options(), {
+      runId: 'web-service-run',
+      abortController: new AbortController(),
+      deliveryMode: 'inline',
+      eventSink: (event) => {
+        events.push(event.type);
+      },
+    });
+
+    expect(execution.result).toMatchObject({
+      status: 'succeeded',
+      total: 1,
+      usage: { requests: 1, totalTokens: 15 },
+      documents: [{
+        status: 'succeeded',
+        content: { markdown: expect.stringContaining('Revenue 42') },
+      }],
+    });
+    expect(events).toEqual([
+      'run.started',
+      'document.started',
+      'document.completed',
+      'run.completed',
+    ]);
+  });
+
   it.each([
     ['image/gif', 'https://example.com/animation.gif'],
     ['application/octet-stream', 'https://example.com/download'],

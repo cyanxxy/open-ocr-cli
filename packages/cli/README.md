@@ -12,17 +12,15 @@ Node.js 20.19+, 22.13+, or 24+ is required.
 ```bash
 npm install --global open-ocr-cli
 export GEMINI_API_KEY="your-key"
-open-ocr-cli
+open-ocr-cli interactive
 ```
 
 `open-ocr-cli` is the primary executable. `gemini-ocr` remains an equivalent
 backwards-compatible alias.
 
-Running with no arguments in an interactive terminal opens a guided arrow-key
-menu covering every command: Extract, Web, Init, Providers, Models, Presets,
-Doctor, Status, and Help. Press Enter to select and Ctrl-C to cancel. When stdin
-or the prompt stream is not a TTY, the bare command prints help instead. You can
-also launch it explicitly with `open-ocr-cli interactive`.
+Running with no arguments always prints help, including inside a
+pseudo-terminal. Launch the guided arrow-key menu explicitly with
+`open-ocr-cli interactive`; press Enter to select and Ctrl-C to cancel.
 
 For a project-local install, use `npx open-ocr-cli`. Direct subcommands such as
 `open-ocr-cli extract invoice.pdf` remain non-interactive and safe for scripts
@@ -221,6 +219,11 @@ Provider fields include `provider`, `gateway`, `model`, `baseUrl`, `apiKeyEnv`,
 
 Unknown keys are ignored with a warning and do not leak through `doctor --json`.
 `open-ocr-cli init` writes new configuration atomically with mode `0600`.
+For agents and CI, use `open-ocr-cli init --yes`; interactive init intentionally
+prompts when attached to a terminal.
+`open-ocr-cli doctor --json` performs local checks only. Use
+`open-ocr-cli doctor --check-credentials --json` when an agent must prove that
+the configured credential and endpoint can complete a minimal request.
 Use `--no-config` or set `OPEN_OCR_NO_CONFIG=1` to ignore all config files and
 the project `.env` for a fully hermetic `extract`, `run`, `web`, or `doctor` invocation.
 
@@ -321,6 +324,25 @@ The media type is sniffed when `name` and `mimeType` do not identify it. Request
 JSON and document bytes cannot both occupy stdin, so do not combine a stdin
 document with `--request -`.
 
+Public URLs use the same machine job service and lifecycle protocol:
+
+```json
+{
+  "protocolVersion": 2,
+  "operation": "extract",
+  "inputs": [
+    { "type": "url", "url": "https://example.com/report" },
+    { "type": "url", "url": "https://example.com/appendix.pdf" }
+  ],
+  "web": { "analysis": "combined" },
+  "extraction": { "mode": "simple", "contentFormat": "markdown" },
+  "delivery": { "mode": "reference", "outputDirectory": "./web-results", "resume": true }
+}
+```
+
+URL inputs cannot be mixed with path or stdin inputs. They inherit the shared
+timeout, request-rate, cost-limit, artifact, resume, and JSONL event contracts.
+
 ```bash
 open-ocr-cli run --request request.json --response-format json
 open-ocr-cli run --request request.json --response-format jsonl
@@ -353,6 +375,31 @@ capabilities schemas under `schemas/`. Schema `$id` URLs are stable identifiers,
 not network endpoints; use `open-ocr-cli schema <name>` or the bundled files.
 The shared Open OCR skill ships under `skills/open-ocr/` in npm and lives at
 `integrations/open-ocr/skills/open-ocr/SKILL.md` in the repository.
+
+## MCP server
+
+`open-ocr-cli mcp` starts a stdio Model Context Protocol server backed by the
+same `OcrJobService` and versioned result contract as `run`. It exposes
+`ocr_extract`, `ocr_run_agentic`, and `ocr_web`, plus an
+`open-ocr://capabilities` resource. Lifecycle events are forwarded as MCP
+progress notifications when the client requests progress.
+
+Example client configuration:
+
+```json
+{
+  "mcpServers": {
+    "open-ocr": {
+      "command": "open-ocr-cli",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+The stdio server never uses stdout for logs or extracted document prose. Tools
+default to reference delivery and reject document stdin because stdin belongs
+to the MCP transport.
 
 ## Web and agentic behavior
 

@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   readOcrJobRequest: vi.fn(),
   readOcrJobRequestRaw: vi.fn(),
   runBatch: vi.fn(),
-  runWebExtraction: vi.fn(),
+  runWebJob: vi.fn(),
 }));
 
 vi.mock('./interactive', () => ({
@@ -36,7 +36,7 @@ vi.mock('./web', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./web')>();
   return {
     ...actual,
-    runWebExtraction: mocks.runWebExtraction,
+    runWebJob: mocks.runWebJob,
   };
 });
 
@@ -54,7 +54,7 @@ beforeEach(async () => {
   directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-main-'));
   process.env.GEMINI_API_KEY = 'test-key';
   process.exitCode = undefined;
-  mocks.runWebExtraction.mockReset();
+  mocks.runWebJob.mockReset();
   mocks.runBatch.mockReset();
   mocks.promptInteractiveArguments.mockReset();
   mocks.executeOcrJobRequest.mockReset();
@@ -204,7 +204,7 @@ describe('CLI command exit contracts', () => {
   });
 
   it('classifies Web OCR runtime failures as exit code 1', async () => {
-    mocks.runWebExtraction.mockRejectedValueOnce(new Error('Gemini request failed'));
+    mocks.runWebJob.mockRejectedValueOnce(new Error('Gemini request failed'));
 
     let thrown: unknown;
     try {
@@ -247,7 +247,27 @@ describe('CLI command exit contracts', () => {
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as Error).message).toContain(`Output already exists: ${output}`);
     expect(cliExitCode(thrown)).toBe(2);
-    expect(mocks.runWebExtraction).not.toHaveBeenCalled();
+    expect(mocks.runWebJob).not.toHaveBeenCalled();
+  });
+
+  it('reports an explicit skipped credential probe without making a request', async () => {
+    delete process.env.GEMINI_API_KEY;
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'doctor', '--no-config', '--check-credentials', '--json',
+      ]);
+      const report = JSON.parse(stdout.mock.calls.flat().join('')) as {
+        credentialProbe: { status: string; error?: string };
+      };
+      expect(report.credentialProbe).toMatchObject({
+        status: 'skipped',
+        error: expect.stringContaining('GEMINI_API_KEY'),
+      });
+      expect(process.exitCode).toBe(1);
+    } finally {
+      stdout.mockRestore();
+    }
   });
 });
 
@@ -474,13 +494,15 @@ describe('bare CLI invocation', () => {
     };
   }
 
-  it('opens the guided menu when stdin and the prompt stream are TTYs', async () => {
+  it('prints help without prompting even when stdin and stderr are TTYs', async () => {
     const restoreTTY = setTTY(true);
-    mocks.promptInteractiveArguments.mockResolvedValueOnce(undefined);
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {
       await main(['node', 'open-ocr-cli']);
-      expect(mocks.promptInteractiveArguments).toHaveBeenCalledOnce();
+      expect(mocks.promptInteractiveArguments).not.toHaveBeenCalled();
+      expect(stdout.mock.calls.flat().join('')).toContain('Usage: open-ocr-cli');
     } finally {
+      stdout.mockRestore();
       restoreTTY();
     }
   });

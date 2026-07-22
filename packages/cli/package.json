@@ -1,6 +1,6 @@
 {
   "name": "open-ocr-cli",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Provider-neutral multimodal OCR CLI for images, PDFs, URLs, JSON schemas, and agentic extraction with Gemini, Kimi, Muse, and OpenRouter.",
   "license": "MIT",
   "type": "module",
@@ -25,6 +25,7 @@
     "json-schema",
     "structured-output",
     "agentic-ocr",
+    "mcp-server",
     "cli",
     "command-line-tool",
     "pdf",
@@ -51,6 +52,7 @@
   "dependencies": {
     "@clack/prompts": "^1.7.0",
     "@google/genai": "^2.11.0",
+    "@modelcontextprotocol/server": "2.0.0-beta.5",
     "@napi-rs/canvas": "^1.0.2",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
@@ -59,7 +61,8 @@
     "html-to-text": "^10.0.0",
     "ipaddr.js": "^2.4.0",
     "pdfjs-dist": "^5.6.205",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.3",
+    "zod": "^4.4.3"
   },
   "publishConfig": {
     "access": "public"

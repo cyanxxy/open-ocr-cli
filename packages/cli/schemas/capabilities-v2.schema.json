@@ -10,7 +10,7 @@
     "supportedProtocolVersions": { "const": [1, 2] },
     "cliVersion": { "type": "string", "minLength": 1 },
     "operations": { "type": "array", "items": { "enum": ["extract"] } },
-    "inputKinds": { "type": "array", "items": { "enum": ["path", "stdin"] } },
+    "inputKinds": { "const": ["path", "stdin", "url"] },
     "modes": { "type": "array", "items": { "enum": ["simple", "template", "agentic"] } },
     "contentFormats": { "type": "array", "items": { "enum": ["markdown", "json", "csv", "all"] } },
     "responseFormats": { "type": "array", "items": { "enum": ["json", "jsonl"] } },

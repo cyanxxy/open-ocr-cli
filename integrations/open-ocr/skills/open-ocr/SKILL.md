@@ -24,7 +24,7 @@ open-ocr-cli schema event
 open-ocr-cli schema error
 ```
 
-Run `open-ocr-cli doctor --json` before a paid extraction when credential or provider setup is uncertain. Never request, print, copy, or store a raw API key. The CLI reads credentials only from configured environment variables.
+Run `open-ocr-cli doctor --check-credentials --json` before a paid extraction when credential or provider setup is uncertain. A dry run validates only local inputs and configuration; it does not prove endpoint access. Never request, print, copy, or store a raw API key. The CLI reads credentials only from configured environment variables.
 
 ## Choose the Smallest Suitable Mode
 
@@ -68,6 +68,8 @@ Create a short-lived request JSON file in the current workspace or another user-
 If `delivery.outputDirectory` is omitted, the CLI creates `.open-ocr-results/<runId>`. Reusing a fixed output directory with `resume: true` safely resumes matching single-document and batch jobs.
 
 For a binary stdin document, store the request in a file and use one input such as `{ "type": "stdin", "name": "scan.png" }`, then pipe the bytes to `open-ocr-cli run --request request.json`. The CLI sniffs supported media when the name or MIME type is omitted. Do not use `--request -` at the same time because request JSON and document bytes cannot share stdin.
+
+For public URLs, use one or more `{ "type": "url", "url": "https://..." }` inputs and optionally set `web.analysis` to `individual`, `combined`, or `comparison`. URL inputs cannot be mixed with local files and support simple Markdown or JSON extraction. They use the same lifecycle events, cost/rate controls, timeout, delivery, and resume service as local OCR jobs.
 
 Set top-level `"noConfig": true`, pass `--no-config`, or set `OPEN_OCR_NO_CONFIG=1` when the run must ignore user/project configuration and the project `.env`.
 

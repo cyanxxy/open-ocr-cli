@@ -9,6 +9,7 @@ import {
   cliRunStatusExitCode,
   cliSignalExitCode,
   ocrErrorPayload,
+  renderCliError,
 } from './errors';
 
 describe('CLI exit errors', () => {
@@ -56,6 +57,19 @@ describe('CLI exit errors', () => {
       category: 'provider',
       retryable: true,
     });
+  });
+
+  it('renders typed errors and hints for the human command surface', () => {
+    const output = renderCliError(new CliExitError('Missing scan', 2, {
+      code: 'INPUT_NOT_FOUND',
+      category: 'input',
+      retryable: false,
+      hint: 'Check the input path.',
+    }), 'open-ocr-cli');
+    expect(output).toBe(
+      'open-ocr-cli: [INPUT_NOT_FOUND] Missing scan\n'
+      + 'open-ocr-cli: hint: Check the input path.\n',
+    );
   });
 
   it('does not classify configuration or output prose as a custom-schema failure', () => {

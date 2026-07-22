@@ -362,6 +362,14 @@ export function ocrErrorPayload(error: unknown, fallbackExitCode: CliExitCode = 
   };
 }
 
+/** Render the same typed error contract used by `run` for human CLI users. */
+export function renderCliError(error: unknown, binaryName: string): string {
+  const payload = ocrErrorPayload(error, cliExitCode(error));
+  const lines = [`${binaryName}: [${payload.code}] ${payload.message}`];
+  if (payload.hint) lines.push(`${binaryName}: hint: ${payload.hint}`);
+  return `${lines.join('\n')}\n`;
+}
+
 /** Return the conventional shell exit status for a supported interrupt signal. */
 export function cliSignalExitCode(signal: CliInterruptSignal): 130 | 143 {
   return signal === 'SIGINT' ? 130 : 143;

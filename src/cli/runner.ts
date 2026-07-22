@@ -4,19 +4,15 @@ import process from 'node:process';
 
 import { agentLoop } from '../lib/agentLoop';
 import type { AgentMemory, AgentStep } from '../lib/agentTypes';
-import { waitForAbortableAgentDelay } from '../lib/agentStepStream';
-import { isRetryableGeminiError } from '../lib/gemini/client';
 import type { ExtractedContent, ExtractionInstruction } from '../lib/gemini/types';
 import {
   extractPresetWithProvider,
   extractStructuredWithProvider,
   extractTextWithProvider,
-  isRetryableProviderError,
   providerAgentLoop,
   providerDefaultBaseUrl,
   providerRequestHeaders,
   type ProviderExecutionContext,
-  type ProviderRuntimeConfig,
 } from '../lib/providers';
 import { getExtractionPreset } from '../lib/templates';
 import { readAndValidateInput } from './inputs';
@@ -24,6 +20,8 @@ import { nodeRegionCropper } from './nodeRegionCropper';
 import { agentProgressMessage, OcrJobService, modeFingerprint } from './ocrJobService';
 import { assertCustomSchemaOutput } from './schema';
 import { jsonlResult, primaryArtifact } from './output';
+import { providerRuntimeConfig } from './providerRuntime';
+import { runWithProviderRetries } from './providerRetries';
 import type {
   BatchSummary,
   OcrArtifacts,
@@ -91,32 +89,6 @@ function finalizeAgentTrace(steps: AgentStep[]): AgentStep[] {
   return steps;
 }
 
-function providerConfig(
-  options: ResolvedCliOptions,
-  runtime: ProviderExecutionContext,
-): ProviderRuntimeConfig {
-  return {
-    provider: options.provider,
-    gateway: options.gateway,
-    apiKey: options.apiKey,
-    apiKeyEnv: options.apiKeyEnv,
-    model: options.model,
-    baseUrl: options.baseUrl,
-    thinkingConfig: { level: options.thinking, includeThoughts: options.includeThoughts },
-    progress: options.progress,
-    gatewayToken: options.gatewayToken,
-    gatewayTokenEnv: options.gatewayTokenEnv,
-    cloudflareAccountId: options.cloudflareAccountId,
-    cloudflareGatewayId: options.cloudflareGatewayId,
-    cloudflareByok: options.cloudflareByok,
-    cloudflareByokAlias: options.cloudflareByokAlias,
-    cloudflareProvider: options.cloudflareProvider,
-    inputPricePerMillionUsd: options.inputPricePerMillionUsd,
-    outputPricePerMillionUsd: options.outputPricePerMillionUsd,
-    runtime,
-  };
-}
-
 async function runAgentic(
   input: ResolvedInput,
   dataUrl: string,
@@ -125,7 +97,7 @@ async function runAgentic(
   onStep: (step: AgentStep) => void,
   runtime: ProviderExecutionContext,
 ): Promise<OcrArtifacts> {
-  const config = providerConfig(options, runtime);
+  const config = providerRuntimeConfig(options, runtime);
   const generator = options.provider === 'gemini' ? agentLoop(
     { name: input.name, type: input.mimeType },
     dataUrl,
@@ -191,7 +163,7 @@ async function extractOnce(
   runtime: ProviderExecutionContext,
 ): Promise<OcrArtifacts> {
   const { dataUrl } = await readAndValidateInput(input);
-  const clientConfig = providerConfig(options, runtime);
+  const clientConfig = providerRuntimeConfig(options, runtime);
 
   if (options.mode === 'template') {
     const result = await extractPresetWithProvider(
@@ -250,34 +222,12 @@ async function extractWithRetries(
   onStep: (step: AgentStep) => void,
   runtime: ProviderExecutionContext,
 ): Promise<{ artifacts: OcrArtifacts; attempts: number }> {
-  const allowedAttempts = options.mode === 'agentic' ? 1 : options.retries + 1;
-  for (let attempt = 1; attempt <= allowedAttempts; attempt += 1) {
-    try {
-      return { artifacts: await extractOnce(input, options, signal, onStep, runtime), attempts: attempt };
-    } catch (error) {
-      if (
-        signal.aborted
-        || attempt === allowedAttempts
-        || !(options.provider === 'gemini' ? isRetryableGeminiError(error) : isRetryableProviderError(error))
-      ) {
-        throw new ExtractionAttemptsError(error, attempt);
-      }
-      const delayMs = 750 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
-      try {
-        await waitForAbortableAgentDelay(delayMs, signal);
-      } catch (waitError) {
-        throw new ExtractionAttemptsError(waitError, attempt);
-      }
-    }
-  }
-  throw new ExtractionAttemptsError(new Error('Extraction exhausted its retry budget'), allowedAttempts);
-}
-
-class ExtractionAttemptsError extends Error {
-  constructor(error: unknown, readonly attempts: number) {
-    super(error instanceof Error ? error.message : String(error), { cause: error });
-    this.name = 'ExtractionAttemptsError';
-  }
+  const result = await runWithProviderRetries(
+    options,
+    signal,
+    () => extractOnce(input, options, signal, onStep, runtime),
+  );
+  return { artifacts: result.value, attempts: result.attempts };
 }
 
 export { modeFingerprint };

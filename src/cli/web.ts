@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { convert } from 'html-to-text';
@@ -8,7 +9,7 @@ import {
   parseIndividualResults,
   type UrlResult,
 } from '../lib/gemini/operations';
-import type { GeminiModel } from '../lib/gemini/types';
+import type { GeminiModel, JsonValue } from '../lib/gemini/types';
 import {
   createChatCompletion,
   documentContentParts,
@@ -16,16 +17,22 @@ import {
   providerRequestHeaders,
   type OpenAIContentPart,
   type ProviderExecutionContext,
-  type ProviderRuntimeConfig,
 } from '../lib/providers';
 import { getUnsupportedUrls } from '../lib/urlValidation';
 import { FILE_CONSTRAINTS } from '../constants';
 import { CliExitError } from './errors';
 import { sniffDocumentMimeType } from './inputs';
-import type { ResolvedCliOptions } from './types';
+import {
+  OcrJobService,
+  type OcrJobServiceResult,
+  type OcrJobServiceRuntime,
+} from './ocrJobService';
 import { writeTextFileAtomically } from './output';
 import { assertProviderMediaTypeSupported } from './providerInputs';
+import { providerRuntimeConfig } from './providerRuntime';
+import { runWithProviderRetries } from './providerRetries';
 import { secureFetchPublicUrl } from './secureFetch';
+import type { OcrArtifacts, ResolvedCliOptions, ResolvedInput } from './types';
 
 export const WEB_ANALYSIS_MODES = ['individual', 'combined', 'comparison'] as const;
 export type WebAnalysisMode = (typeof WEB_ANALYSIS_MODES)[number];
@@ -37,29 +44,67 @@ export interface WebExtractionResult {
   comparisonAnalysis?: string;
 }
 
-function runtimeConfig(
-  options: ResolvedCliOptions,
-  runtime?: ProviderExecutionContext,
-): ProviderRuntimeConfig {
+const WEB_INPUT_MIME_TYPE = 'application/vnd.open-ocr.url-set+json';
+
+function webInput(urls: string[], analysis: WebAnalysisMode): ResolvedInput {
+  const encoded = new TextEncoder().encode(JSON.stringify({ analysis, urls }));
+  const id = createHash('sha256').update(encoded).digest('hex').slice(0, 12);
+  const name = `web-${id}.urls`;
   return {
-    provider: options.provider,
-    gateway: options.gateway,
-    apiKey: options.apiKey,
-    apiKeyEnv: options.apiKeyEnv,
-    model: options.model,
-    baseUrl: options.baseUrl,
-    thinkingConfig: { level: options.thinking, includeThoughts: options.includeThoughts },
-    gatewayToken: options.gatewayToken,
-    gatewayTokenEnv: options.gatewayTokenEnv,
-    cloudflareAccountId: options.cloudflareAccountId,
-    cloudflareGatewayId: options.cloudflareGatewayId,
-    cloudflareByok: options.cloudflareByok,
-    cloudflareByokAlias: options.cloudflareByokAlias,
-    cloudflareProvider: options.cloudflareProvider,
-    inputPricePerMillionUsd: options.inputPricePerMillionUsd,
-    outputPricePerMillionUsd: options.outputPricePerMillionUsd,
-    runtime,
+    displayPath: urls.join(', '),
+    relativePath: name,
+    name,
+    mimeType: WEB_INPUT_MIME_TYPE,
+    size: encoded.byteLength,
+    mtimeMs: 0,
+    stdinBytes: encoded,
   };
+}
+
+function webArtifacts(
+  result: WebExtractionResult,
+  analysis: WebAnalysisMode,
+): OcrArtifacts {
+  return {
+    markdown: renderWebResult(result, analysis, 'markdown'),
+    json: result as JsonValue,
+  };
+}
+
+export async function runWebJob(
+  urls: string[],
+  analysis: WebAnalysisMode,
+  options: ResolvedCliOptions,
+  runtime: OcrJobServiceRuntime,
+): Promise<OcrJobServiceResult> {
+  const service = new OcrJobService({
+    assertInputSupported: () => undefined,
+    validateInput: () => Promise.resolve(),
+    extractDocument: async (input, resolvedOptions, signal, _onStep, providerRuntime) => {
+      if (input.mimeType !== WEB_INPUT_MIME_TYPE) {
+        throw new Error(`Unexpected Web OCR input type: ${input.mimeType}`);
+      }
+      const extraction = await runWithProviderRetries(
+        resolvedOptions,
+        signal,
+        () => runWebExtraction(
+          urls,
+          analysis,
+          resolvedOptions,
+          signal,
+          providerRuntime,
+        ),
+      );
+      return {
+        artifacts: webArtifacts(extraction.value, analysis),
+        attempts: extraction.attempts,
+      };
+    },
+  });
+  return service.run([webInput(urls, analysis)], options, {
+    ...runtime,
+    deliveryMode: runtime.deliveryMode ?? (options.output ? 'reference' : 'inline'),
+  });
 }
 
 export function readableWebText(bytes: Uint8Array, contentType: string): string {
@@ -215,7 +260,7 @@ async function runCompatibleWebExtraction(
   signal: AbortSignal,
   runtime?: ProviderExecutionContext,
 ): Promise<WebExtractionResult> {
-  const config = runtimeConfig(options, runtime);
+  const config = providerRuntimeConfig(options, runtime);
   const parts: OpenAIContentPart[] = [{ type: 'text', text: webPrompt(urls, analysis) }];
   let totalBytes = 0;
   let hasPdf = false;
@@ -309,7 +354,7 @@ export async function runWebExtraction(
   if (options.provider !== 'gemini') {
     return runCompatibleWebExtraction(urls, analysis, options, signal, runtime);
   }
-  const config = runtimeConfig(options, runtime);
+  const config = providerRuntimeConfig(options, runtime);
   return extractTextFromUrls(
     urls,
     options.apiKey || (options.cloudflareByok ? options.gatewayToken || 'cloudflare-byok' : ''),

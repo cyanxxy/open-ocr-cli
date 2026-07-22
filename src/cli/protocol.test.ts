@@ -97,6 +97,33 @@ describe('agent protocols', () => {
       name: 'animation.gif',
       mimeType: 'image/gif',
     });
+    expect(parseOcrJobRequest({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'url', url: 'https://example.com/report.pdf' }],
+      web: { analysis: 'individual' },
+      extraction: { mode: 'simple', contentFormat: 'json' },
+      delivery: { mode: 'inline' },
+    }).inputs[0]).toEqual({ type: 'url', url: 'https://example.com/report.pdf' });
+    expect(() => parseOcrJobRequest({
+      protocolVersion: 1,
+      operation: 'extract',
+      inputs: [{ type: 'url', url: 'https://example.com' }],
+    })).toThrow('Invalid OCR request v1');
+    expect(() => parseOcrJobRequest({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [
+        { type: 'url', url: 'https://example.com' },
+        { type: 'path', path: 'invoice.jpg' },
+      ],
+    })).toThrow('cannot be mixed');
+    expect(() => parseOcrJobRequest({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'url', url: 'https://example.com' }],
+      extraction: { mode: 'agentic' },
+    })).toThrow('simple mode');
     expect(() => parseOcrJobRequest({
       protocolVersion: 2,
       operation: 'extract',
@@ -182,6 +209,19 @@ describe('agent protocols', () => {
       inputs: [{ type: 'stdin' }],
       noConfig: true,
     })).toBe(true);
+    expect(validateV2({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'url', url: 'https://example.com' }],
+      web: { analysis: 'combined' },
+      extraction: { contentFormat: 'markdown' },
+    })).toBe(true);
+    expect(validateV2({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'url', url: 'https://example.com' }],
+      extraction: { mode: 'agentic' },
+    })).toBe(false);
     expect(validateV1({
       protocolVersion: 1,
       operation: 'extract',
@@ -359,10 +399,12 @@ describe('agent protocols', () => {
     const capabilities = createOcrCapabilities('2.1.0');
     expect(capabilities.protocolVersion).toBe(2);
     expect(capabilities.supportedProtocolVersions).toEqual([1, 2]);
-    expect(capabilities.inputKinds).toEqual(['path', 'stdin']);
+    expect(capabilities.inputKinds).toEqual(['path', 'stdin', 'url']);
     expect(capabilities.exitCodes).toMatchObject({ incomplete: 1, invalid: 2 });
     expect(capabilities.deliveryModes).toEqual(['inline', 'reference']);
     expect(capabilities.features).toContain('typed-streaming-agent-progress');
+    expect(capabilities.features).toContain('url-input');
+    expect(capabilities.features).toContain('mcp-stdio');
     expect(capabilities.progressStepKinds).toContain('tool_result');
     expect(capabilities.schemas.request).toContain('request-v2.schema.json');
     expect(capabilities.providers).toEqual(expect.arrayContaining([

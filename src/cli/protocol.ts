@@ -67,7 +67,15 @@ export interface OcrJobRequestStdinInput {
   mimeType?: string;
 }
 
-export type OcrJobRequestInput = OcrJobRequestPathInput | OcrJobRequestStdinInput;
+export interface OcrJobRequestUrlInput {
+  type: 'url';
+  url: string;
+}
+
+export type OcrJobRequestInput =
+  | OcrJobRequestPathInput
+  | OcrJobRequestStdinInput
+  | OcrJobRequestUrlInput;
 
 export type OcrProgressLevel = 'off' | 'standard' | 'detailed';
 export type OcrDeliveryMode = 'inline' | 'reference';
@@ -111,6 +119,9 @@ export interface OcrJobRequest {
   discovery?: {
     hidden?: boolean;
     exclude?: string[];
+  };
+  web?: {
+    analysis?: 'individual' | 'combined' | 'comparison';
   };
   delivery?: {
     mode?: OcrDeliveryMode;
@@ -248,7 +259,7 @@ export interface OcrCapabilities {
   supportedProtocolVersions: [1, 2];
   cliVersion: string;
   operations: ['extract'];
-  inputKinds: ['path', 'stdin'];
+  inputKinds: ['path', 'stdin', 'url'];
   modes: CliMode[];
   contentFormats: CliFormat[];
   responseFormats: ['json', 'jsonl'];
@@ -338,6 +349,68 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+export interface OcrExtractionSemantics {
+  mode?: string;
+  preset?: string;
+  hasSchema: boolean;
+  contentFormat?: string;
+}
+
+/**
+ * Validate compatibility between the output-affecting extraction options.
+ *
+ * This deliberately accepts strings instead of already-narrowed CLI types so
+ * it can validate both a raw protocol request and the effective request after
+ * file configuration has been merged.
+ */
+export function ocrExtractionSemanticError(
+  extraction: OcrExtractionSemantics,
+): string | undefined {
+  const { mode, preset, hasSchema, contentFormat } = extraction;
+  const hasPreset = preset !== undefined;
+  if (hasPreset && hasSchema) {
+    return 'OCR extraction.preset cannot be combined with extraction.schema or extraction.schemaPath.';
+  }
+  if (mode === 'template' && !hasPreset) {
+    return 'OCR extraction.preset is required when extraction.mode is template.';
+  }
+  if (hasPreset && mode !== undefined && mode !== 'template') {
+    return 'OCR extraction.preset requires extraction.mode to be template or omitted.';
+  }
+  if (hasSchema && mode !== undefined && mode !== 'simple') {
+    return 'OCR custom schemas require extraction.mode to be simple or omitted.';
+  }
+  if (hasSchema && contentFormat !== undefined && contentFormat !== 'json') {
+    return 'OCR custom schemas require extraction.contentFormat to be json or omitted.';
+  }
+  if (contentFormat === 'csv' && mode !== 'template' && !(mode === undefined && hasPreset)) {
+    return 'OCR extraction.contentFormat csv requires template mode and a preset.';
+  }
+  return undefined;
+}
+
+/**
+ * Validate the extraction restrictions that apply when every input is a URL.
+ *
+ * Fields are `unknown` so this can run before JSON Schema validation on a raw
+ * request as well as on the config-merged effective request.
+ */
+export function ocrUrlExtractionSemanticError(extraction: {
+  mode?: unknown;
+  preset?: unknown;
+  hasSchema: boolean;
+  contentFormat?: unknown;
+}): string | undefined {
+  const unsupportedMode = extraction.mode !== undefined && extraction.mode !== 'simple';
+  const unsupportedFormat = extraction.contentFormat !== undefined
+    && extraction.contentFormat !== 'markdown'
+    && extraction.contentFormat !== 'json';
+  if (unsupportedMode || extraction.preset !== undefined || extraction.hasSchema || unsupportedFormat) {
+    return 'OCR URL inputs support simple mode with markdown or JSON output only.';
+  }
+  return undefined;
+}
+
 function requestSemanticError(value: unknown): string | undefined {
   if (!isRecord(value)) return undefined;
   if (value.noConfig === true && typeof value.configPath === 'string') {
@@ -351,35 +424,42 @@ function requestSemanticError(value: unknown): string | undefined {
     if (stdinInputs.length > 0 && value.inputs.length !== 1) {
       return 'An OCR stdin document must be the request\'s only input.';
     }
+    const urlInputs = value.inputs.filter((input) => isRecord(input) && input.type === 'url');
+    if (urlInputs.length > 0 && urlInputs.length !== value.inputs.length) {
+      return 'OCR URL inputs cannot be mixed with path or stdin inputs.';
+    }
+    if (urlInputs.length > 20) {
+      return `Web OCR supports at most 20 URLs per request; received ${urlInputs.length}.`;
+    }
+    if (urlInputs.length === 0 && isRecord(value.web)) {
+      return 'OCR request web options require URL inputs.';
+    }
+    if (urlInputs.length > 0 && isRecord(value.extraction)) {
+      const extraction = value.extraction;
+      const urlError = ocrUrlExtractionSemanticError({
+        mode: extraction.mode,
+        preset: extraction.preset,
+        hasSchema: isRecord(extraction.schema) || typeof extraction.schemaPath === 'string',
+        contentFormat: extraction.contentFormat,
+      });
+      if (urlError) return urlError;
+    }
   }
   if (!isRecord(value.extraction)) return undefined;
   const extraction = value.extraction;
   const hasSchema = isRecord(extraction.schema) || typeof extraction.schemaPath === 'string';
-  const hasPreset = typeof extraction.preset === 'string';
+  const preset = typeof extraction.preset === 'string' ? extraction.preset : undefined;
   const mode = typeof extraction.mode === 'string' ? extraction.mode : undefined;
   const format = typeof extraction.contentFormat === 'string' ? extraction.contentFormat : undefined;
   if (isRecord(extraction.schema) && typeof extraction.schemaPath === 'string') {
     return 'OCR request extraction.schema and extraction.schemaPath are mutually exclusive.';
   }
-  if (hasPreset && hasSchema) {
-    return 'OCR request extraction.preset cannot be combined with extraction.schema or extraction.schemaPath.';
-  }
-  if (mode === 'template' && !hasPreset) {
-    return 'OCR request extraction.preset is required when extraction.mode is template.';
-  }
-  if (hasPreset && mode !== undefined && mode !== 'template') {
-    return 'OCR request extraction.preset requires extraction.mode to be template or omitted.';
-  }
-  if (hasSchema && mode !== undefined && mode !== 'simple') {
-    return 'OCR request custom schemas require extraction.mode to be simple or omitted.';
-  }
-  if (hasSchema && format !== undefined && format !== 'json') {
-    return 'OCR request custom schemas require extraction.contentFormat to be json or omitted.';
-  }
-  if (format === 'csv' && mode !== 'template' && !(mode === undefined && hasPreset)) {
-    return 'OCR request extraction.contentFormat csv requires template mode and a preset.';
-  }
-  return undefined;
+  return ocrExtractionSemanticError({
+    mode,
+    preset,
+    hasSchema,
+    contentFormat: format,
+  });
 }
 
 /**
@@ -672,7 +752,7 @@ export function createOcrCapabilities(cliVersion: string): OcrCapabilities {
     supportedProtocolVersions: [1, 2],
     cliVersion,
     operations: ['extract'],
-    inputKinds: ['path', 'stdin'],
+    inputKinds: ['path', 'stdin', 'url'],
     modes: ['simple', 'template', 'agentic'],
     contentFormats: ['markdown', 'json', 'csv', 'all'],
     responseFormats: ['json', 'jsonl'],
@@ -700,7 +780,9 @@ export function createOcrCapabilities(cliVersion: string): OcrCapabilities {
       'cost-limit',
       'typed-errors',
       'stdin-input',
+      'url-input',
       'hermetic-config',
+      'mcp-stdio',
     ],
     errorCodes: [...OCR_ERROR_CODES],
     exitCodes: {

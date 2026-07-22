@@ -10,7 +10,6 @@ import { listExtractionPresets } from '../lib/templates';
 import {
   PROVIDER_IDS,
   PROVIDER_PROFILES,
-  createProviderExecutionContext,
   isLocalBaseUrl,
   providerDefaultApiKeyEnv,
   type ProviderId,
@@ -33,8 +32,9 @@ import {
   type CliExitCode,
 } from './errors';
 import { discoverInputs } from './inputs';
-import { runInit, type InitFlags } from './init';
+import { runInit, validateProviderCredentials, type InitFlags } from './init';
 import { promptInteractiveArguments } from './interactive';
+import { primaryArtifact } from './output';
 import { loadCustomSchema } from './schema';
 import { executeOcrJobRequest, readOcrJobRequestRaw } from './machine';
 import {
@@ -48,15 +48,14 @@ import {
   type OcrJobEvent,
 } from './protocol';
 import { runBatch } from './runner';
+import { providerRuntimeConfig } from './providerRuntime';
 import { inspectBatchStatus, renderBatchStatus } from './status';
 import type { ExtractCommandFlags } from './types';
 import {
   assertWebOutputAvailable,
-  renderWebResult,
   resolveWebUrls,
-  runWebExtraction,
+  runWebJob,
   WEB_ANALYSIS_MODES,
-  writeWebOutput,
   type WebAnalysisMode,
   type WebOutputFormat,
 } from './web';
@@ -203,7 +202,7 @@ export function createProgram(binaryName = PRIMARY_CLI_NAME): Command {
     .showHelpAfterError()
     .addHelpText('after', `
 Examples:
-  $ ${commandName}                       # guided interactive mode
+  $ ${commandName}                       # print help; never prompts
   $ ${commandName} interactive           # explicitly launch the command menu
   $ ${commandName} init
   $ ${commandName} extract invoice.pdf
@@ -215,6 +214,7 @@ Examples:
   $ ${commandName} extract '**/*.pdf' --concurrency 4 --max-cost 5 --output ./results
   $ ${commandName} capabilities --json
   $ ${commandName} run --request ocr-request.json --response-format jsonl
+  $ ${commandName} mcp                    # stdio MCP server
   $ cat scan.png | ${commandName} extract - --stdin-name scan.png --format json
   $ ${commandName} web https://example.com/report.pdf --format markdown
   $ ${commandName} status ./results
@@ -410,6 +410,13 @@ CLI flags take precedence.
       process.stdout.write(`${JSON.stringify(schema, null, 2)}\n`);
     });
 
+  program.command('mcp')
+    .description('serve OCR tools over the Model Context Protocol stdio transport')
+    .action(async () => {
+      const { runMcpServer } = await import('./mcp');
+      await runMcpServer(cliVersion());
+    });
+
   program.command('init')
     .description('interactively create a safe CLI configuration and validate credentials')
     .option('--global', 'write the user configuration instead of ./.open-ocr-cli.json')
@@ -469,39 +476,49 @@ CLI flags take precedence.
       const outputTarget = options.output
         ? await assertWebOutputAvailable(options.output, cwd, options.overwrite)
         : undefined;
-      if (options.dryRun) {
-        process.stdout.write(`${JSON.stringify({ valid: true, urls, output: outputTarget }, null, 2)}\n`);
-        return;
-      }
-
-      const providerRuntime = createProviderExecutionContext({
-        requestsPerMinute: options.requestsPerMinute,
-        maxCostUsd: options.maxCostUsd,
-      });
       await withInterruptHandling(async ({ abortController, interruptedExitCode }) => {
-        const timeout = setTimeout(
-          () => abortController.abort(new DOMException(
-            `Timed out after ${options.timeoutSeconds}s`,
-            'TimeoutError',
-          )),
-          options.timeoutSeconds * 1000,
-        );
         try {
-          const result = await runWebExtraction(
+          const execution = await runWebJob(
             urls,
             flags.analysis,
             options,
-            abortController.signal,
-            providerRuntime,
+            { runId: randomUUID(), abortController },
           );
-          const content = renderWebResult(result, flags.analysis, webFormat);
-          if (options.output) await writeWebOutput(content, options.output, cwd, options.overwrite);
-          else await writeMachineStdout(content);
-          const usage = providerRuntime.getUsage();
+          const result = execution.summary.results[0];
+          if (!result) throw new Error('Web OCR completed without a result');
+          if (result.status === 'failed') {
+            const details = result.errorDetails;
+            throw new CliExitError(result.error ?? 'Web OCR did not complete', 1, {
+              code: details?.code,
+              category: details?.category,
+              retryable: details?.retryable,
+              hint: details?.hint,
+            });
+          }
+          if (options.dryRun) {
+            process.stdout.write(`${JSON.stringify({ valid: true, urls, output: outputTarget }, null, 2)}\n`);
+            return;
+          }
+          if (result.status !== 'succeeded') {
+            const details = result.errorDetails;
+            throw new CliExitError(result.error ?? 'Web OCR did not complete', 1, {
+              code: details?.code,
+              category: details?.category,
+              retryable: details?.retryable,
+              hint: details?.hint,
+            });
+          }
+          if (!options.output) {
+            if (!result.artifacts) throw new Error('Web OCR returned no inline artifacts');
+            await writeMachineStdout(primaryArtifact(result.artifacts, webFormat));
+          }
+          const usage = execution.summary.usage;
           if (!options.quiet) process.stderr.write(
             `Extracted ${urls.length} URL(s); ${usage.totalTokens} tokens across ${usage.requests} request(s); `
             + `estimated cost $${usage.estimatedCostUsd.toFixed(6)}\n`,
           );
+          const exitCode = cliBatchExitCode(execution.summary);
+          if (exitCode !== 0) process.exitCode = exitCode;
         } catch (error) {
           const signalExitCode = interruptedExitCode();
           if (signalExitCode !== undefined) {
@@ -512,8 +529,6 @@ CLI flags take precedence.
             throw asCliExitError(abortController.signal.reason, 1);
           }
           throw asCliExitError(error, 1);
-        } finally {
-          clearTimeout(timeout);
         }
       });
     });
@@ -555,11 +570,16 @@ CLI flags take precedence.
     });
 
   program.command('doctor')
-    .description('check local CLI configuration without making an API request')
+    .description('check local CLI configuration and optionally probe provider credentials')
     .option('--config <path>', 'explicit JSON configuration file')
     .option('--no-config', 'ignore config files and .env for a hermetic diagnosis')
+    .option('--check-credentials', 'make a minimal provider request to validate endpoint access')
     .option('--json', 'emit machine-readable JSON')
-    .action(async (flags: { config?: string | false; json?: boolean }, command: Command) => {
+    .action(async (flags: {
+      config?: string | false;
+      checkCredentials?: boolean;
+      json?: boolean;
+    }, command: Command) => {
       assertConfigFlagsDoNotConflict(command);
       const cwd = process.cwd();
       const noConfig = cliConfigDisabled(flags.config);
@@ -589,6 +609,29 @@ CLI flags take precedence.
       const gatewayTokenRequired = resolvedConfig?.gateway === 'cloudflare'
         && resolvedConfig.cloudflareByok;
       const gatewayTokenConfigured = Boolean(process.env[gatewayTokenEnv]);
+      let credentialProbe: {
+        status: 'not_requested' | 'passed' | 'failed' | 'skipped';
+        error?: string;
+      } = { status: 'not_requested' };
+      if (flags.checkCredentials) {
+        if (!resolvedConfig || configurationError) {
+          credentialProbe = { status: 'skipped', error: 'Configuration is invalid.' };
+        } else if (!providerKeyOptional && !process.env[apiKeyEnv]) {
+          credentialProbe = { status: 'skipped', error: `${apiKeyEnv} is not configured.` };
+        } else if (gatewayTokenRequired && !gatewayTokenConfigured) {
+          credentialProbe = { status: 'skipped', error: `${gatewayTokenEnv} is not configured.` };
+        } else {
+          try {
+            await validateProviderCredentials(providerRuntimeConfig(resolvedConfig));
+            credentialProbe = { status: 'passed' };
+          } catch (error) {
+            credentialProbe = {
+              status: 'failed',
+              error: asCliExitError(error, 1).message,
+            };
+          }
+        }
+      }
       const checks = {
         node: { ok: isSupportedNode(process.versions.node), version: process.versions.node },
         configuration: { ok: !configurationError, error: configurationError },
@@ -601,6 +644,7 @@ CLI flags take precedence.
           configured: gatewayTokenConfigured,
           environmentVariable: gatewayTokenEnv,
         },
+        credentialProbe,
         projectConfig: path.join(cwd, '.open-ocr-cli.json'),
         legacyProjectConfig: path.join(cwd, '.gemini-ocr.json'),
         effectiveConfig: config,
@@ -613,10 +657,23 @@ CLI flags take precedence.
         if (checks.gatewayToken.required) {
           process.stdout.write(`${gatewayTokenEnv}: ${checks.gatewayToken.ok ? 'configured' : 'missing'}\n`);
         }
+        if (flags.checkCredentials) {
+          process.stdout.write(
+            `Credential probe: ${checks.credentialProbe.status}`
+            + `${checks.credentialProbe.error ? ` — ${checks.credentialProbe.error}` : ''}\n`,
+          );
+        }
         process.stdout.write(`Project config: ${checks.projectConfig}\n`);
         if (!checks.apiKey.ok) process.stdout.write(`${credentialSetupGuidance(apiKeyEnv, cwd, provider)}\n`);
       }
-      if (!checks.node.ok || !checks.configuration.ok || !checks.apiKey.ok || !checks.gatewayToken.ok) {
+      if (
+        !checks.node.ok
+        || !checks.configuration.ok
+        || !checks.apiKey.ok
+        || !checks.gatewayToken.ok
+        || checks.credentialProbe.status === 'failed'
+        || checks.credentialProbe.status === 'skipped'
+      ) {
         process.exitCode = 1;
       }
     });
@@ -638,18 +695,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   const program = createProgram(cliBinaryName(argv));
   try {
     if (argv.length <= 2) {
-      if (process.stdin.isTTY && process.stderr.isTTY) {
-        const selectedArguments = await promptInteractiveArguments();
-        if (selectedArguments) {
-          await createProgram(cliBinaryName(argv)).parseAsync([
-            argv[0] ?? 'node',
-            argv[1] ?? PRIMARY_CLI_NAME,
-            ...selectedArguments,
-          ]);
-        }
-      } else {
-        program.outputHelp();
-      }
+      program.outputHelp();
       return;
     }
     await program.parseAsync(argv);

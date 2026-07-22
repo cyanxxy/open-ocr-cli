@@ -198,7 +198,7 @@ async function writeConfig(configPath: string, config: CliConfigFile): Promise<v
   }
 }
 
-async function validateProviderCredentials(config: ProviderRuntimeConfig): Promise<void> {
+export async function validateProviderCredentials(config: ProviderRuntimeConfig): Promise<void> {
   // Credential validation proves endpoint access; it is not an extraction
   // quality evaluation. Use the lowest supported effort so modern reasoning
   // models cannot exhaust this small probe response before returning `OK`.

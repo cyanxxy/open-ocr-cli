@@ -33,6 +33,15 @@
                 "enum": ["application/pdf", "image/png", "image/jpeg", "image/webp", "image/gif", "image/heic", "image/heif"]
               }
             }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "url"],
+            "properties": {
+              "type": { "const": "url" },
+              "url": { "type": "string", "minLength": 1 }
+            }
           }
         ]
       }
@@ -116,6 +125,13 @@
         "exclude": { "type": "array", "items": { "type": "string", "minLength": 1 } }
       }
     },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "analysis": { "enum": ["individual", "combined", "comparison"] }
+      }
+    },
     "delivery": {
       "type": "object",
       "additionalProperties": false,
@@ -156,6 +172,53 @@
         "required": ["inputs"]
       },
       "then": { "properties": { "inputs": { "type": "array", "maxItems": 1 } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "inputs": {
+            "type": "array",
+            "contains": {
+              "type": "object",
+              "properties": { "type": { "const": "url" } },
+              "required": ["type"]
+            }
+          }
+        },
+        "required": ["inputs"]
+      },
+      "then": {
+        "properties": {
+          "inputs": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "url"],
+              "properties": {
+                "type": { "const": "url" },
+                "url": { "type": "string", "minLength": 1 }
+              }
+            }
+          },
+          "extraction": {
+            "type": "object",
+            "properties": {
+              "mode": { "const": "simple" },
+              "contentFormat": { "enum": ["markdown", "json"] }
+            },
+            "not": {
+              "anyOf": [
+                { "required": ["preset"] },
+                { "required": ["schema"] },
+                { "required": ["schemaPath"] }
+              ]
+            }
+          }
+        }
+      },
+      "else": { "not": { "required": ["web"] } }
     }
   ]
 }

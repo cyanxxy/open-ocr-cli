@@ -11,6 +11,8 @@ import type { OcrJobServiceResult } from './ocrJobService';
 import { loadCustomSchema, validateCustomSchema } from './schema';
 import {
   defaultAgentOutputDirectory,
+  ocrExtractionSemanticError,
+  ocrUrlExtractionSemanticError,
   parseOcrJobRequest,
   peekOcrProtocolVersion,
   type OcrJobEventSink,
@@ -18,6 +20,7 @@ import {
   type OcrProtocolVersion,
 } from './protocol';
 import type { CliConfigFile, ExtractCommandFlags } from './types';
+import { resolveWebUrls, runWebJob } from './web';
 
 export interface ExecuteOcrJobOptions {
   cwd: string;
@@ -172,23 +175,11 @@ function machineConfigurationError(request: OcrJobRequest, fileConfig: CliConfig
   const configuredMode = requestExtraction?.mode ?? fileConfig.mode;
   const mode = configuredMode ?? (preset ? 'template' : 'simple');
   const format = requestExtraction?.contentFormat ?? fileConfig.format ?? (hasSchema ? 'json' : 'markdown');
-  if (hasSchema && preset) {
-    return 'OCR request custom schemas cannot be combined with an extraction preset from the request or configuration.';
-  }
-  if (mode === 'template' && !preset) {
-    return 'OCR request template mode requires an extraction preset in the request or configuration.';
-  }
-  if (preset && mode !== 'template') {
-    return 'OCR request extraction presets require template mode.';
-  }
-  if (hasSchema && mode !== 'simple') {
-    return 'OCR request custom schemas require simple mode.';
-  }
-  if (hasSchema && format !== 'json') {
-    return 'OCR request custom schemas require JSON content format.';
-  }
-  if (format === 'csv' && mode !== 'template') {
-    return 'OCR request CSV content format requires template mode and a preset.';
+  const extractionError = ocrExtractionSemanticError({ mode, preset, hasSchema, contentFormat: format });
+  if (extractionError) return extractionError;
+  if (request.inputs.some((input) => input.type === 'url')) {
+    const urlError = ocrUrlExtractionSemanticError({ mode, preset, hasSchema, contentFormat: format });
+    if (urlError) return urlError;
   }
   return undefined;
 }
@@ -223,6 +214,10 @@ export async function executeOcrJobRequest(
     throw configurationError(
       'An OCR stdin document must be the request\'s only input.',
     );
+  }
+  const urlInputs = request.inputs.filter((input) => input.type === 'url');
+  if (urlInputs.length > 0 && urlInputs.length !== request.inputs.length) {
+    throw configurationError('OCR URL inputs cannot be mixed with path or stdin inputs.');
   }
   const hermetic = execution.noConfig === true || request.noConfig === true;
   // Ambient OPEN_OCR_NO_CONFIG still blocks .env; explicit configPath may load
@@ -267,8 +262,23 @@ export async function executeOcrJobRequest(
     ...(stdinInput?.name ? { stdinName: stdinInput.name } : {}),
     ...(stdinInput?.mimeType ? { stdinType: stdinInput.mimeType } : {}),
   };
+  if (urlInputs.length > 0) {
+    const urls = await resolveWebUrls(urlInputs.map((input) => input.url), undefined, execution.cwd);
+    return runWebJob(urls, request.web?.analysis ?? 'individual', options, {
+      runId: execution.runId,
+      abortController: execution.abortController,
+      eventSink: execution.eventSink,
+      onWarning: execution.onWarning,
+      protocolVersion: request.protocolVersion,
+      deliveryMode,
+      progress: request.protocolVersion === 2
+        ? request.extraction?.progress ?? 'standard'
+        : 'standard',
+      enableSingleInputResume: deliveryMode === 'reference',
+    });
+  }
   const inputs = await discoverInputs(request.inputs.map((input) => (
-    input.type === 'stdin' ? '-' : input.path
+    input.type === 'stdin' ? '-' : input.type === 'path' ? input.path : input.url
   )), options, execution.abortController.signal);
   return createOcrJobService().run(inputs, options, {
     runId: execution.runId,

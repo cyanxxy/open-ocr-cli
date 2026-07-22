@@ -57,6 +57,10 @@ export type OcrDocumentExtractor = (
 
 export interface OcrJobServiceDependencies {
   extractDocument: OcrDocumentExtractor;
+  /** Override local-file validation for another logical input source, such as URLs. */
+  validateInput?: (input: ResolvedInput, options: ResolvedCliOptions) => Promise<void>;
+  /** Override provider media checks for non-file inputs. */
+  assertInputSupported?: (input: ResolvedInput, options: ResolvedCliOptions) => void;
 }
 
 export interface OcrJobServiceRuntime {
@@ -249,6 +253,19 @@ export function agentProgressMessage(step: AgentStep): string {
 export class OcrJobService {
   constructor(private readonly dependencies: OcrJobServiceDependencies) {}
 
+  private validateInput(input: ResolvedInput, options: ResolvedCliOptions): Promise<void> {
+    if (this.dependencies.validateInput) return this.dependencies.validateInput(input, options);
+    return readAndValidateInput(input).then(() => undefined);
+  }
+
+  private assertInputSupported(input: ResolvedInput, options: ResolvedCliOptions): void {
+    if (this.dependencies.assertInputSupported) {
+      this.dependencies.assertInputSupported(input, options);
+      return;
+    }
+    assertProviderMediaTypeSupported(input.mimeType, options);
+  }
+
   async run(
     inputs: ResolvedInput[],
     options: ResolvedCliOptions,
@@ -434,8 +451,8 @@ export class OcrJobService {
         const completedEntry = resumableEntries.get(index);
         if (options.dryRun) {
           try {
-            assertProviderMediaTypeSupported(input.mimeType, options);
-            await readAndValidateInput(input);
+            this.assertInputSupported(input, options);
+            await this.validateInput(input, options);
             const plannedOutputFiles = shouldWriteFiles
               ? await plannedArtifactTargets(input, options, inputs.length)
               : [];
@@ -472,7 +489,7 @@ export class OcrJobService {
           }, options.timeoutSeconds * 1000);
           let progressFailure: unknown;
           try {
-            assertProviderMediaTypeSupported(input.mimeType, options);
+            this.assertInputSupported(input, options);
             const { artifacts, attempts } = await this.dependencies.extractDocument(
               input,
               options,

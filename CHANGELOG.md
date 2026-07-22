@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.3.0 - 2026-07-22
+
+### Model Context Protocol support
+
+- Added `open-ocr-cli mcp`, a stdio MCP server with dedicated tools for simple
+  and template extraction, agentic OCR, and public-URL extraction.
+- Added an MCP capabilities resource, structured tool results, cancellation,
+  progress notifications, dry runs, and reference-first artifact delivery on
+  top of the same validated job service used by the CLI.
+- Bundled the MCP server runtime and updated the packaged Open OCR agent skill
+  and setup documentation for Codex and other MCP clients.
+
+### Machine and Web OCR reliability
+
+- Added URL inputs and Web analysis options to protocol v2, including schema
+  validation, mixed-input rejection, a 20-URL request limit, and explicit
+  capability advertisement.
+- Routed machine and MCP URL work through the shared Web OCR service so dry
+  runs, retries, usage accounting, delivery, progress, and typed failures stay
+  consistent across terminal and agent integrations.
+- Centralized provider runtime and retry policy handling, extended retries to
+  Web OCR, added `doctor --check-credentials`, and made no-argument CLI calls
+  print deterministic help instead of opening an interactive prompt.
+- Refreshed the root and npm documentation around installation, providers,
+  automation, MCP setup, credential hygiene, and the explicit `interactive`
+  command.
+
+[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v2.2.0...v2.3.0)
+
 ## 2.2.0 - 2026-07-21
 
 ### Provider and agent upgrades
