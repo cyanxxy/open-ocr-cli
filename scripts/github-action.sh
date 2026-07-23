@@ -12,7 +12,6 @@ fi
 
 arguments=(
   extract
-  "${requested_inputs[@]}"
   --provider "$OPEN_OCR_ACTION_PROVIDER"
   --gateway "$OPEN_OCR_ACTION_GATEWAY"
   --mode "$OPEN_OCR_ACTION_MODE"
@@ -31,5 +30,16 @@ if [[ -n "${OPEN_OCR_ACTION_CLOUDFLARE_BYOK_ALIAS:-}" ]]; then arguments+=(--clo
 if [[ -n "$OPEN_OCR_ACTION_PRESET" ]]; then arguments+=(--preset "$OPEN_OCR_ACTION_PRESET"); fi
 if [[ "${OPEN_OCR_ACTION_DRY_RUN:-false}" == "true" ]]; then arguments+=(--dry-run); fi
 
-package_spec="${OPEN_OCR_ACTION_PACKAGE:-open-ocr-cli@${OPEN_OCR_ACTION_VERSION}}"
+# Document paths are user-controlled and may begin with a dash. Terminate
+# Commander option parsing before appending them so a path cannot override
+# credential or endpoint flags supplied by the workflow author.
+arguments+=(-- "${requested_inputs[@]}")
+
+if [[ -n "${OPEN_OCR_ACTION_PACKAGE:-}" ]]; then
+  package_spec="$OPEN_OCR_ACTION_PACKAGE"
+else
+  action_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+  bundled_version=$(node -p "require(process.argv[1]).version" "$action_root/packages/cli/package.json")
+  package_spec="open-ocr-cli@${OPEN_OCR_ACTION_VERSION:-$bundled_version}"
+fi
 npx --yes --package "$package_spec" -- open-ocr-cli "${arguments[@]}"

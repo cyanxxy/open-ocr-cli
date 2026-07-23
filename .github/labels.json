@@ -23,5 +23,10 @@
     "name": "templates",
     "color": "d4c5f9",
     "description": "Structured extraction presets, artifacts, and template UX."
+  },
+  {
+    "name": "dependencies",
+    "color": "0366d6",
+    "description": "Dependency and supply-chain updates."
   }
 ]

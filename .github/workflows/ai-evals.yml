@@ -8,65 +8,96 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ai-evals-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   run-evals:
     name: Run AI Evals
     runs-on: ubuntu-latest
-    if: github.repository == 'cyanxxy/gemini-ocr'
-    env:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    timeout-minutes: 120
+    # Scheduled reports and their commits must always use the authoritative
+    # default branch, including manually-dispatched runs.
+    if: github.repository == 'cyanxxy/gemini-ocr' && github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20.x'
+          node-version: '24.x'
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
 
       - name: Validate eval fixtures
-        run: npm run evals:validate
+        run: npm run evals:validate && npm run evals:matrix:check
 
-      - name: Skip live evals when Gemini API key is missing
-        if: ${{ env.GEMINI_API_KEY == '' }}
-        run: echo "GEMINI_API_KEY is not configured; skipping live evals."
+      # Keep provider credentials away from checkout/setup actions and expose
+      # only non-secret booleans to later step conditions.
+      - name: Detect configured eval providers
+        id: credentials
+        shell: bash
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          [[ -n "$GEMINI_API_KEY" ]] && gemini=true || gemini=false
+          [[ -n "$MOONSHOT_API_KEY" ]] && kimi=true || kimi=false
+          [[ -n "$OPENROUTER_API_KEY" ]] && openrouter=true || openrouter=false
+          echo "gemini=$gemini" >> "$GITHUB_OUTPUT"
+          echo "kimi=$kimi" >> "$GITHUB_OUTPUT"
+          echo "openrouter=$openrouter" >> "$GITHUB_OUTPUT"
+
+      - name: Skip live evals when no provider credentials are configured
+        if: ${{ steps.credentials.outputs.gemini == 'false' && steps.credentials.outputs.kimi == 'false' && steps.credentials.outputs.openrouter == 'false' }}
+        run: echo "No provider API keys are configured; skipping live evals."
 
       - name: Run Kimi live canary
-        if: ${{ env.MOONSHOT_API_KEY != '' }}
+        if: ${{ steps.credentials.outputs.kimi == 'true' }}
         run: npm run evals:canary
         env:
           EVAL_PROVIDER: kimi
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
           OPEN_OCR_MODEL: kimi-k2.6
 
       - name: Run OpenRouter live canary
-        if: ${{ env.OPENROUTER_API_KEY != '' }}
+        if: ${{ steps.credentials.outputs.openrouter == 'true' }}
         run: npm run evals:canary
         env:
           EVAL_PROVIDER: openrouter
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPEN_OCR_MODEL: moonshotai/kimi-k2.6
 
       - name: Run live evals
-        if: ${{ env.GEMINI_API_KEY != '' }}
+        if: ${{ steps.credentials.outputs.gemini == 'true' }}
         run: npm run evals
         env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: gemini-3-flash-preview
 
       - name: Refresh markdown report
-        if: ${{ env.GEMINI_API_KEY != '' }}
+        if: ${{ steps.credentials.outputs.gemini == 'true' }}
         run: npm run evals:report
 
       - name: Commit updated eval reports
-        if: ${{ env.GEMINI_API_KEY != '' }}
+        if: ${{ steps.credentials.outputs.gemini == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          git fetch origin main
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+            echo "main advanced during the eval run; refusing to publish a stale report."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git diff --quiet -- evals/reports/latest.json evals/reports/latest.md; then
@@ -75,4 +106,5 @@ jobs:
           fi
           git add evals/reports/latest.json evals/reports/latest.md
           git commit -m "chore: refresh AI eval reports"
-          git push
+          gh auth setup-git
+          git push origin HEAD:main

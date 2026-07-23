@@ -12,23 +12,54 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: sync-labels
+  cancel-in-progress: false
+
 jobs:
   sync-labels:
     name: Sync Repository Labels
     runs-on: ubuntu-latest
-    if: github.repository == 'cyanxxy/gemini-ocr'
+    timeout-minutes: 10
+    if: github.repository == 'cyanxxy/gemini-ocr' && github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Sync labels from config
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('node:fs');
 
             const labels = JSON.parse(fs.readFileSync('.github/labels.json', 'utf8'));
+            if (!Array.isArray(labels)) {
+              throw new Error('.github/labels.json must contain an array');
+            }
+
+            const configuredNames = new Set();
+            for (const [index, label] of labels.entries()) {
+              if (!label || typeof label !== 'object' || Array.isArray(label)) {
+                throw new Error(`Label at index ${index} must be an object`);
+              }
+              if (typeof label.name !== 'string' || label.name.length === 0 || label.name.length > 50) {
+                throw new Error(`Label at index ${index} has an invalid name`);
+              }
+              if (!/^[0-9a-fA-F]{6}$/.test(label.color)) {
+                throw new Error(`Label ${label.name} must use a six-digit hexadecimal color`);
+              }
+              if (typeof label.description !== 'string' || label.description.length > 100) {
+                throw new Error(`Label ${label.name} has an invalid description`);
+              }
+              if (configuredNames.has(label.name)) {
+                throw new Error(`Duplicate configured label: ${label.name}`);
+              }
+              configuredNames.add(label.name);
+            }
+
             const { owner, repo } = context.repo;
             const existing = await github.paginate(github.rest.issues.listLabelsForRepo, {
               owner,

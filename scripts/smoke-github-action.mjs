@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -16,6 +16,55 @@ function run(command, args, cwd = root, env = process.env) {
 }
 
 try {
+  const fakeBinaryDirectory = path.join(temporary, 'fake-bin');
+  const capturedArgumentsPath = path.join(temporary, 'npx-arguments.json');
+  mkdirSync(fakeBinaryDirectory);
+  const fakeNpxPath = path.join(fakeBinaryDirectory, 'npx');
+  writeFileSync(
+    fakeNpxPath,
+    '#!/usr/bin/env node\n'
+      + "require('node:fs').writeFileSync(process.env.OPEN_OCR_CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));\n",
+  );
+  chmodSync(fakeNpxPath, 0o755);
+
+  run('bash', [path.join(root, 'scripts', 'github-action.sh')], root, {
+    ...process.env,
+    PATH: `${fakeBinaryDirectory}${path.delimiter}${process.env.PATH ?? ''}`,
+    OPEN_OCR_CAPTURE_PATH: capturedArgumentsPath,
+    OPEN_OCR_ACTION_INPUTS: '--api-key-env\nGITHUB_TOKEN\n--base-url\nhttps://attacker.example',
+    OPEN_OCR_ACTION_PROVIDER: 'gemini',
+    OPEN_OCR_ACTION_MODEL: '',
+    OPEN_OCR_ACTION_API_KEY_ENV: '',
+    OPEN_OCR_ACTION_BASE_URL: '',
+    OPEN_OCR_ACTION_GATEWAY: 'direct',
+    OPEN_OCR_ACTION_CLOUDFLARE_ACCOUNT_ID: '',
+    OPEN_OCR_ACTION_CLOUDFLARE_GATEWAY_ID: '',
+    OPEN_OCR_ACTION_CLOUDFLARE_PROVIDER: '',
+    OPEN_OCR_ACTION_CLOUDFLARE_TOKEN_ENV: '',
+    OPEN_OCR_ACTION_CLOUDFLARE_BYOK: 'false',
+    OPEN_OCR_ACTION_CLOUDFLARE_BYOK_ALIAS: '',
+    OPEN_OCR_ACTION_MODE: 'simple',
+    OPEN_OCR_ACTION_PRESET: '',
+    OPEN_OCR_ACTION_FORMAT: 'markdown',
+    OPEN_OCR_ACTION_OUTPUT: path.join(temporary, 'unused-output'),
+    OPEN_OCR_ACTION_VERSION: '',
+    OPEN_OCR_ACTION_DRY_RUN: 'true',
+  });
+  const capturedArguments = JSON.parse(readFileSync(capturedArgumentsPath, 'utf8'));
+  const protectedInputs = ['--api-key-env', 'GITHUB_TOKEN', '--base-url', 'https://attacker.example'];
+  const cliSeparator = capturedArguments.length - protectedInputs.length - 1;
+  if (
+    capturedArguments[cliSeparator] !== '--'
+    || JSON.stringify(capturedArguments.slice(cliSeparator + 1)) !== JSON.stringify(protectedInputs)
+  ) {
+    throw new Error('Action wrapper did not protect dash-prefixed document paths from option parsing');
+  }
+  const packageFlag = capturedArguments.indexOf('--package');
+  const bundledVersion = JSON.parse(readFileSync(path.join(root, 'packages', 'cli', 'package.json'), 'utf8')).version;
+  if (capturedArguments[packageFlag + 1] !== `open-ocr-cli@${bundledVersion}`) {
+    throw new Error('Action wrapper did not default to its bundled CLI version');
+  }
+
   const packageDirectory = path.join(temporary, 'package');
   mkdirSync(packageDirectory);
   const tarballName = run('npm', ['pack', './packages/cli', '--pack-destination', packageDirectory])

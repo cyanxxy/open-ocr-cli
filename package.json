@@ -36,6 +36,7 @@
   "engines": {
     "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
   },
+  "packageManager": "npm@11.14.1",
   "workspaces": [
     "packages/cli"
   ],
@@ -49,7 +50,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.cli.json",
     "cli": "tsx src/cli/index.ts",
-    "cli:build": "tsup src/cli/index.ts --format esm --platform node --target node20 --out-dir packages/cli/dist --clean --external @clack/prompts --external @modelcontextprotocol/server --external @napi-rs/canvas --external ajv --external ajv-formats --external commander --external fast-glob --external html-to-text --external ipaddr.js --external sharp --external zod",
+    "cli:build": "tsup --config tsup.cli.config.ts",
     "cli:smoke": "npm run cli:build && node packages/cli/dist/index.js --help",
     "cli:install-smoke": "node scripts/smoke-packed-cli.mjs",
     "action:smoke": "node scripts/smoke-github-action.mjs",

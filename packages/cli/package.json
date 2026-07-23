@@ -49,6 +49,10 @@
   "scripts": {
     "prepack": "npm --prefix ../.. run cli:build"
   },
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.8.3"
+  },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
     "@google/genai": "^2.11.0",

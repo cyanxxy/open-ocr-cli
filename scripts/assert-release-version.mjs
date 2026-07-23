@@ -1,10 +1,26 @@
 import { readFileSync } from 'node:fs';
 
 const tag = process.env.GITHUB_REF_NAME ?? process.argv[2];
-if (!tag?.startsWith('v')) throw new Error('Release tag must be supplied as v<version>');
-const expected = tag.slice(1);
-for (const file of ['package.json', 'packages/cli/package.json', 'package-lock.json']) {
-  const parsed = JSON.parse(readFileSync(file, 'utf8'));
-  if (parsed.version !== expected) throw new Error(`${file} version ${parsed.version} does not match ${tag}`);
+if (!tag?.startsWith('v') || tag.length === 1) {
+  throw new Error('Release tag must be supplied as v<version>');
 }
+
+const expected = tag.slice(1);
+const rootPackage = JSON.parse(readFileSync('package.json', 'utf8'));
+const cliPackage = JSON.parse(readFileSync('packages/cli/package.json', 'utf8'));
+const lockfile = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+const versions = new Map([
+  ['package.json', rootPackage.version],
+  ['packages/cli/package.json', cliPackage.version],
+  ['package-lock.json', lockfile.version],
+  ['package-lock.json packages[""]', lockfile.packages?.['']?.version],
+  ['package-lock.json packages["packages/cli"]', lockfile.packages?.['packages/cli']?.version],
+]);
+
+for (const [source, version] of versions) {
+  if (version !== expected) {
+    throw new Error(`${source} version ${String(version)} does not match ${tag}`);
+  }
+}
+
 process.stdout.write(`Release versions match ${tag}\n`);

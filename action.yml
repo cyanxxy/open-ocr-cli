@@ -54,8 +54,8 @@ inputs:
     description: Output file or directory.
     default: gemini-ocr-output
   version:
-    description: open-ocr-cli npm version to execute.
-    default: latest
+    description: Optional open-ocr-cli npm version; defaults to the version bundled with this action release.
+    required: false
   dry-run:
     description: Validate inputs and planned outputs without credentials, requests, or writes.
     default: 'false'
@@ -63,7 +63,7 @@ runs:
   using: composite
   steps:
     - name: Set up Node.js
-      uses: actions/setup-node@v6
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: '22.x'
         package-manager-cache: false

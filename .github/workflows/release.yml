@@ -3,50 +3,87 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      # Stable semantic versions only; moving Marketplace tags such as v2 must
+      # never start another publication.
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# npm/GHCR latest and the Marketplace major tag are shared mutable state.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
-  contents: write
-  id-token: write
-  packages: write
+  contents: read
 
 jobs:
-  release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # Only run on the main repository, not forks
+  prepare:
+    name: Verify & Prepare Release
     if: github.repository == 'cyanxxy/gemini-ocr'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.x'
-          cache: 'npm'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: '24.x'
+          package-manager-cache: false
+
+      - name: Verify release commit and ordering
+        shell: bash
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Release tag $GITHUB_REF_NAME does not point to a commit on main" >&2
+            exit 1
+          fi
+
+          major="${GITHUB_REF_NAME%%.*}"
+          current=$(git ls-remote --refs origin "refs/tags/$major" | awk '{print $1}')
+          if [[ -n "$current" ]]; then
+            current_ref="refs/tags/${major}-release-preflight"
+            git fetch --force origin "refs/tags/$major:$current_ref"
+            current_commit=$(git rev-parse "$current_ref^{}")
+            if ! git merge-base --is-ancestor "$current_commit" "$GITHUB_SHA"; then
+              echo "Refusing to release $GITHUB_REF_NAME behind the current $major tag" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Verify release versions
+        run: node scripts/assert-release-version.mjs
+
+      - name: Install pinned npm toolchain
+        run: |
+          npm_version=$(node -e '
+            const value = require("./package.json").packageManager;
+            const match = /^npm@(\d+\.\d+\.\d+)$/.exec(value ?? "");
+            if (!match) throw new Error("packageManager must pin an exact npm version");
+            process.stdout.write(match[1]);
+          ')
+          npm install --global "npm@$npm_version" --ignore-scripts
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Use current npm for trusted publishing
-        run: npm install --global npm@latest
-
-      # Gate the release on the same quality checks CI enforces so a broken tag
-      # never produces a published release (audit O-11).
       - name: Type check
         run: npm run typecheck
 
       - name: Lint code
         run: npm run lint
 
-      - name: Run tests
-        run: npm run test:run
+      - name: Run tests with coverage
+        run: npm run test:coverage
 
       - name: Validate AI eval fixtures and provider matrix
         run: npm run evals:validate && npm run evals:matrix:check
@@ -57,14 +94,8 @@ jobs:
       - name: Build application
         run: npm run build
 
-      - name: Verify release versions
-        run: node scripts/assert-release-version.mjs
-
-      - name: Prepare GitHub release notes from changelog
+      - name: Prepare GitHub release notes
         run: node scripts/extract-release-notes.mjs "${GITHUB_REF_NAME}" release-notes.md
-
-      - name: Smoke-test packed CLI installation
-        run: npm run cli:install-smoke
 
       - name: Smoke-test GitHub Action wrapper
         run: npm run action:smoke
@@ -76,56 +107,206 @@ jobs:
           tarball=$(npm pack ./packages/cli --pack-destination . | tail -n 1)
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
 
-      - name: Publish CLI to npm with provenance
-        run: npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance
+      - name: Smoke-test exact CLI tarball
+        shell: bash
+        run: |
+          smoke_dir=$(mktemp -d)
+          trap 'rm -rf "$smoke_dir"' EXIT
+          npm install --prefix "$smoke_dir" "$GITHUB_WORKSPACE/${{ steps.pack.outputs.tarball }}"
+          binary="$smoke_dir/node_modules/.bin/open-ocr-cli"
+          alias="$smoke_dir/node_modules/.bin/gemini-ocr"
+          expected_version="${GITHUB_REF_NAME#v}"
+          [[ "$("$binary" --version)" == "$expected_version" ]]
+          [[ "$("$alias" --version)" == "$expected_version" ]]
+          "$binary" providers --json | node -e '
+            let input = "";
+            process.stdin.on("data", (chunk) => { input += chunk; });
+            process.stdin.on("end", () => {
+              const providers = JSON.parse(input);
+              if (!providers.some((provider) => provider.id === "openrouter")) process.exit(1);
+            });
+          '
+          "$binary" extract evals/corpus/raster/invoice.png --provider kimi --dry-run --quiet
 
-      - name: Generate Homebrew formula
-        run: node scripts/render-homebrew-formula.mjs "${{ steps.pack.outputs.tarball }}" open-ocr-cli.rb
+      - name: Generate release artifacts
+        shell: bash
+        run: |
+          node scripts/render-homebrew-formula.mjs "${{ steps.pack.outputs.tarball }}" open-ocr-cli.rb
+          tar -czf "open-gemini-ocr-${GITHUB_REF_NAME}-dist.tar.gz" -C dist .
+          sha256sum \
+            "${{ steps.pack.outputs.tarball }}" \
+            open-ocr-cli.rb \
+            "open-gemini-ocr-${GITHUB_REF_NAME}-dist.tar.gz" \
+            release-notes.md > SHA256SUMS
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Validate multi-platform container build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64,linux/arm64
+          provenance: false
+
+      - name: Upload verified release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ${{ steps.pack.outputs.tarball }}
+            open-ocr-cli.rb
+            open-gemini-ocr-${{ github.ref_name }}-dist.tar.gz
+            release-notes.md
+            SHA256SUMS
+
+  publish:
+    name: Publish Release
+    needs: prepare
+    if: github.repository == 'cyanxxy/gemini-ocr'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ github.sha }}
+          path: .
+
+      - name: Verify artifact checksums
+        run: sha256sum --check SHA256SUMS
+
+      - name: Setup Node.js for trusted publishing
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.x'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Verify trusted-publishing npm version
+        shell: bash
+        run: |
+          npm_version=$(npm --version)
+          node -e '
+            const parse = (value) => value.split(".").map(Number);
+            const actual = parse(process.argv[1]);
+            const minimum = parse("11.5.1");
+            for (let index = 0; index < minimum.length; index += 1) {
+              if (actual[index] > minimum[index]) process.exit(0);
+              if (actual[index] < minimum[index]) throw new Error(`npm ${process.argv[1]} is too old for trusted publishing`);
+            }
+          ' "$npm_version"
+
+      - name: Check npm publication state
+        id: npm_state
+        shell: bash
+        run: |
+          tarball="${{ needs.prepare.outputs.tarball }}"
+          expected_version="${GITHUB_REF_NAME#v}"
+          local_integrity=$(node -e '
+            const { createHash } = require("node:crypto");
+            const { readFileSync } = require("node:fs");
+            process.stdout.write(`sha512-${createHash("sha512").update(readFileSync(process.argv[1])).digest("base64")}`);
+          ' "$tarball")
+          published_integrity=$(npm view "open-ocr-cli@$expected_version" dist.integrity 2>/dev/null || true)
+          if [[ -n "$published_integrity" && "$published_integrity" != "$local_integrity" ]]; then
+            echo "open-ocr-cli@$expected_version already exists with different package bytes" >&2
+            exit 1
+          fi
+
+          published_latest=$(npm view open-ocr-cli dist-tags.latest 2>/dev/null || true)
+          if [[ -n "$published_latest" ]]; then
+            node -e '
+              const parse = (value) => {
+                if (!/^\d+\.\d+\.\d+$/.test(value)) throw new Error(`Expected stable semver, received ${value}`);
+                return value.split(".").map(Number);
+              };
+              const compare = (left, right) => {
+                for (let index = 0; index < 3; index += 1) {
+                  if (left[index] !== right[index]) return left[index] - right[index];
+                }
+                return 0;
+              };
+              if (compare(parse(process.argv[1]), parse(process.argv[2])) < 0) {
+                throw new Error(`${process.argv[1]} must not be older than npm latest ${process.argv[2]}`);
+              }
+            ' "$expected_version" "$published_latest"
+          fi
+
+          if [[ "$published_integrity" == "$local_integrity" ]]; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ github.token }}
 
-      - name: Build and publish container
-        uses: docker/build-push-action@v6
+      - name: Build and publish immutable container
+        id: container
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/cyanxxy/open-ocr-cli:${{ github.ref_name }}
-            ghcr.io/cyanxxy/open-ocr-cli:latest
+          provenance: true
+          sbom: true
+          tags: ghcr.io/cyanxxy/open-ocr-cli:${{ github.ref_name }}
 
-      # Archive the whole dist tree into a single artifact instead of attaching
-      # every font/worker/css file individually (audit O-11).
-      - name: Archive dist
+      - name: Publish CLI to npm with provenance
+        if: steps.npm_state.outputs.already_published == 'false'
+        run: npm publish "${{ needs.prepare.outputs.tarball }}" --access public --provenance
+
+      - name: Promote container to latest
+        shell: bash
         run: |
-          tar -czf "open-gemini-ocr-${GITHUB_REF_NAME}-dist.tar.gz" -C dist .
+          docker buildx imagetools create \
+            --tag ghcr.io/cyanxxy/open-ocr-cli:latest \
+            "ghcr.io/cyanxxy/open-ocr-cli@${{ steps.container.outputs.digest }}"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           body_path: release-notes.md
-          generate_release_notes: true
           files: |
             open-gemini-ocr-*-dist.tar.gz
             open-ocr-cli-*.tgz
             open-ocr-cli.rb
+            SHA256SUMS
 
-      # GitHub recommends keeping a moving major tag for Marketplace actions.
-      # The immutable v2.x.y release tag remains untouched.
       - name: Update GitHub Action major tag
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          gh auth setup-git
           major="${GITHUB_REF_NAME%%.*}"
           if [[ ! "$major" =~ ^v[0-9]+$ ]]; then
             echo "Cannot derive a semantic major tag from $GITHUB_REF_NAME" >&2
