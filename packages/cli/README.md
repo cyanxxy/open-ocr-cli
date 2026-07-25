@@ -265,6 +265,51 @@ Exit status is `0` for success or a clean resume, `1` for failed, partial, or
 cost-limited work, `2` for command or configuration errors, `130` for SIGINT,
 and `143` for SIGTERM.
 
+## Models, reasoning, and cost
+
+Gemini model IDs are validated because their thinking and pricing contracts are
+known. Other profiles accept upstream model IDs.
+
+| Model | Role | Thinking levels |
+| --- | --- | --- |
+| `gemini-3.5-flash` | Default; recommended for most documents | MINIMAL · LOW · MEDIUM · HIGH |
+| `gemini-3.1-flash-lite` | Lower-cost, high-volume extraction | MINIMAL · LOW · MEDIUM · HIGH |
+| `gemini-3-flash-preview` | Preview Flash option | MINIMAL · LOW · MEDIUM · HIGH |
+| `gemini-3.1-pro-preview` | Highest-reasoning option | LOW · MEDIUM · HIGH |
+| `kimi-k3` | Default Kimi multimodal and agentic route | LOW · HIGH · MAX |
+| `kimi-k2.7-code` | Kimi coding/agent route; thinking always on | HIGH (fixed) |
+| `kimi-k2.7-code-highspeed` | Faster K2.7 Code route | HIGH (fixed) |
+| `kimi-k2.6` | Legacy Kimi multimodal route | MINIMAL · HIGH |
+| `muse-spark-1.1` | Meta public-preview multimodal route | MINIMAL · LOW · MEDIUM · HIGH · XHIGH |
+| `moonshotai/kimi-k3` | Kimi through OpenRouter | LOW · HIGH · MAX |
+| Other OpenRouter models | Selected by upstream ID | Model-dependent (MINIMAL–MAX accepted) |
+
+Defaults are model-aware: Gemini 3.5 Flash **MEDIUM**, Flash-Lite **MINIMAL**,
+3 Flash Preview and 3.1 Pro **HIGH**, Kimi K3 **MAX**. Explicitly supported
+levels are preserved in agentic mode rather than silently raised.
+
+Built-in paid-tier estimates, USD per million tokens:
+
+| Model | Input | Cached input | Output and reasoning |
+| --- | ---: | ---: | ---: |
+| `gemini-3.5-flash` | $1.50 | $0.15 | $9.00 |
+| `gemini-3.1-flash-lite` | $0.25 | $0.025 | $1.50 |
+| `gemini-3-flash-preview` | $0.50 | $0.05 | $3.00 |
+| `gemini-3.1-pro-preview` | $2.00 / $4.00 above 200K input | $0.20 / $0.40 | $12.00 / $18.00 |
+| `kimi-k3` | $3.00 | $0.30 | $15.00 |
+| `kimi-k2.7-code` | $0.95 | $0.19 | $4.00 |
+| `kimi-k2.7-code-highspeed` | $1.90 | $0.38 | $8.00 |
+| `kimi-k2.6` | $0.95 | $0.16 | $4.00 |
+
+Provider prices change, so verify the provider's own pricing page before
+budgeting a large run.
+
+Use `--progress off|standard|detailed` to choose observability: standard keeps
+model output, provider thought summaries, and tool lifecycle metadata; detailed
+also exposes provider reasoning and tool payloads. Reasoning state needed for a
+tool continuation is always replayed to the provider regardless of visibility.
+The deprecated `--include-thoughts` flag maps to standard progress.
+
 ## Coding-agent protocol
 
 Codex, Claude Code, CI runners, and other automation can discover one stable,
