@@ -1,7 +1,7 @@
 import type {
   ProviderExecutionContext,
   ProviderRuntimeConfig,
-} from '../lib/providers';
+} from '../../../src/lib/providers';
 import type { ResolvedCliOptions } from './types';
 
 /** Build the provider-facing configuration once for every CLI execution path. */

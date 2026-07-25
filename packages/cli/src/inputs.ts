@@ -7,7 +7,7 @@ import type { Readable } from 'node:stream';
 
 import fg from 'fast-glob';
 
-import { FILE_CONSTRAINTS, maxFileSizeForMime } from '../constants';
+import { FILE_CONSTRAINTS, maxFileSizeForMime } from '../../../src/constants';
 import { CliExitError, type OcrErrorCode } from './errors';
 import type { ResolvedCliOptions, ResolvedInput } from './types';
 

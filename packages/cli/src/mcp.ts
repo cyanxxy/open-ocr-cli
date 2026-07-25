@@ -5,7 +5,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod/v4';
 
-import { GATEWAY_IDS, PROVIDER_IDS } from '../lib/providers';
+import { GATEWAY_IDS, PROVIDER_IDS } from '../../../src/lib/providers';
 import { CliExitError, cliExitCode, ocrErrorPayload } from './errors';
 import { executeOcrJobRequest } from './machine';
 import {

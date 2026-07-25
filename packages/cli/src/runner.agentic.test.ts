@@ -4,13 +4,13 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AgentMemory, AgentStep } from '../lib/agentTypes';
+import type { AgentMemory, AgentStep } from '../../../src/lib/agentTypes';
 
 const { mockAgentLoop } = vi.hoisted(() => ({
   mockAgentLoop: vi.fn(),
 }));
 
-vi.mock('../lib/agentLoop', () => ({
+vi.mock('../../../src/lib/agentLoop', () => ({
   agentLoop: mockAgentLoop,
 }));
 

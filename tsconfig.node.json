@@ -15,11 +15,15 @@
     "moduleDetection": "force",
     "noEmit": true,
 
+    /* Incremental typecheck; build info is cached outside the working tree. */
+    "incremental": true,
+    "tsBuildInfoFile": "node_modules/.cache/tsbuildinfo.node",
+
     /* Linting */
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts", "tsup.cli.config.ts"]
+  "include": ["vite.config.ts", "packages/cli/tsup.config.ts"]
 }

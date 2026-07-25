@@ -1,12 +1,12 @@
 import process from 'node:process';
 
-import { listExtractionPresets } from '../lib/templates';
+import { listExtractionPresets } from '../../../src/lib/templates';
 import {
   PROVIDER_IDS,
   PROVIDER_PROFILES,
   type GatewayId,
   type ProviderId,
-} from '../lib/providers';
+} from '../../../src/lib/providers';
 import { asCliExitError } from './errors';
 import {
   cliThinkingLevels,

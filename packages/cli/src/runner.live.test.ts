@@ -9,7 +9,7 @@ const { mockExtractStructuredDataFromFile, mockExtractTextFromFile } = vi.hoiste
   mockExtractTextFromFile: vi.fn(),
 }));
 
-vi.mock('../lib/gemini/extraction', () => ({
+vi.mock('../../../src/lib/gemini/extraction', () => ({
   extractStructuredDataFromFile: mockExtractStructuredDataFromFile,
   extractTextFromFile: mockExtractTextFromFile,
 }));
@@ -19,8 +19,8 @@ import { discoverInputs } from './inputs';
 import { runBatch } from './runner';
 import { BatchOutputLock } from './output';
 import { cliExitCode } from './errors';
-import { recordGeminiUsage } from '../lib/gemini/usage';
-import type { GeminiClientConfig } from '../lib/gemini/types';
+import { recordGeminiUsage } from '../../../src/lib/gemini/usage';
+import type { GeminiClientConfig } from '../../../src/lib/gemini/types';
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 let directory: string;

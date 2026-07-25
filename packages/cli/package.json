@@ -47,7 +47,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "prepack": "npm --prefix ../.. run cli:build"
+    "build": "node ../../scripts/sync-cli-skills.mjs && tsup",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "tsup": "^8.5.1",

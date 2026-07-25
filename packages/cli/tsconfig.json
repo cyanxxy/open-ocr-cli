@@ -4,7 +4,7 @@
     /* DOM libs are deliberately excluded: the CLI runs in Node, so any browser
        API reaching its import graph (e.g. src/lib/regionRaster.ts canvas calls,
        src/lib/fileUtils.ts FileReader) must fail typecheck instead of crashing
-       at runtime. Use the Node adapters (src/cli/nodeRegionCropper.ts,
+       at runtime. Use the Node adapters (packages/cli/src/nodeRegionCropper.ts,
        node:fs + Buffer) instead of adding "DOM" back here. */
     "lib": ["ES2023"],
     "module": "ESNext",
@@ -14,6 +14,8 @@
     "isolatedModules": true,
     "moduleDetection": "force",
     "noEmit": true,
+    "incremental": true,
+    "tsBuildInfoFile": "../../node_modules/.cache/tsbuildinfo.cli",
     "strict": true,
     "skipLibCheck": true,
     "noUnusedLocals": true,
@@ -21,5 +23,5 @@
     "noFallthroughCasesInSwitch": true,
     "types": ["node"]
   },
-  "include": ["src/cli/**/*.ts"]
+  "include": ["src/**/*.ts"]
 }

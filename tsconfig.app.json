@@ -23,12 +23,15 @@
     /* Vite types */
     "types": ["vite/client"],
 
+    /* Incremental typecheck; build info is cached outside the working tree. */
+    "incremental": true,
+    "tsBuildInfoFile": "node_modules/.cache/tsbuildinfo.app",
+
     /* Linting */
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"],
-  "exclude": ["src/cli"]
+  "include": ["src"]
 }

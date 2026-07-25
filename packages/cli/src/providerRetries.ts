@@ -1,5 +1,5 @@
-import { waitForAbortableAgentDelay } from '../lib/agentStepStream';
-import { isRetryableExtractionError } from '../lib/providers';
+import { waitForAbortableAgentDelay } from '../../../src/lib/agentStepStream';
+import { isRetryableExtractionError } from '../../../src/lib/providers';
 import type { ResolvedCliOptions } from './types';
 
 export interface ProviderRetryResult<T> {

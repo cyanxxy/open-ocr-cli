@@ -5,7 +5,7 @@ import path from 'node:path';
 import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
-import type { JsonValue } from '../lib/gemini/types';
+import type { JsonValue } from '../../../src/lib/gemini/types';
 
 const MAX_SCHEMA_BYTES = 1024 * 1024;
 // Mirrors @google/genai's documented responseJsonSchema subset. `$schema` is

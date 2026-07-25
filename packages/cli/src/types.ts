@@ -1,16 +1,16 @@
-import type { AgentMemory, AgentStep } from '../lib/agentTypes';
+import type { AgentMemory, AgentStep } from '../../../src/lib/agentTypes';
 import type {
   ExtractedContent,
   JsonValue,
   PresetStructuredOutput,
   ThinkingLevel,
-} from '../lib/gemini';
+} from '../../../src/lib/gemini';
 import {
   GEMINI_MODELS,
   type GatewayId,
   type ProviderId,
   type ProviderUsageSnapshot,
-} from '../lib/providers';
+} from '../../../src/lib/providers';
 import type { OcrErrorPayload } from './errors';
 
 export const CLI_MODES = ['simple', 'template', 'agentic'] as const;

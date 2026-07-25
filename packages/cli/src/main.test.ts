@@ -87,7 +87,7 @@ describe('CLI identity', () => {
     expect(createProgram('gemini-ocr').helpInformation()).toContain('Usage: gemini-ocr');
     expect(cliBinaryName(['node', '/usr/local/bin/open-ocr-cli'])).toBe('open-ocr-cli');
     expect(cliBinaryName(['node', '/usr/local/bin/gemini-ocr'])).toBe('gemini-ocr');
-    expect(cliBinaryName(['node', '/workspace/src/cli/index.ts'])).toBe('open-ocr-cli');
+    expect(cliBinaryName(['node', '/workspace/packages/cli/src/index.ts'])).toBe('open-ocr-cli');
     expect(cliVersion()).toMatch(/^\d+\.\d+\.\d+/);
     expect(cliVersion()).not.toBe('0.0.0');
   });
