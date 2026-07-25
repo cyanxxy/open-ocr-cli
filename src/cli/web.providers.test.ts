@@ -115,7 +115,7 @@ describe('compatible-provider Web OCR', () => {
       contentType,
       bytes: new TextEncoder().encode('GIF89a'),
     });
-    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: string | URL | Request, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{
         finish_reason: 'stop',
         message: { content: JSON.stringify({ results: [{ url, type: 'image', content: 'ok' }] }) },
@@ -245,7 +245,7 @@ describe('compatible-provider Web OCR', () => {
         contentType: 'application/octet-stream',
         bytes: new TextEncoder().encode('%PDF-1.7'),
       });
-    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: string | URL | Request, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{
         finish_reason: 'stop',
         message: { content: JSON.stringify({ results: urls.map((url) => ({ url, type: 'unknown', content: 'ok' })) }) },

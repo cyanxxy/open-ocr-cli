@@ -50,7 +50,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.cli.json",
     "cli": "tsx src/cli/index.ts",
-    "cli:build": "tsup --config tsup.cli.config.ts",
+    "cli:build": "node scripts/sync-cli-skills.mjs && tsup --config tsup.cli.config.ts",
     "cli:smoke": "npm run cli:build && node packages/cli/dist/index.js --help",
     "cli:install-smoke": "node scripts/smoke-packed-cli.mjs",
     "action:smoke": "node scripts/smoke-github-action.mjs",

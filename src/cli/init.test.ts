@@ -119,7 +119,7 @@ describe('CLI init', () => {
   });
 
   it('validates a Kimi K3 credential with low effort without changing the saved MAX default', async () => {
-    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: string | URL | Request, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'OK' } }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }), { status: 200, headers: { 'content-type': 'application/json' } })));
