@@ -38,10 +38,13 @@ describe('Node region cropper', () => {
   });
 
   it('renders and crops PDF pages for agentic re-OCR', async () => {
+    // The cropper installs @napi-rs/canvas classes as globals while pdf.js
+    // renders; these names are not declared in the CLI's DOM-free lib set.
+    const canvasGlobals = globalThis as unknown as Record<'DOMMatrix' | 'ImageData' | 'Path2D', unknown>;
     const previousGlobals = {
-      DOMMatrix: globalThis.DOMMatrix,
-      ImageData: globalThis.ImageData,
-      Path2D: globalThis.Path2D,
+      DOMMatrix: canvasGlobals.DOMMatrix,
+      ImageData: canvasGlobals.ImageData,
+      Path2D: canvasGlobals.Path2D,
     };
     const bytes = await readFile(path.resolve(process.cwd(), 'evals/corpus/invoice.pdf'));
     const result = await nodeRegionCropper(
@@ -52,8 +55,8 @@ describe('Node region cropper', () => {
     expect(result.mimeType).toBe('image/png');
     expect(result.width).toBeGreaterThan(100);
     expect(result.height).toBeGreaterThan(100);
-    expect(globalThis.DOMMatrix).toBe(previousGlobals.DOMMatrix);
-    expect(globalThis.ImageData).toBe(previousGlobals.ImageData);
-    expect(globalThis.Path2D).toBe(previousGlobals.Path2D);
+    expect(canvasGlobals.DOMMatrix).toBe(previousGlobals.DOMMatrix);
+    expect(canvasGlobals.ImageData).toBe(previousGlobals.ImageData);
+    expect(canvasGlobals.Path2D).toBe(previousGlobals.Path2D);
   });
 });

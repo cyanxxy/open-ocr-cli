@@ -75,9 +75,13 @@ async function renderPdfPage(bytes: Buffer, region: NormalizedRegion): Promise<B
       const viewport = page.getViewport({ scale: PDF_RENDER_SCALE });
       const canvas = createCanvas(Math.max(1, Math.ceil(viewport.width)), Math.max(1, Math.ceil(viewport.height)));
       const context = canvas.getContext('2d');
+      // pdf.js declares these slots as HTMLCanvasElement/CanvasRenderingContext2D.
+      // Those names are unresolvable under the CLI's DOM-free lib set, so the
+      // slots accept the @napi-rs/canvas objects without a cast; pdf.js only
+      // uses the subset both implementations share.
       await page.render({
-        canvas: canvas as unknown as HTMLCanvasElement,
-        canvasContext: context as unknown as CanvasRenderingContext2D,
+        canvas,
+        canvasContext: context,
         viewport,
       }).promise;
       page.cleanup();
