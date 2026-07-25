@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-const cliSourceDir = path.resolve('src/cli');
+const cliSourceDir = path.resolve('packages/cli/src');
 const rootManifestPath = path.resolve('package.json');
 const cliManifestPath = path.resolve('packages/cli/package.json');
 

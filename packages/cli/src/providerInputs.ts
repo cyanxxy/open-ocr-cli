@@ -1,4 +1,4 @@
-import { providerProfile } from '../lib/providers';
+import { providerProfile } from '../../../src/lib/providers';
 import { CliExitError } from './errors';
 import type { ResolvedCliOptions } from './types';
 

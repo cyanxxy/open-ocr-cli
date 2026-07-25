@@ -4,26 +4,26 @@ import path from 'node:path';
 import Ajv2020, { type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
-import { FILE_CONSTRAINTS } from '../constants';
-import type { AgentStep } from '../lib/agentTypes';
+import { FILE_CONSTRAINTS } from '../../../src/constants';
+import type { AgentStep } from '../../../src/lib/agentTypes';
 import {
   PROVIDER_PROFILES,
   type GatewayId,
   type ProviderCapabilities,
   type ProviderId,
   type ProviderUsageSnapshot,
-} from '../lib/providers';
-import { listExtractionPresets } from '../lib/templates';
-import capabilitiesV1Schema from '../../packages/cli/schemas/capabilities-v1.schema.json';
-import capabilitiesV2Schema from '../../packages/cli/schemas/capabilities-v2.schema.json';
-import errorV1Schema from '../../packages/cli/schemas/error-v1.schema.json';
-import errorV2Schema from '../../packages/cli/schemas/error-v2.schema.json';
-import eventV1Schema from '../../packages/cli/schemas/event-v1.schema.json';
-import eventV2Schema from '../../packages/cli/schemas/event-v2.schema.json';
-import requestV1Schema from '../../packages/cli/schemas/request-v1.schema.json';
-import requestV2Schema from '../../packages/cli/schemas/request-v2.schema.json';
-import resultV1Schema from '../../packages/cli/schemas/result-v1.schema.json';
-import resultV2Schema from '../../packages/cli/schemas/result-v2.schema.json';
+} from '../../../src/lib/providers';
+import { listExtractionPresets } from '../../../src/lib/templates';
+import capabilitiesV1Schema from '../schemas/capabilities-v1.schema.json';
+import capabilitiesV2Schema from '../schemas/capabilities-v2.schema.json';
+import errorV1Schema from '../schemas/error-v1.schema.json';
+import errorV2Schema from '../schemas/error-v2.schema.json';
+import eventV1Schema from '../schemas/event-v1.schema.json';
+import eventV2Schema from '../schemas/event-v2.schema.json';
+import requestV1Schema from '../schemas/request-v1.schema.json';
+import requestV2Schema from '../schemas/request-v2.schema.json';
+import resultV1Schema from '../schemas/result-v1.schema.json';
+import resultV2Schema from '../schemas/result-v2.schema.json';
 import { CliExitError, OCR_ERROR_CODES, type OcrErrorCode, type OcrErrorPayload } from './errors';
 import type { BatchSummary, CliFormat, CliMode, OcrJobResult } from './types';
 

@@ -5,7 +5,7 @@ import { isIP } from 'node:net';
 import type { Readable } from 'node:stream';
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 
-import { isPublicIpAddress, parseSupportedHttpUrl } from '../lib/urlValidation';
+import { isPublicIpAddress, parseSupportedHttpUrl } from '../../../src/lib/urlValidation';
 
 const MAX_REDIRECTS = 5;
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;

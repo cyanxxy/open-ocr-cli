@@ -3,7 +3,7 @@ import { Buffer } from 'node:buffer';
 import { createCanvas, DOMMatrix, ImageData, Path2D } from '@napi-rs/canvas';
 import sharp from 'sharp';
 
-import type { NormalizedRegion, RegionCropResult, RegionCropper } from '../lib/agentTypes';
+import type { NormalizedRegion, RegionCropResult, RegionCropper } from '../../../src/lib/agentTypes';
 
 const PDF_RENDER_SCALE = 2;
 const CANVAS_GLOBAL_NAMES = ['DOMMatrix', 'ImageData', 'Path2D'] as const;

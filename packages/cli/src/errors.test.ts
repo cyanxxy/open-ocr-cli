@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ProviderApiError } from '../lib/providers';
+import { ProviderApiError } from '../../../src/lib/providers';
 import {
   asCliExitError,
   CliExitError,

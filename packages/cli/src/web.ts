@@ -8,8 +8,8 @@ import {
   extractTextFromUrls,
   parseIndividualResults,
   type UrlResult,
-} from '../lib/gemini/operations';
-import type { GeminiModel, JsonValue } from '../lib/gemini/types';
+} from '../../../src/lib/gemini/operations';
+import type { GeminiModel, JsonValue } from '../../../src/lib/gemini/types';
 import {
   createChatCompletion,
   documentContentParts,
@@ -17,9 +17,9 @@ import {
   providerRequestHeaders,
   type OpenAIContentPart,
   type ProviderExecutionContext,
-} from '../lib/providers';
-import { getUnsupportedUrls } from '../lib/urlValidation';
-import { FILE_CONSTRAINTS } from '../constants';
+} from '../../../src/lib/providers';
+import { getUnsupportedUrls } from '../../../src/lib/urlValidation';
+import { FILE_CONSTRAINTS } from '../../../src/constants';
 import { CliExitError } from './errors';
 import { sniffDocumentMimeType } from './inputs';
 import {

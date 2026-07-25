@@ -4,16 +4,16 @@ import path from 'node:path';
 import process from 'node:process';
 
 import { Command, CommanderError, Option } from 'commander';
-import cliPackageJson from '../../packages/cli/package.json';
+import cliPackageJson from '../package.json';
 
-import { listExtractionPresets } from '../lib/templates';
+import { listExtractionPresets } from '../../../src/lib/templates';
 import {
   PROVIDER_IDS,
   PROVIDER_PROFILES,
   isLocalBaseUrl,
   providerDefaultApiKeyEnv,
   type ProviderId,
-} from '../lib/providers';
+} from '../../../src/lib/providers';
 import {
   cliConfigDisabled,
   credentialSetupGuidance,

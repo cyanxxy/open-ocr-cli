@@ -1,7 +1,7 @@
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { GATEWAY_IDS, GEMINI_MODELS, PROVIDER_IDS } from '../lib/providers';
+import { GATEWAY_IDS, GEMINI_MODELS, PROVIDER_IDS } from '../../../src/lib/providers';
 import { asRecord, isIsoTimestamp, parseBatchLockOwner } from './jsonValidation';
 import { parseCliManifest } from './manifest';
 import {

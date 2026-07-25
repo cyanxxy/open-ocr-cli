@@ -7,7 +7,7 @@ interface CliPackageManifest {
 }
 
 const cliPackage = JSON.parse(
-  readFileSync(new URL('./packages/cli/package.json', import.meta.url), 'utf8'),
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
 ) as CliPackageManifest;
 
 // The publishable package is the source of truth for runtime dependencies.
@@ -16,12 +16,12 @@ const cliPackage = JSON.parse(
 const external = Object.keys(cliPackage.dependencies ?? {}).sort();
 
 export default defineConfig({
-  entry: ['src/cli/index.ts'],
-  tsconfig: 'tsconfig.cli.json',
+  entry: ['src/index.ts'],
+  tsconfig: 'tsconfig.json',
   format: ['esm'],
   platform: 'node',
   target: 'node20',
-  outDir: 'packages/cli/dist',
+  outDir: 'dist',
   clean: true,
   external,
 });

@@ -1,9 +1,9 @@
-import type { AgentStep } from '../lib/agentTypes';
+import type { AgentStep } from '../../../src/lib/agentTypes';
 import {
   createProviderExecutionContext,
   isProviderCostLimitError,
   type ProviderExecutionContext,
-} from '../lib/providers';
+} from '../../../src/lib/providers';
 import { asCliExitError, CliExitError, ocrErrorPayload } from './errors';
 import { inputFingerprint, readAndValidateInput } from './inputs';
 import { assertProviderMediaTypeSupported } from './providerInputs';

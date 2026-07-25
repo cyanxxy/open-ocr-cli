@@ -8,7 +8,7 @@ import {
   defaultThinkingLevelForModel,
   type GeminiModel,
   type ThinkingLevel,
-} from '../lib/gemini';
+} from '../../../src/lib/gemini';
 import {
   GATEWAY_IDS,
   GEMINI_MODELS,
@@ -21,8 +21,8 @@ import {
   resolveProviderBaseUrl,
   type GatewayId,
   type ProviderId,
-} from '../lib/providers';
-import { getExtractionPreset } from '../lib/templates';
+} from '../../../src/lib/providers';
+import { getExtractionPreset } from '../../../src/lib/templates';
 import { asRecord } from './jsonValidation';
 import {
   CLI_FORMATS,

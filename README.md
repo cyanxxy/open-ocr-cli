@@ -487,7 +487,6 @@ secrets enable live Gemini, Kimi, and OpenRouter canaries.
 
 ```text
 src/
-  cli/            Commands, machine protocol, MCP server, job service, artifacts
   components/     Reusable UI from atoms through page-level organisms
   pages/          Simple, Templates, Web, Bulk, and Agentic workflows
   lib/
@@ -498,6 +497,7 @@ src/
   store/          Zustand settings and workflow stores
 evals/            Reproducible OCR quality and regression evaluations
 packages/cli/     Publishable Open OCR CLI package (schemas, skill, dist)
+  src/            Commands, machine protocol, MCP server, job service, artifacts
 integrations/     Source-of-truth agent skill and integration assets
 ```
 

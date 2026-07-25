@@ -35,8 +35,8 @@ import {
   type ProviderUsageSnapshot,
 } from '../src/lib/providers';
 import { getExtractionPreset } from '../src/lib/templates';
-import { nodeRegionCropper } from '../src/cli/nodeRegionCropper';
-import { cliThinkingLevels, defaultCliThinkingLevel } from '../src/cli/config';
+import { nodeRegionCropper } from '../packages/cli/src/nodeRegionCropper';
+import { cliThinkingLevels, defaultCliThinkingLevel } from '../packages/cli/src/config';
 import {
   assertEvalInputsExist,
   fileToDataUrl,
