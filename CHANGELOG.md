@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.4.0 - 2026-07-25
+
+### CLI packaging and development boundaries
+
+- Moved the CLI source, build configuration, and Node-only TypeScript project
+  into `packages/cli` so the publishable package owns its complete build path
+  while continuing to share the provider-neutral OCR engine.
+- Added dependency-sync coverage that verifies every external CLI runtime
+  import is declared in the published package, and tightened Node-only
+  typechecking so browser APIs cannot enter the command-line dependency graph.
+- Made the packaged Open OCR skill a generated copy of its canonical
+  integration source, pinned the npm toolchain used by releases, and made
+  TypeScript checks incremental for faster local and CI validation.
+
+### Release and dependency security
+
+- Split releases into verification and publication stages with main-branch and
+  tag-order checks, serialized publishing, exact-tarball smoke tests, artifact
+  checksums, and idempotent npm publication checks.
+- Added npm provenance, container SBOM and provenance attestations, immutable
+  container publication before `latest` promotion, guarded Marketplace major
+  tag updates, least-privilege workflow permissions, and commit-pinned GitHub
+  Actions.
+- Upgraded React Router to 8.3.0 to resolve its RSC-mode CSRF advisory, added
+  Dependabot coverage, and narrowed the audit exception to the remaining
+  transitive development-tool advisory.
+
+[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v2.3.0...v2.4.0)
+
 ## 2.3.0 - 2026-07-22
 
 ### Model Context Protocol support
