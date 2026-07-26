@@ -14,10 +14,13 @@ arguments=(
   extract
   --provider "$OPEN_OCR_ACTION_PROVIDER"
   --gateway "$OPEN_OCR_ACTION_GATEWAY"
-  --mode "$OPEN_OCR_ACTION_MODE"
   --format "$OPEN_OCR_ACTION_FORMAT"
   --output "$OPEN_OCR_ACTION_OUTPUT"
 )
+# Only name a mode when the workflow asked for one. A preset implies template
+# mode, and the CLI rejects a preset combined with any other explicit mode
+# rather than silently dropping it.
+if [[ -n "${OPEN_OCR_ACTION_MODE:-}" ]]; then arguments+=(--mode "$OPEN_OCR_ACTION_MODE"); fi
 if [[ -n "$OPEN_OCR_ACTION_MODEL" ]]; then arguments+=(--model "$OPEN_OCR_ACTION_MODEL"); fi
 if [[ -n "${OPEN_OCR_ACTION_API_KEY_ENV:-}" ]]; then arguments+=(--api-key-env "$OPEN_OCR_ACTION_API_KEY_ENV"); fi
 if [[ -n "${OPEN_OCR_ACTION_BASE_URL:-}" ]]; then arguments+=(--base-url "$OPEN_OCR_ACTION_BASE_URL"); fi

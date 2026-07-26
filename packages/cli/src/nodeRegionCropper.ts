@@ -65,6 +65,9 @@ async function renderPdfPage(bytes: Buffer, region: NormalizedRegion): Promise<B
       data: new Uint8Array(bytes),
       isEvalSupported: false,
       useSystemFonts: true,
+      // Verbosity is module-global in pdf.js, so this call site must pin it too;
+      // otherwise a render here re-enables warnings on stderr for input validation.
+      verbosity: pdfjs.VerbosityLevel.ERRORS,
     });
     const pdf = await loadingTask.promise;
     try {

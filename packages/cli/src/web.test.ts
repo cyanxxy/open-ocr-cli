@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { ocrErrorPayload } from './errors';
 import {
   assertWebOutputAvailable,
   readableWebText,
@@ -32,6 +33,24 @@ describe('CLI Web OCR', () => {
     ].join('\n'));
     const urls = await resolveWebUrls(['https://example.com/report'], 'urls.txt', directory);
     expect(urls).toEqual(['https://example.com/report', 'https://example.org/data.pdf']);
+  });
+
+  it('names an unreadable --file list instead of leaking a raw errno', async () => {
+    let thrown: unknown;
+    try {
+      await resolveWebUrls([], 'urls.txt', directory);
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as Error).message).toBe('URL list file not found: urls.txt');
+    expect((thrown as Error).message).not.toContain('ENOENT');
+    expect((thrown as Error).message).not.toContain(directory);
+    expect(ocrErrorPayload(thrown, 2)).toMatchObject({
+      code: 'INPUT_NOT_FOUND',
+      category: 'input',
+      retryable: false,
+    });
+    await expect(resolveWebUrls([], '.', directory)).rejects.toThrow('URL list path is not a file: .');
   });
 
   it('rejects unsafe URLs and request groups above the API limit', async () => {

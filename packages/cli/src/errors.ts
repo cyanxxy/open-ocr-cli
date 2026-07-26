@@ -262,6 +262,17 @@ function classifyKnownError(error: unknown, exitCode: CliExitCode): OcrErrorDeta
     if (systemCode === 'ECONNRESET' || systemCode === 'EAI_AGAIN') {
       return { code: 'PROVIDER_FAILURE', category: 'provider', retryable: true, hint: 'Retry with backoff after the transient network failure.' };
     }
+    // Backstop for an unguarded filesystem call: degrade to a typed error
+    // instead of letting a raw errno reach the generic default.
+    if (systemCode === 'ENOENT') {
+      return { code: 'INPUT_NOT_FOUND', category: 'input', retryable: false, hint: 'Check the referenced path and working directory.' };
+    }
+    if (systemCode === 'EISDIR') {
+      return { code: 'INPUT_INVALID', category: 'input', retryable: false, hint: 'Point the option at a file rather than a directory.' };
+    }
+    if (systemCode === 'EACCES' || systemCode === 'EPERM') {
+      return { code: 'PERMISSION_DENIED', category: 'authorization', retryable: false, hint: 'Check filesystem permissions for the referenced path.' };
+    }
     current = recordValue(current, 'cause');
   }
   if (exitCode === 130 || exitCode === 143) return defaultErrorDetails(exitCode);

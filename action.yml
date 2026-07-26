@@ -42,8 +42,8 @@ inputs:
     description: Optional Cloudflare stored-key alias.
     required: false
   mode:
-    description: simple, template, or agentic.
-    default: simple
+    description: simple, template, or agentic; omit to select template when a preset is set and simple otherwise.
+    required: false
   preset:
     description: Optional structured extraction preset.
     required: false

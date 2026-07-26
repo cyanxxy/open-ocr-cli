@@ -270,6 +270,9 @@ async function executeMcpRequest(
               message: progressMessage(event),
             },
           }),
+      // stdout is the JSON-RPC channel, so diagnostics go to stderr; without
+      // this the ignored-option warning would be dropped on the MCP surface.
+      onWarning: (message) => process.stderr.write(`${message}\n`),
       noConfig: request.noConfig,
     });
     return mcpResult(execution.result);

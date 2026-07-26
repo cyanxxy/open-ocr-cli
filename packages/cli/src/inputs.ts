@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { promises as fs, type Stats } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import type { Readable } from 'node:stream';
@@ -22,7 +22,119 @@ const EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
   '.heif': 'image/heif',
 };
 
-const SUPPORTED_GLOB = '**/*.{pdf,png,jpg,jpeg,webp,gif,heic,heif}';
+const SUPPORTED_EXTENSIONS: ReadonlySet<string> = new Set(Object.keys(EXTENSION_TO_MIME));
+
+/**
+ * Directories a recursive scan does not descend into by default.
+ *
+ * These hold dependencies and build output, so "point at this folder" never
+ * means them — yet nothing stopped a scan from walking them, which is most of
+ * the cost of scanning a repository and puts sprite sheets and favicons in the
+ * extraction results. Kept deliberately short: every name here can drop a
+ * document someone wanted, so additions are cheap to make and expensive to be
+ * wrong about.
+ *
+ * Applies to directory scans only. An explicit file or glob is the caller's own
+ * intent and is never filtered. Overridable with `--no-default-excludes` or
+ * `"defaultExcludes": false`.
+ */
+const DEFAULT_EXCLUDED_DIRECTORIES: ReadonlySet<string> = new Set([
+  'node_modules',
+  'dist',
+  'build',
+  'vendor',
+  'target',
+]);
+
+// Ignore patterns that prune the excluded subtrees from the walk.
+//
+// The suffix is a single-star segment before the globstar, not the obvious bare
+// globstar: `<name>/**` also matches `<name>` itself, which drops the directory
+// from the stream and leaves the scan unable to say what it passed over. This
+// shape prunes everything below the directory while the directory entry still
+// surfaces. Entries one level down survive it, so hasDefaultExcludedAncestor —
+// not this pattern — is what guarantees no excluded file becomes a document.
+const DEFAULT_EXCLUDE_PATTERNS: readonly string[] = [...DEFAULT_EXCLUDED_DIRECTORIES]
+  .map((name) => `**/${name}/*/**`);
+
+/**
+ * Whether a scanned path lives under a default-excluded directory.
+ *
+ * Resolved against the scan root, so pointing straight at `./dist` still scans
+ * it: only directories *found during* the walk are excluded, never the folder
+ * the caller named.
+ */
+function hasDefaultExcludedAncestor(root: string, absolutePath: string): boolean {
+  const segments = path.relative(root, absolutePath).split(/[\\/]/u);
+  segments.pop();
+  return segments.some((segment) => DEFAULT_EXCLUDED_DIRECTORIES.has(segment));
+}
+
+/**
+ * Dropped paths retained for reporting. A scan may pass over a whole dependency
+ * or build tree, so the report is a count plus a bounded sample of names rather
+ * than the full list.
+ */
+const MAX_REPORTED_SKIP_NAMES = 3;
+
+/**
+ * Files a recursive directory scan dropped before they could become documents.
+ * Discovery is deliberately permissive — pointing at a folder must keep working
+ * — but every dropped entry stays reportable so a scan never silently shrinks.
+ */
+export interface InputDiscoverySkips {
+  unsupported: {
+    /**
+     * How many directory entries were dropped for having a non-document
+     * extension. Entries are counted per scan, so overlapping directory inputs
+     * can count one file once per scan that reaches it.
+     */
+    count: number;
+    /**
+     * Lexicographically first dropped display paths, at most
+     * {@link MAX_REPORTED_SKIP_NAMES}. Sampled by name rather than by traversal
+     * order so the report does not depend on the filesystem.
+     */
+    names: string[];
+  };
+  /**
+   * Directories pruned by {@link DEFAULT_EXCLUDED_DIRECTORIES}.
+   *
+   * Reported separately from `unsupported` because the cause and the remedy
+   * differ: these were dropped by policy, not by file type, and a caller who
+   * wanted them needs `--no-default-excludes` rather than a different document.
+   * Counted as directories, not files — the whole point of the exclude is that
+   * the subtree is never walked, so the files inside were never enumerated.
+   */
+  defaultExcluded: {
+    count: number;
+    names: string[];
+  };
+}
+
+export interface InputDiscovery {
+  inputs: ResolvedInput[];
+  skipped: InputDiscoverySkips;
+}
+
+interface ExpandedInput {
+  files: string[];
+  unsupportedCount: number;
+  /** Absolute paths, already reduced to the bounded reporting sample. */
+  unsupportedSample: string[];
+  defaultExcludedCount: number;
+  defaultExcludedSample: string[];
+}
+
+/** Skip counters for an expansion that cannot drop anything: a named file or a caller's own glob. */
+function noExpansionSkips(): Omit<ExpandedInput, 'files'> {
+  return {
+    unsupportedCount: 0,
+    unsupportedSample: [],
+    defaultExcludedCount: 0,
+    defaultExcludedSample: [],
+  };
+}
 
 function inputError(message: string, code: OcrErrorCode = 'INPUT_INVALID'): CliExitError {
   return new CliExitError(message, 2, {
@@ -86,35 +198,103 @@ function isGlobPattern(value: string): boolean {
   return /[*?{}[\]()!]/.test(value);
 }
 
-async function expandInput(value: string, options: ResolvedCliOptions): Promise<string[]> {
-  const absolute = path.resolve(options.cwd, value);
-  try {
-    const stat = await fs.stat(absolute);
-    if (stat.isFile()) return [absolute];
-    if (stat.isDirectory()) {
-      return fg(SUPPORTED_GLOB, {
-        cwd: absolute,
-        absolute: true,
-        onlyFiles: true,
-        dot: options.hidden,
-        followSymbolicLinks: false,
-        ignore: options.excludes,
-      });
-    }
-    return [];
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+/**
+ * Insert one dropped path into a bounded, sorted sample.
+ *
+ * Retaining every dropped path just to name three of them makes pointing at a
+ * repository hold its whole `node_modules` in memory, so only the sample
+ * survives the walk. Keeping the lexicographically first names — rather than
+ * the first ones the walk happened to reach — keeps the report reproducible.
+ */
+function sampleSkippedPath(sample: string[], absolutePath: string): void {
+  const position = sample.findIndex((entry) => absolutePath.localeCompare(entry) < 0);
+  if (position === -1) {
+    if (sample.length < MAX_REPORTED_SKIP_NAMES) sample.push(absolutePath);
+    return;
   }
+  sample.splice(position, 0, absolutePath);
+  if (sample.length > MAX_REPORTED_SKIP_NAMES) sample.length = MAX_REPORTED_SKIP_NAMES;
+}
 
-  if (!isGlobPattern(value)) throw inputError(`Input does not exist: ${value}`, 'INPUT_NOT_FOUND');
-  return fg(value, {
-    cwd: options.cwd,
+/**
+ * Walk a directory once with the historical hidden/exclude pruning, partitioning
+ * on extension as entries stream past rather than inside the glob.
+ *
+ * A glob only ever returns its matches, so filtered-out entries were never
+ * materialized and could not be reported; partitioning here also makes
+ * `EXTENSION_TO_MIME` the single source of truth, so a scan accepts `SCAN.PNG`
+ * exactly like an explicitly named file already does. Filtering during traversal
+ * keeps that reporting affordable: unsupported entries are counted and released
+ * instead of accumulated and sorted.
+ *
+ * Directories are streamed alongside files purely so a pruned dependency or
+ * build tree can be named. That is the whole reason the walk is not simply
+ * `onlyFiles`.
+ */
+async function scanDirectory(absolute: string, options: ResolvedCliOptions): Promise<ExpandedInput> {
+  const applyDefaults = options.defaultExcludes;
+  const entries = fg.stream('**/*', {
+    cwd: absolute,
     absolute: true,
-    onlyFiles: true,
+    onlyFiles: false,
+    objectMode: true,
     dot: options.hidden,
     followSymbolicLinks: false,
-    ignore: options.excludes,
-  });
+    ignore: applyDefaults ? [...options.excludes, ...DEFAULT_EXCLUDE_PATTERNS] : options.excludes,
+  }) as AsyncIterable<{ path: string; name: string; dirent: { isDirectory: () => boolean } }>;
+  const files: string[] = [];
+  const unsupportedSample: string[] = [];
+  const defaultExcludedSample: string[] = [];
+  let unsupportedCount = 0;
+  let defaultExcludedCount = 0;
+  for await (const entry of entries) {
+    if (entry.dirent.isDirectory()) {
+      if (applyDefaults && DEFAULT_EXCLUDED_DIRECTORIES.has(entry.name)) {
+        defaultExcludedCount += 1;
+        sampleSkippedPath(defaultExcludedSample, entry.path);
+      }
+      continue;
+    }
+    if (applyDefaults && hasDefaultExcludedAncestor(absolute, entry.path)) continue;
+    if (SUPPORTED_EXTENSIONS.has(path.extname(entry.path).toLowerCase())) files.push(entry.path);
+    else {
+      unsupportedCount += 1;
+      sampleSkippedPath(unsupportedSample, entry.path);
+    }
+  }
+  return { files, unsupportedCount, unsupportedSample, defaultExcludedCount, defaultExcludedSample };
+}
+
+async function expandInput(value: string, options: ResolvedCliOptions): Promise<ExpandedInput> {
+  const absolute = path.resolve(options.cwd, value);
+  let entry: Stats | undefined;
+  try {
+    entry = await fs.stat(absolute);
+  } catch (error) {
+    // Only a missing path falls through to glob expansion. Reading the stat
+    // outside the walk keeps a mid-scan ENOENT from being misread as "this
+    // input was a pattern all along".
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  if (entry?.isFile()) return { files: [absolute], ...noExpansionSkips() };
+  if (entry?.isDirectory()) return scanDirectory(absolute, options);
+  if (entry) return { files: [], ...noExpansionSkips() };
+
+  if (!isGlobPattern(value)) throw inputError(`Input does not exist: ${value}`, 'INPUT_NOT_FOUND');
+  // An explicit pattern is the caller's own filter: unsupported matches stay in
+  // the set and fail loudly by MIME detection rather than disappearing here, and
+  // the default directory excludes never apply — `dist/**/*.pdf` means `dist`.
+  return {
+    files: await fg(value, {
+      cwd: options.cwd,
+      absolute: true,
+      onlyFiles: true,
+      dot: options.hidden,
+      followSymbolicLinks: false,
+      ignore: options.excludes,
+    }),
+    ...noExpansionSkips(),
+  };
 }
 
 function abortReason(signal: AbortSignal): Error {
@@ -161,11 +341,12 @@ function safeRelativePath(cwd: string, absolutePath: string): string {
   return `${parsed.name}-${hash}${parsed.ext}`;
 }
 
-export async function discoverInputs(
+/** Resolve every requested input, reporting what discovery dropped along the way. */
+export async function discoverInputSet(
   rawInputs: string[],
   options: ResolvedCliOptions,
   signal?: AbortSignal,
-): Promise<ResolvedInput[]> {
+): Promise<InputDiscovery> {
   if (rawInputs.length === 0) throw inputError('Provide at least one file, directory, glob, or - for stdin');
   if (rawInputs.includes('-') && rawInputs.length !== 1) throw inputError('stdin (-) must be the only input');
 
@@ -182,20 +363,51 @@ export async function discoverInputs(
     if (stdinBytes.byteLength > mimeLimit) {
       throw inputError(`<stdin> exceeds the ${label} ${mimeType === 'application/pdf' ? 'PDF' : 'image'} limit`);
     }
-    return [{
-      displayPath: '<stdin>',
-      relativePath: options.stdinName,
-      name: options.stdinName,
-      mimeType,
-      size: stdinBytes.byteLength,
-      mtimeMs: 0,
-      stdinBytes,
-    }];
+    return {
+      inputs: [{
+        displayPath: '<stdin>',
+        relativePath: options.stdinName,
+        name: options.stdinName,
+        mimeType,
+        size: stdinBytes.byteLength,
+        mtimeMs: 0,
+        stdinBytes,
+      }],
+      // Piped bytes are the only document; there is nothing a scan could drop.
+      skipped: {
+        unsupported: { count: 0, names: [] },
+        defaultExcluded: { count: 0, names: [] },
+      },
+    };
   }
 
-  const expanded = (await Promise.all(rawInputs.map((input) => expandInput(input, options)))).flat();
-  const unique = [...new Set(expanded.map((input) => path.resolve(input)))].sort((a, b) => a.localeCompare(b));
-  if (unique.length === 0) throw inputError('No supported documents matched the supplied inputs');
+  const expanded = await Promise.all(rawInputs.map((input) => expandInput(input, options)));
+  const uniqueAbsolute = (paths: string[]): string[] => [...new Set(paths.map((entry) => path.resolve(entry)))]
+    .sort((a, b) => a.localeCompare(b));
+  const unique = uniqueAbsolute(expanded.flatMap((entry) => entry.files));
+  // Each expansion already reduced itself to a bounded sample, so merging sorts
+  // at most one sample per requested input.
+  const mergeNames = (samples: string[]): string[] => uniqueAbsolute(samples)
+    .slice(0, MAX_REPORTED_SKIP_NAMES)
+    .map((absolutePath) => safeRelativePath(options.cwd, absolutePath));
+  const skipped: InputDiscoverySkips = {
+    unsupported: {
+      count: expanded.reduce((total, entry) => total + entry.unsupportedCount, 0),
+      names: mergeNames(expanded.flatMap((entry) => entry.unsupportedSample)),
+    },
+    defaultExcluded: {
+      count: expanded.reduce((total, entry) => total + entry.defaultExcludedCount, 0),
+      names: mergeNames(expanded.flatMap((entry) => entry.defaultExcludedSample)),
+    },
+  };
+  if (unique.length === 0) {
+    // Naming what was passed over turns "nothing matched" from a dead end into
+    // a diagnosis: the caller can see the folder was not empty, just unsupported.
+    const detail = describeDiscoverySkips(skipped);
+    throw inputError(
+      `No supported documents matched the supplied inputs${detail ? ` (${detail})` : ''}`,
+    );
+  }
 
   const inputs = await Promise.all(unique.map(async (absolutePath): Promise<ResolvedInput> => {
     const stat = await fs.stat(absolutePath);
@@ -220,7 +432,47 @@ export async function discoverInputs(
     throw inputError(`Matched documents total ${(totalBytes / 1024 / 1024).toFixed(1)}MB, exceeding --max-total-mb ${options.maxTotalMb}`);
   }
 
-  return inputs;
+  return { inputs, skipped };
+}
+
+function describeSkipCategory(
+  category: InputDiscoverySkips['unsupported'],
+  subject: string,
+  remedy = '',
+): string | undefined {
+  const { count, names } = category;
+  if (count === 0) return undefined;
+  const remainder = count > names.length ? `, and ${count - names.length} more` : '';
+  return `${count} ${subject}: ${names.join(', ')}${remainder}${remedy}`;
+}
+
+/**
+ * Describe what discovery passed over, or return undefined when it passed over
+ * nothing. Names are bounded because a scan may drop an unbounded number of
+ * entries; the counts cover every dropped entry, including the unnamed ones.
+ *
+ * The two causes stay separate clauses: an unsupported file type and a
+ * default-excluded directory need different actions from the caller.
+ */
+export function describeDiscoverySkips(skipped: InputDiscoverySkips): string | undefined {
+  const clauses = [
+    describeSkipCategory(skipped.unsupported, 'unsupported file(s) skipped'),
+    describeSkipCategory(
+      skipped.defaultExcluded,
+      'director(y/ies) skipped by default excludes',
+      ' (use --no-default-excludes to scan them)',
+    ),
+  ].filter((clause): clause is string => clause !== undefined);
+  return clauses.length > 0 ? clauses.join('; ') : undefined;
+}
+
+/** Resolve every requested input, discarding the discovery skip report. */
+export async function discoverInputs(
+  rawInputs: string[],
+  options: ResolvedCliOptions,
+  signal?: AbortSignal,
+): Promise<ResolvedInput[]> {
+  return (await discoverInputSet(rawInputs, options, signal)).inputs;
 }
 
 const HEIC_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx']);
@@ -358,6 +610,10 @@ export async function readAndValidateInput(input: ResolvedInput): Promise<{ byte
       data: Uint8Array.from(bytes),
       isEvalSupported: false,
       useSystemFonts: true,
+      // pdf.js defaults to WARNINGS and writes them straight to stderr, bypassing
+      // the CLI's own reporter and --quiet. Verbosity is module-global state, so
+      // every getDocument call site must pin it.
+      verbosity: pdfjs.VerbosityLevel.ERRORS,
     });
     try {
       const pdf = await loadingTask.promise;

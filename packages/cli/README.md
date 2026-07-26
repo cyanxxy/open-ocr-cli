@@ -217,6 +217,21 @@ Provider fields include `provider`, `gateway`, `model`, `baseUrl`, `apiKeyEnv`,
 `cloudflareByok`, `cloudflareByokAlias`, `cloudflareProvider`,
 `inputPricePerMillionUsd`, and `outputPricePerMillionUsd`.
 
+### Directory discovery
+
+A directory scan is recursive and skips `node_modules`, `dist`, `build`,
+`vendor`, and `target`, so pointing at a repository does not spend most of the
+scan walking its dependency and build trees, and sprite sheets and favicons do
+not land in the results. Whatever a scan passes over is always reported on
+stderr, both the unsupported file types and the excluded directories, so the
+document set never shrinks silently.
+
+The excludes apply to directory scans only. Naming a file, naming the directory
+itself (`extract ./dist`), or passing your own glob (`extract 'dist/**/*.pdf'`)
+is explicit intent and is never filtered. To scan them during a recursive walk,
+pass `--no-default-excludes` or set `"defaultExcludes": false`. Hidden entries
+stay pruned unless `--hidden` is passed, and `--exclude <glob>` adds patterns.
+
 Unknown keys are ignored with a warning and do not leak through `doctor --json`.
 `open-ocr-cli init` writes new configuration atomically with mode `0600`.
 For agents and CI, use `open-ocr-cli init --yes`; interactive init intentionally
@@ -229,8 +244,16 @@ the project `.env` for a fully hermetic `extract`, `run`, `web`, or `doctor` inv
 
 ## Batch and automation contracts
 
-The default output directory remains `./gemini-ocr-output` for backwards
-compatibility. It contains artifacts, `.gemini-ocr-manifest.json`,
+The two entry points deliberately default to different output directories:
+
+- `extract` writes to `./gemini-ocr-output`, unchanged for backwards
+  compatibility. Override it with `--output <path>`.
+- `run` and the MCP tools write to `./.open-ocr-results/<runId>` whenever
+  `delivery.outputDirectory` is omitted and delivery mode is `reference`, so
+  concurrent agent runs never collide. Override it with
+  `delivery.outputDirectory`.
+
+Either directory holds the same layout: artifacts, `.gemini-ocr-manifest.json`,
 `.gemini-ocr.lock`, and `batch-summary.json`.
 
 - Existing output is never replaced without `--overwrite`.
@@ -348,6 +371,12 @@ stdin):
   }
 }
 ```
+
+Each input object is keyed on `type`, not `kind`. The `capabilities` document
+lists the allowed values under `inputKinds`, but that names the value list, not
+the field — `kind` is the discriminator used by artifacts and progress steps,
+and inputs are the one union keyed on `type`. A request using `{ "kind": ... }`
+is rejected.
 
 The machine protocol also accepts a binary stdin document when the request
 itself is stored in a file:

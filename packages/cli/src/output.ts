@@ -587,5 +587,9 @@ export function jsonlResult(result: OcrJobResult): string {
         }
       : undefined,
     error: result.error,
+    // The bare `error` string stays for existing consumers; `errorDetails`
+    // carries the code/category/retryable/hint an agent needs to decide what to
+    // do next without parsing prose.
+    errorDetails: result.errorDetails,
   });
 }

@@ -72,6 +72,50 @@ describe('CLI exit errors', () => {
     );
   });
 
+  it('degrades an unguarded filesystem errno instead of falling through to the default', () => {
+    const notFound = Object.assign(new Error("ENOENT: no such file or directory, stat '/tmp/nope'"), {
+      code: 'ENOENT',
+    });
+    expect(ocrErrorPayload(notFound, 2)).toMatchObject({
+      code: 'INPUT_NOT_FOUND',
+      category: 'input',
+      retryable: false,
+    });
+    const isDirectory = Object.assign(new Error('EISDIR: illegal operation on a directory'), {
+      code: 'EISDIR',
+    });
+    expect(ocrErrorPayload(isDirectory, 2)).toMatchObject({
+      code: 'INPUT_INVALID',
+      category: 'input',
+      retryable: false,
+    });
+    const denied = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    expect(ocrErrorPayload(denied, 2)).toMatchObject({
+      code: 'PERMISSION_DENIED',
+      category: 'authorization',
+      retryable: false,
+    });
+  });
+
+  it('lets a typed configuration error outrank an option name that reads like a runtime failure', () => {
+    // A bare Error here would match the legacy "timeout" substring rule and be
+    // reported as a retryable TIMEOUT, looping any retry harness forever.
+    expect(ocrErrorPayload(new CliExitError('--timeout must be an integer from 1 to 3600', 2, {
+      code: 'CONFIG_INVALID',
+      category: 'configuration',
+      retryable: false,
+    }), 2)).toMatchObject({
+      code: 'CONFIG_INVALID',
+      category: 'configuration',
+      retryable: false,
+    });
+    // A genuine runtime timeout still classifies from its message.
+    expect(ocrErrorPayload(new Error('Gemini request timed out'), 1)).toMatchObject({
+      code: 'TIMEOUT',
+      retryable: true,
+    });
+  });
+
   it('does not classify configuration or output prose as a custom-schema failure', () => {
     expect(ocrErrorPayload(new Error('--schema cannot be combined with --preset'), 2)).toMatchObject({
       code: 'CONFIG_INVALID',

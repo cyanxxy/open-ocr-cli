@@ -3,10 +3,18 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveCliOptions } from './config';
-import { detectMimeType, discoverInputs, inputFingerprint, readAndValidateInput, readStdin } from './inputs';
+import {
+  describeDiscoverySkips,
+  detectMimeType,
+  discoverInputSet,
+  discoverInputs,
+  inputFingerprint,
+  readAndValidateInput,
+  readStdin,
+} from './inputs';
 import type { ResolvedCliOptions, ResolvedInput } from './types';
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
@@ -21,6 +29,11 @@ function bmffBytes(majorBrand: string, compatibleBrands: string[] = []): Uint8Ar
   bytes.write(majorBrand, 8, 'ascii');
   compatibleBrands.forEach((brand, index) => bytes.write(brand, 16 + index * 4, 'ascii'));
   return Uint8Array.from(bytes);
+}
+
+// pdf.js may detach the buffer it is handed, so every call needs its own copy.
+function malformedPdfBytes(): Uint8Array {
+  return Uint8Array.from(Buffer.from('%PDF-1.4 broken'));
 }
 
 function stdinInput(bytes: Uint8Array, mimeType: string, name = 'stdin'): ResolvedInput {
@@ -110,6 +123,199 @@ describe('CLI input discovery', () => {
     expect(found.map((input) => input.relativePath)).toEqual(['b.jpg', path.join('nested', 'a.jpg')]);
   });
 
+  it('reports the directory entries it passed over instead of dropping them silently', async () => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    await writeFile(path.join(directory, 'receipt.png'), PNG_BYTES);
+    // Scanners and Windows-originated files routinely use an uppercase
+    // extension; an explicitly named `scan.PNG` has always been accepted, so a
+    // directory scan must not quietly disagree.
+    await writeFile(path.join(directory, 'scan.PNG'), PNG_BYTES);
+    await writeFile(path.join(directory, 'report.txt'), 'plain text');
+    await writeFile(path.join(directory, 'notes.md'), '# notes');
+
+    const discovery = await discoverInputSet(['.'], options);
+
+    expect(discovery.inputs.map((input) => input.relativePath))
+      .toEqual(['invoice.jpg', 'receipt.png', 'scan.PNG']);
+    expect(discovery.skipped.unsupported).toEqual({ count: 2, names: ['notes.md', 'report.txt'] });
+    expect(describeDiscoverySkips(discovery.skipped))
+      .toBe('2 unsupported file(s) skipped: notes.md, report.txt');
+  });
+
+  it('says nothing when a scan passed over nothing', async () => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    const discovery = await discoverInputSet(['.'], options);
+    expect(discovery.skipped.unsupported).toEqual({ count: 0, names: [] });
+    expect(describeDiscoverySkips(discovery.skipped)).toBeUndefined();
+  });
+
+  it('names the unsupported entries when a directory yields no documents at all', async () => {
+    await writeFile(path.join(directory, 'report.txt'), 'plain text');
+    await writeFile(path.join(directory, 'notes.md'), '# notes');
+
+    await expect(discoverInputSet(['.'], options)).rejects.toThrow(
+      'No supported documents matched the supplied inputs (2 unsupported file(s) skipped: notes.md, report.txt)',
+    );
+  });
+
+  it('bounds the listed skip names while keeping the count exact', async () => {
+    await writeFile(path.join(directory, 'keep.jpg'), JPEG_BYTES);
+    for (const name of ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt']) {
+      await writeFile(path.join(directory, name), 'plain text');
+    }
+
+    const discovery = await discoverInputSet(['.'], options);
+
+    expect(discovery.inputs).toHaveLength(1);
+    expect(discovery.skipped.unsupported.count).toBe(5);
+    expect(describeDiscoverySkips(discovery.skipped))
+      .toBe('5 unsupported file(s) skipped: a.txt, b.txt, c.txt, and 2 more');
+  });
+
+  it('retains a bounded sample rather than every entry a large scan passes over', async () => {
+    // Default excludes cover the common case, but a user can still point at a
+    // genuinely huge directory. Naming three files must not cost one retained
+    // string per file in it.
+    await writeFile(path.join(directory, 'keep.jpg'), JPEG_BYTES);
+    await mkdir(path.join(directory, 'assets', 'generated'), { recursive: true });
+    await Promise.all(Array.from({ length: 400 }, (_, index) => writeFile(
+      path.join(directory, 'assets', 'generated', `mod-${String(index).padStart(3, '0')}.js`),
+      'module.exports = {};',
+    )));
+
+    const discovery = await discoverInputSet(['.'], options);
+
+    expect(discovery.inputs.map((input) => input.name)).toEqual(['keep.jpg']);
+    expect(discovery.skipped.unsupported.count).toBe(400);
+    // Sampled by name, not by traversal order, so the report is the same on
+    // every filesystem.
+    expect(discovery.skipped.unsupported.names).toEqual([
+      path.join('assets', 'generated', 'mod-000.js'),
+      path.join('assets', 'generated', 'mod-001.js'),
+      path.join('assets', 'generated', 'mod-002.js'),
+    ]);
+    expect(describeDiscoverySkips(discovery.skipped)).toContain('and 397 more');
+  });
+
+  it('never walks dependency or build trees, and never bills for what is inside them', async () => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    for (const excluded of ['node_modules', 'dist', 'build', 'vendor', 'target']) {
+      await mkdir(path.join(directory, excluded, 'nested'), { recursive: true });
+      // A real PNG inside a dependency would otherwise become a paid request.
+      await writeFile(path.join(directory, excluded, 'logo.png'), PNG_BYTES);
+      await writeFile(path.join(directory, excluded, 'nested', 'deep.png'), PNG_BYTES);
+    }
+
+    const discovery = await discoverInputSet(['.'], options);
+
+    expect(discovery.inputs.map((input) => input.name)).toEqual(['invoice.jpg']);
+    // Directory-level accounting: the subtree is never walked, so the files
+    // inside it were never enumerated and cannot be counted.
+    expect(discovery.skipped.defaultExcluded.count).toBe(5);
+    expect(discovery.skipped.defaultExcluded.names).toEqual(['build', 'dist', 'node_modules']);
+    expect(discovery.skipped.unsupported.count).toBe(0);
+  });
+
+  it('says which directories the default excludes dropped and how to get them back', async () => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    await mkdir(path.join(directory, 'node_modules'));
+    await writeFile(path.join(directory, 'node_modules', 'logo.png'), PNG_BYTES);
+
+    const discovery = await discoverInputSet(['.'], options);
+
+    // Silence here would re-create the silent-shrinkage bug one layer up.
+    expect(describeDiscoverySkips(discovery.skipped)).toBe(
+      '1 director(y/ies) skipped by default excludes: node_modules'
+      + ' (use --no-default-excludes to scan them)',
+    );
+  });
+
+  it('scans dependency and build trees when the caller turns the default excludes off', async () => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    await mkdir(path.join(directory, 'node_modules', 'pkg'), { recursive: true });
+    await writeFile(path.join(directory, 'node_modules', 'pkg', 'logo.png'), PNG_BYTES);
+
+    const discovery = await discoverInputSet(['.'], { ...options, defaultExcludes: false });
+
+    expect(discovery.inputs.map((input) => input.relativePath).sort()).toEqual([
+      'invoice.jpg',
+      path.join('node_modules', 'pkg', 'logo.png'),
+    ]);
+    expect(discovery.skipped.defaultExcluded).toEqual({ count: 0, names: [] });
+  });
+
+  it('scans an excluded-looking directory the caller named explicitly', async () => {
+    await mkdir(path.join(directory, 'dist', 'scans'), { recursive: true });
+    await writeFile(path.join(directory, 'dist', 'invoice.jpg'), JPEG_BYTES);
+    await writeFile(path.join(directory, 'dist', 'scans', 'receipt.png'), PNG_BYTES);
+
+    // The excludes describe what a walk wanders into, not what the caller asked
+    // for. `extract ./dist` means dist.
+    const discovery = await discoverInputSet(['dist'], options);
+
+    expect(discovery.inputs.map((input) => input.name).sort()).toEqual(['invoice.jpg', 'receipt.png']);
+    expect(discovery.skipped.defaultExcluded).toEqual({ count: 0, names: [] });
+  });
+
+  it('leaves an explicit glob free to match inside an excluded directory', async () => {
+    await mkdir(path.join(directory, 'dist'));
+    await writeFile(path.join(directory, 'dist', 'invoice.jpg'), JPEG_BYTES);
+
+    const discovery = await discoverInputSet(['dist/*.jpg'], options);
+
+    expect(discovery.inputs.map((input) => input.name)).toEqual(['invoice.jpg']);
+  });
+
+  it('keeps one bounded sample when several directory inputs each drop entries', async () => {
+    await mkdir(path.join(directory, 'first'));
+    await mkdir(path.join(directory, 'second'));
+    await writeFile(path.join(directory, 'first', 'keep.jpg'), JPEG_BYTES);
+    for (const name of ['b.txt', 'd.txt', 'f.txt']) {
+      await writeFile(path.join(directory, 'first', name), 'plain text');
+    }
+    for (const name of ['a.txt', 'c.txt', 'e.txt']) {
+      await writeFile(path.join(directory, 'second', name), 'plain text');
+    }
+
+    const discovery = await discoverInputSet(['first', 'second'], options);
+
+    expect(discovery.skipped.unsupported.count).toBe(6);
+    expect(discovery.skipped.unsupported.names).toEqual([
+      path.join('first', 'b.txt'),
+      path.join('first', 'd.txt'),
+      path.join('first', 'f.txt'),
+    ]);
+  });
+
+  it('keeps a directory scan permissive while an explicit glob still rejects unsupported matches', async () => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    await writeFile(path.join(directory, 'notes.md'), '# notes');
+
+    // Pointing at a folder must keep working; passing a pattern is the caller's
+    // own filter, so an unsupported match there stays a hard error.
+    const discovery = await discoverInputSet(['.'], options);
+    expect(discovery.inputs.map((input) => input.name)).toEqual(['invoice.jpg']);
+    await expect(discoverInputSet(['*'], options)).rejects.toThrow('Unsupported document extension: .md');
+  });
+
+  it('leaves hidden entries pruned so a scan never descends into dot directories', async () => {
+    await mkdir(path.join(directory, '.git'));
+    await writeFile(path.join(directory, '.git', 'config'), 'plain text');
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+
+    // Counting hidden entries would mean walking `.git`, `.venv`, and friends on
+    // every run, so they stay pruned and therefore uncounted unless --hidden asks.
+    const discovery = await discoverInputSet(['.'], options);
+    expect(discovery.inputs).toHaveLength(1);
+    expect(discovery.skipped.unsupported).toEqual({ count: 0, names: [] });
+
+    const withHidden = await discoverInputSet(['.'], { ...options, hidden: true });
+    expect(withHidden.skipped.unsupported).toEqual({
+      count: 1,
+      names: [path.join('.git', 'config')],
+    });
+  });
+
   it('discovers and validates GIF files recursively', async () => {
     await mkdir(path.join(directory, 'nested'));
     await writeFile(path.join(directory, 'nested', 'animation.gif'), GIF89A_BYTES);
@@ -196,6 +402,33 @@ describe('CLI input discovery', () => {
       code: 'INPUT_INVALID',
       category: 'input',
     });
+  });
+
+  it('keeps pdf.js diagnostics off stderr while validating a malformed PDF', async () => {
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      // pdf.js keeps verbosity in module-global state. Restore the library
+      // default first so the assertions below prove that readAndValidateInput
+      // pins it rather than inheriting a value another call site happened to set.
+      await pdfjs.getDocument({
+        data: malformedPdfBytes(),
+        verbosity: pdfjs.VerbosityLevel.WARNINGS,
+      }).promise.catch(() => undefined);
+      expect(consoleWarn).toHaveBeenCalled();
+      consoleWarn.mockClear();
+      stderrWrite.mockClear();
+
+      await expect(readAndValidateInput(
+        stdinInput(malformedPdfBytes(), 'application/pdf', 'broken.pdf'),
+      )).rejects.toMatchObject({ code: 'INPUT_INVALID' });
+      expect(consoleWarn).not.toHaveBeenCalled();
+      expect(stderrWrite).not.toHaveBeenCalled();
+    } finally {
+      stderrWrite.mockRestore();
+      consoleWarn.mockRestore();
+    }
   });
 
   it('validates PDF page counts with Uint8Array input', async () => {

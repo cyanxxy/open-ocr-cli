@@ -385,7 +385,12 @@ export class OcrJobService {
     }
     const fingerprintMode = modeFingerprint(options);
     const resumableEntries = new Map<number, ManifestEntry>();
-    if (!options.dryRun && !options.overwrite) {
+    // Runs regardless of --dry-run. An occupied destination is checkable without
+    // a credential and without a provider call, so a dry run that stayed silent
+    // about it would approve a job the live run rejects. Resolving resume state
+    // first keeps that honest in both directions: a document the live run would
+    // skip as unchanged is not reported as a conflict.
+    if (!options.overwrite) {
       try {
         await Promise.all(inputs.map(async (input, index) => {
           const key = input.absolutePath ?? '<stdin>';

@@ -39,6 +39,7 @@ function options(): ResolvedCliOptions {
     excludes: [],
     instructions: [],
     hidden: false,
+    defaultExcludes: true,
     resume: true,
     overwrite: false,
     forceUnlock: false,

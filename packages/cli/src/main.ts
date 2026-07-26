@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -15,11 +16,15 @@ import {
   type ProviderId,
 } from '../../../src/lib/providers';
 import {
+  assertCredentialsAvailable,
   cliConfigDisabled,
   credentialSetupGuidance,
+  ignoredModeScopedOptionWarning,
+  ignoredModeScopedOptions,
   loadCliConfig,
   loadLocalEnv,
   resolveCliOptions,
+  suppliedModeScopedFlags,
 } from './config';
 import {
   asCliExitError,
@@ -31,7 +36,7 @@ import {
   ocrErrorPayload,
   type CliExitCode,
 } from './errors';
-import { discoverInputs } from './inputs';
+import { describeDiscoverySkips, discoverInputSet } from './inputs';
 import { runInit, validateProviderCredentials, type InitFlags } from './init';
 import { promptInteractiveArguments } from './interactive';
 import { primaryArtifact } from './output';
@@ -87,6 +92,16 @@ function isSupportedNode(version: string): boolean {
 
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+// doctor reports config locations; a path is only meaningful to a reader once
+// they know whether anything is actually there to load.
+async function configFileExists(filePath: string): Promise<boolean> {
+  try {
+    return (await stat(filePath)).isFile();
+  } catch {
+    return false;
+  }
 }
 
 async function writeMachineStdout(value: string): Promise<void> {
@@ -172,6 +187,10 @@ function addExtractOptions(command: Command): Command {
     .option('--max-cost <usd>', 'block new requests and documents after estimated paid-tier cost reaches this value')
     .option('--requests-per-minute <count>', 'maximum provider API request starts per minute (0 disables)')
     .option('--exclude <glob>', 'exclude pattern; repeatable', collect, [])
+    // Both forms are declared so Commander leaves the value undefined when
+    // neither is passed, letting the config file's defaultExcludes decide.
+    .option('--default-excludes', 'skip node_modules, dist, build, vendor, and target in directory scans (default)')
+    .option('--no-default-excludes', 'scan dependency and build-output directories too')
     .option('--instruction <text>', 'custom extraction instruction; repeatable', collect, [])
     .option('--hidden', 'include hidden files when expanding directories and globs')
     .option('--resume', 'skip unchanged documents recorded in the batch manifest')
@@ -179,7 +198,7 @@ function addExtractOptions(command: Command): Command {
     .option('--overwrite', 'replace existing output artifacts')
     .option('--force-unlock', 'recover a same-host batch lock only when its owner process is dead')
     .option('--fail-fast', 'stop scheduling new documents after the first failure')
-    .option('--jsonl', 'emit the established inline document JSONL stream on stdout')
+    .option('--jsonl', 'emit the inline document JSONL stream on stdout, ending in exactly one terminal record: the summary, or a typed run.failed when the run dies before one exists')
     .option('--dry-run', 'resolve and validate the job without calling a provider or writing files')
     .option('--quiet', 'suppress progress output on stderr')
     .option('--verbose', 'show agent steps and detailed progress on stderr')
@@ -247,6 +266,41 @@ CLI flags take precedence.
 
   addExtractOptions(program.command('extract').description('extract one or many documents'))
     .action(async (inputs: string[], flags: ExtractCommandFlags, command: Command) => {
+      // `--jsonl` has no config-file source, so the stream's existence is known
+      // before any resolution step that could itself be the thing that fails.
+      const jsonlRequested = flags.jsonl === true;
+      const runId = randomUUID();
+      /**
+       * The `--jsonl` stream ends in exactly one terminal record: the `summary`
+       * whenever the batch produced one — including a cancelled batch, whose
+       * documents carry `skipReason: "cancelled"` — and otherwise the
+       * `run.failed` below. Never both, never neither.
+       */
+      let emittedTerminalRecord = false;
+      /**
+       * Give the `--jsonl` stream its typed terminal record when the run dies
+       * before a summary exists. Without it a fatal error is only human prose on
+       * stderr, and a machine consumer sees an empty stdout it cannot
+       * distinguish from "nothing to do". Only this event is forwarded — the
+       * document/summary records remain the established direct-CLI format.
+       */
+      const emitRunFailure = async (error: unknown, fallbackExitCode: CliExitCode): Promise<void> => {
+        if (!jsonlRequested || emittedTerminalRecord) return;
+        emittedTerminalRecord = true;
+        const event: OcrJobEvent = {
+          protocolVersion: OCR_PROTOCOL_VERSION,
+          type: 'run.failed',
+          runId,
+          sequence: 0,
+          timestamp: new Date().toISOString(),
+          error: errorPayloadForProtocol(
+            ocrErrorPayload(error, fallbackExitCode),
+            OCR_PROTOCOL_VERSION,
+          ),
+        };
+        assertOcrJobEvent(event);
+        await writeMachineStdout(`${JSON.stringify(event)}\n`);
+      };
       try {
         assertConfigFlagsDoNotConflict(command);
         const cwd = process.cwd();
@@ -267,7 +321,17 @@ CLI flags take precedence.
         const options = customSchema
           ? { ...resolvedOptions, customSchema }
           : resolvedOptions;
-        const resolvedInputs = await discoverInputs(inputs, options);
+        const ignoredFlags = ignoredModeScopedOptions(suppliedModeScopedFlags(flags), options.mode);
+        const ignoredWarning = ignoredModeScopedOptionWarning(ignoredFlags, options.mode, 'flag');
+        // Written regardless of --quiet: this reports a request the CLI cannot
+        // honour, not progress, and silence is the bug being fixed.
+        if (ignoredWarning) process.stderr.write(`${ignoredWarning}\n`);
+        const discovery = await discoverInputSet(inputs, options);
+        const resolvedInputs = discovery.inputs;
+        // Credentials are the last gate so a missing key never masks a bad flag
+        // or a missing input, and a live run reports the same first error a
+        // credential-free --dry-run does.
+        assertCredentialsAvailable(options);
         await withInterruptHandling(async ({ abortController, interruptedExitCode }) => {
           try {
             if (!options.quiet) {
@@ -277,8 +341,14 @@ CLI flags take precedence.
                 + `(concurrency ${options.concurrency})\n`,
               );
             }
+            // Written even under --quiet: a shrinking document set is a request
+            // the CLI could not honour in full, not progress.
+            const skipSummary = describeDiscoverySkips(discovery.skipped);
+            if (skipSummary) process.stderr.write(`Discovery: ${skipSummary}\n`);
             const summary = await runBatch(resolvedInputs, options, {
               abortController,
+              discovery: discovery.skipped,
+              onTerminalRecord: () => { emittedTerminalRecord = true; },
             });
             if (!options.quiet) {
               process.stderr.write(
@@ -295,14 +365,22 @@ CLI flags take precedence.
           } catch (error) {
             const signalExitCode = interruptedExitCode();
             if (signalExitCode !== undefined) {
+              // An interrupt is swallowed into an exit code rather than rethrown,
+              // so this is the stream's last chance at a terminal record. It is
+              // a no-op when the cancelled batch already returned its summary.
               process.exitCode = signalExitCode;
+              await emitRunFailure(error, signalExitCode);
               return;
             }
             throw asCliExitError(error, 1);
           }
         });
       } catch (error) {
+        // Every fatal path converges here — pre-flight rejections that never
+        // reach runBatch, and mid-run failures that unwind out of it — so one
+        // guarded emitter covers them all exactly once.
         const typed = asCliExitError(error, 2);
+        await emitRunFailure(typed, 2);
         throw typed;
       }
     });
@@ -473,9 +551,13 @@ CLI flags take precedence.
       }
       const webFormat: WebOutputFormat = options.format;
       const urls = await resolveWebUrls(rawUrls, flags.file, cwd);
+      // Anything checkable without a credential is checked before the credential
+      // gate. capabilities advertises credential-free-dry-run, so a dry run has
+      // to report the same first error the equivalent live run would.
       const outputTarget = options.output
         ? await assertWebOutputAvailable(options.output, cwd, options.overwrite)
         : undefined;
+      assertCredentialsAvailable(options);
       await withInterruptHandling(async ({ abortController, interruptedExitCode }) => {
         try {
           const execution = await runWebJob(
@@ -632,6 +714,12 @@ CLI flags take precedence.
           }
         }
       }
+      const projectConfigPath = path.join(cwd, '.open-ocr-cli.json');
+      const legacyProjectConfigPath = path.join(cwd, '.gemini-ocr.json');
+      const [projectConfigExists, legacyProjectConfigExists] = await Promise.all([
+        configFileExists(projectConfigPath),
+        configFileExists(legacyProjectConfigPath),
+      ]);
       const checks = {
         node: { ok: isSupportedNode(process.versions.node), version: process.versions.node },
         configuration: { ok: !configurationError, error: configurationError },
@@ -645,8 +733,10 @@ CLI flags take precedence.
           environmentVariable: gatewayTokenEnv,
         },
         credentialProbe,
-        projectConfig: path.join(cwd, '.open-ocr-cli.json'),
-        legacyProjectConfig: path.join(cwd, '.gemini-ocr.json'),
+        projectConfig: projectConfigPath,
+        projectConfigExists,
+        legacyProjectConfig: legacyProjectConfigPath,
+        legacyProjectConfigExists,
         effectiveConfig: config,
       };
       if (flags.json) process.stdout.write(`${JSON.stringify(checks, null, 2)}\n`);
@@ -663,7 +753,14 @@ CLI flags take precedence.
             + `${checks.credentialProbe.error ? ` — ${checks.credentialProbe.error}` : ''}\n`,
           );
         }
-        process.stdout.write(`Project config: ${checks.projectConfig}\n`);
+        process.stdout.write(
+          `Project config: ${checks.projectConfig}${checks.projectConfigExists ? '' : ' (not found)'}\n`,
+        );
+        // Only worth a line when it exists: a legacy file silently participates
+        // in the merge, so its presence is what a reader needs to know about.
+        if (checks.legacyProjectConfigExists) {
+          process.stdout.write(`Legacy project config: ${checks.legacyProjectConfig}\n`);
+        }
         if (!checks.apiKey.ok) process.stdout.write(`${credentialSetupGuidance(apiKeyEnv, cwd, provider)}\n`);
       }
       if (
