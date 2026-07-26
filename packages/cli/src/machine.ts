@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { readFile, stat } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 
@@ -121,12 +121,23 @@ export async function readOcrJobRequestRaw(requestPath: string, cwd: string, sig
     raw = await readStandardInput(signal);
   } else {
     const absolutePath = path.resolve(cwd, requestPath);
+    // Size-check and read through one handle. Stat-then-read re-resolves the
+    // path, so the file could be swapped for a larger one between the guard and
+    // the read; the guard must describe the bytes actually loaded.
+    let handle;
     try {
-      if ((await stat(absolutePath)).size > MAX_REQUEST_BYTES) throw requestTooLarge();
-      raw = await readFile(absolutePath, 'utf8');
+      handle = await open(absolutePath, 'r');
+    } catch (error) {
+      throw requestPathError(error, requestPath) ?? error;
+    }
+    try {
+      if ((await handle.stat()).size > MAX_REQUEST_BYTES) throw requestTooLarge();
+      raw = await handle.readFile('utf8');
     } catch (error) {
       if (error instanceof CliExitError) throw error;
       throw requestPathError(error, requestPath) ?? error;
+    } finally {
+      await handle.close();
     }
     if (Buffer.byteLength(raw) > MAX_REQUEST_BYTES) throw requestTooLarge();
   }

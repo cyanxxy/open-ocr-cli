@@ -559,16 +559,19 @@ export async function readAndValidateInput(input: ResolvedInput): Promise<{ byte
     const absolutePath = input.absolutePath;
     if (!absolutePath) throw inputError(`${input.displayPath} has no readable input path`);
     try {
-      const currentSize = (await fs.stat(absolutePath)).size;
-      if (currentSize > maxBytes) {
-        throw inputError(
-          `${input.displayPath} exceeds the ${label} ${input.mimeType === 'application/pdf' ? 'PDF' : 'image'} limit`,
-        );
-      }
+      // Open first, then size-check through the handle. Stat-then-open
+      // re-resolves the path, so the entry could be swapped between the limit
+      // check and the read; the bound must describe the bytes we actually load.
       const handle = await fs.open(absolutePath, 'r');
       const chunks: Buffer[] = [];
       let totalBytes = 0;
       try {
+        const currentSize = (await handle.stat()).size;
+        if (currentSize > maxBytes) {
+          throw inputError(
+            `${input.displayPath} exceeds the ${label} ${input.mimeType === 'application/pdf' ? 'PDF' : 'image'} limit`,
+          );
+        }
         while (totalBytes <= maxBytes) {
           const readSize = Math.min(1024 * 1024, maxBytes + 1 - totalBytes);
           const chunk = Buffer.allocUnsafe(readSize);

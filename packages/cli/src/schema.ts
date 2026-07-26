@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { readFile, stat } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import path from 'node:path';
 
 import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020.js';
@@ -125,22 +125,30 @@ function unreadableSchemaError(error: unknown, schemaPath: string): CliExitError
 
 export async function loadCustomSchema(schemaPath: string, cwd: string): Promise<Record<string, unknown>> {
   const absolutePath = path.resolve(cwd, schemaPath);
-  let metadata: Awaited<ReturnType<typeof stat>>;
+  // Inspect and read through a single handle. Stat-then-read re-resolves the
+  // path and lets the file change between the size check and the read; every
+  // check here applies to the exact bytes we go on to parse.
+  let handle;
   try {
-    metadata = await stat(absolutePath);
+    handle = await open(absolutePath, 'r');
   } catch (error) {
     throw unreadableSchemaError(error, schemaPath) ?? error;
   }
-  if (!metadata.isFile()) throw new Error(`Schema path is not a file: ${schemaPath}`);
-  if (metadata.size > MAX_SCHEMA_BYTES) throw new Error('Schema exceeds the 1 MB safety limit');
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(await readFile(absolutePath, 'utf8')) as unknown;
-  } catch (error) {
-    if (error instanceof SyntaxError) throw new Error(`Invalid JSON in schema ${schemaPath}: ${error.message}`);
-    throw unreadableSchemaError(error, schemaPath) ?? error;
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) throw new Error(`Schema path is not a file: ${schemaPath}`);
+    if (metadata.size > MAX_SCHEMA_BYTES) throw new Error('Schema exceeds the 1 MB safety limit');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await handle.readFile('utf8')) as unknown;
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new Error(`Invalid JSON in schema ${schemaPath}: ${error.message}`);
+      throw unreadableSchemaError(error, schemaPath) ?? error;
+    }
+    return validateCustomSchema(parsed);
+  } finally {
+    await handle.close();
   }
-  return validateCustomSchema(parsed);
 }
 
 export function assertCustomSchemaOutput(
