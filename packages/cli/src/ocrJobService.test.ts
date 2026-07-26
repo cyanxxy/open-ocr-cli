@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -177,9 +177,39 @@ describe('OcrJobService', () => {
     expect(execution.summary.results[1]).toMatchObject({
       status: 'skipped',
       skipReason: 'cost-limit',
-      errorDetails: { code: 'COST_LIMIT' },
+      // The hint is the agent's next action; a typed error without one is a dead end.
+      errorDetails: { code: 'COST_LIMIT', hint: expect.stringContaining('--max-cost') },
     });
     expect(execution.result).toMatchObject({ ok: false, status: 'cost_limited' });
+  });
+
+  it('gives a document timeout an actionable next step', async () => {
+    const documentPath = path.join(directory, 'slow.jpg');
+    await writeFile(documentPath, JPEG_BYTES);
+    const baseOptions = resolveCliOptions({ dryRun: true }, {}, directory);
+    const options = {
+      ...baseOptions, apiKey: 'test-key', dryRun: false, quiet: true, timeoutSeconds: 0.02,
+    };
+    const inputs = await discoverInputs([documentPath], options);
+    const extractDocument = vi.fn<OcrDocumentExtractor>((_input, _options, signal) => (
+      new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => { reject(signal.reason as Error); }, { once: true });
+      })
+    ));
+
+    const execution = await new OcrJobService({ extractDocument }).run(inputs, options, {
+      runId: 'timeout-hint-run',
+      abortController: new AbortController(),
+      protocolVersion: 2,
+      deliveryMode: 'inline',
+    });
+
+    expect(execution.result.documents[0]?.error).toMatchObject({
+      code: 'TIMEOUT',
+      category: 'limit',
+      retryable: true,
+      hint: expect.stringContaining('--timeout'),
+    });
   });
 
   it('reports an interrupted active document as cancelled instead of failed', async () => {
@@ -402,6 +432,188 @@ describe('OcrJobService', () => {
     });
     expect(extractDocument).toHaveBeenCalledOnce();
     expect(await readFile(path.join(outputDirectory, '.gemini-ocr-manifest.json'), 'utf8')).toContain(documentPath);
+  });
+
+  it('re-extracts a changed document over its own stale artifact instead of aborting the resume batch', async () => {
+    const inputDirectory = path.join(directory, 'docs');
+    const outputDirectory = path.join(directory, 'resume-batch');
+    await mkdir(inputDirectory, { recursive: true });
+    const changedPath = path.join(inputDirectory, 'changed.jpg');
+    const unchangedPath = path.join(inputDirectory, 'unchanged.jpg');
+    await writeFile(changedPath, JPEG_BYTES);
+    await writeFile(unchangedPath, JPEG_BYTES);
+    const options = {
+      ...resolveCliOptions({ output: outputDirectory, concurrency: '1' }, {}, directory),
+      apiKey: 'test-key',
+      quiet: true,
+    };
+    let pass = 0;
+    const extractDocument = vi.fn<OcrDocumentExtractor>((input) => {
+      pass += 1;
+      return Promise.resolve({ artifacts: { markdown: `# ${input.name} pass ${pass}` }, attempts: 1 });
+    });
+    const service = new OcrJobService({ extractDocument });
+
+    await service.run(await discoverInputs([inputDirectory], options), options, {
+      runId: 'resume-batch-first',
+      abortController: new AbortController(),
+    });
+    // Only one document's bytes change. Resume exists precisely for this, so the
+    // batch must re-extract that document over its own stale artifact rather
+    // than reporting a conflict that also strands the unchanged document.
+    await writeFile(changedPath, Uint8Array.from([...JPEG_BYTES, 4, 5, 6, 7]));
+
+    const resumed = await service.run(await discoverInputs([inputDirectory], options), options, {
+      runId: 'resume-batch-second',
+      abortController: new AbortController(),
+    });
+
+    expect(extractDocument).toHaveBeenCalledTimes(3);
+    expect(resumed.summary.results.map((result) => [
+      result.input.name, result.status, result.skipReason,
+    ])).toEqual([
+      ['changed.jpg', 'succeeded', undefined],
+      ['unchanged.jpg', 'skipped', 'resumed'],
+    ]);
+    await expect(readFile(path.join(outputDirectory, 'docs', 'changed.md'), 'utf8'))
+      .resolves.toBe('# changed.jpg pass 3\n');
+    await expect(readFile(path.join(outputDirectory, 'docs', 'unchanged.md'), 'utf8'))
+      .resolves.toBe('# unchanged.jpg pass 2\n');
+  });
+
+  it('still reports a conflict when a resume run finds an artifact its manifest never recorded', async () => {
+    const inputDirectory = path.join(directory, 'docs');
+    const outputDirectory = path.join(directory, 'untracked-batch');
+    await mkdir(inputDirectory, { recursive: true });
+    await writeFile(path.join(inputDirectory, 'first.jpg'), JPEG_BYTES);
+    await writeFile(path.join(inputDirectory, 'second.jpg'), JPEG_BYTES);
+    const options = {
+      ...resolveCliOptions({ output: outputDirectory, concurrency: '1' }, {}, directory),
+      apiKey: 'test-key',
+      quiet: true,
+    };
+    const extractDocument = vi.fn<OcrDocumentExtractor>((input) => Promise.resolve({
+      artifacts: { markdown: `# ${input.name}` },
+      attempts: 1,
+    }));
+    const service = new OcrJobService({ extractDocument });
+    await service.run(await discoverInputs([inputDirectory], options), options, {
+      runId: 'untracked-first',
+      abortController: new AbortController(),
+    });
+
+    // A third document arrives whose destination is already occupied by a file
+    // no manifest entry claims. That is a real collision, not a stale artifact.
+    const untrackedTarget = path.join(outputDirectory, 'docs', 'third.md');
+    await writeFile(path.join(inputDirectory, 'third.jpg'), JPEG_BYTES);
+    await writeFile(untrackedTarget, 'written by something else\n');
+
+    await expect(service.run(await discoverInputs([inputDirectory], options), options, {
+      runId: 'untracked-second',
+      abortController: new AbortController(),
+    })).rejects.toMatchObject({ code: 'OUTPUT_CONFLICT', category: 'output' });
+    expect(await readFile(untrackedTarget, 'utf8')).toBe('written by something else\n');
+  });
+
+  it('resumes a single document written into an output directory', async () => {
+    const inputDirectory = path.join(directory, 'docs');
+    const outputDirectory = path.join(directory, 'single-resume');
+    await mkdir(inputDirectory, { recursive: true });
+    const documentPath = path.join(inputDirectory, 'only.jpg');
+    await writeFile(documentPath, JPEG_BYTES);
+    const options = {
+      ...resolveCliOptions({ output: outputDirectory }, {}, directory),
+      apiKey: 'test-key',
+      quiet: true,
+    };
+    const extractDocument = vi.fn<OcrDocumentExtractor>(() => Promise.resolve({
+      artifacts: { markdown: '# Only' },
+      attempts: 1,
+    }));
+    const service = new OcrJobService({ extractDocument });
+
+    // A one-document run has to leave the same resume record a two-document run
+    // does, or re-running it is a hard conflict and adding a second document
+    // strands the first one's artifact.
+    await service.run(await discoverInputs([inputDirectory], options), options, {
+      runId: 'single-resume-first',
+      abortController: new AbortController(),
+    });
+    const resumed = await service.run(await discoverInputs([inputDirectory], options), options, {
+      runId: 'single-resume-second',
+      abortController: new AbortController(),
+    });
+
+    expect(extractDocument).toHaveBeenCalledOnce();
+    expect(resumed.summary.results[0]).toMatchObject({ status: 'skipped', skipReason: 'resumed' });
+    await expect(readFile(path.join(outputDirectory, '.gemini-ocr-manifest.json'), 'utf8'))
+      .resolves.toContain(documentPath);
+
+    // The directory grows to two documents; the first must still resume.
+    await writeFile(path.join(inputDirectory, 'second.jpg'), JPEG_BYTES);
+    const grown = await service.run(await discoverInputs([inputDirectory], options), options, {
+      runId: 'single-resume-grown',
+      abortController: new AbortController(),
+    });
+
+    expect(extractDocument).toHaveBeenCalledTimes(2);
+    expect(grown.summary.results.map((result) => [result.input.name, result.status])).toEqual([
+      ['only.jpg', 'skipped'],
+      ['second.jpg', 'succeeded'],
+    ]);
+  });
+
+  it('keeps job metadata out of an output path that names a single artifact file', async () => {
+    const documentPath = path.join(directory, 'invoice.jpg');
+    const outputFile = path.join(directory, 'report.md');
+    await writeFile(documentPath, JPEG_BYTES);
+    const options = {
+      ...resolveCliOptions({ output: outputFile }, {}, directory),
+      apiKey: 'test-key',
+      quiet: true,
+    };
+    const inputs = await discoverInputs([documentPath], options);
+    const extractDocument = vi.fn<OcrDocumentExtractor>(() => Promise.resolve({
+      artifacts: { markdown: '# Invoice' },
+      attempts: 1,
+    }));
+
+    // `--output report.md` names the artifact itself, so defaultOutputDirectory
+    // resolves to that same path. A manifest or lock would have to be created
+    // inside the file the extraction is about to write.
+    const execution = await new OcrJobService({ extractDocument }).run(inputs, options, {
+      runId: 'single-file-output',
+      abortController: new AbortController(),
+      enableSingleInputResume: true,
+    });
+
+    expect(execution.summary.results[0]?.outputFiles).toEqual([outputFile]);
+    await expect(readFile(outputFile, 'utf8')).resolves.toBe('# Invoice\n');
+  });
+
+  it('writes no manifest or lock for a run that only streams to stdout', async () => {
+    const documentPath = path.join(directory, 'invoice.jpg');
+    await writeFile(documentPath, JPEG_BYTES);
+    const options = {
+      ...resolveCliOptions({}, {}, directory),
+      apiKey: 'test-key',
+      quiet: true,
+    };
+    const inputs = await discoverInputs([documentPath], options);
+    const extractDocument = vi.fn<OcrDocumentExtractor>(() => Promise.resolve({
+      artifacts: { markdown: '# Invoice' },
+      attempts: 1,
+    }));
+
+    const execution = await new OcrJobService({ extractDocument }).run(inputs, options, {
+      runId: 'stdout-only-run',
+      abortController: new AbortController(),
+    });
+
+    expect(execution.summary.results[0]?.outputFiles).toBeUndefined();
+    // Job metadata would be the only reason to materialize a directory here.
+    await expect(readdir(path.join(directory, 'gemini-ocr-output')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('reserves single-run manifest paths before invoking the provider', async () => {

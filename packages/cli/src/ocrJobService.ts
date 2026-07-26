@@ -15,6 +15,7 @@ import {
   defaultOutputDirectory,
   ManifestStore,
   plannedArtifactTargets,
+  resolvesToSingleArtifactFile,
   writeArtifacts,
   writeBatchSummary,
 } from './output';
@@ -84,6 +85,16 @@ export interface OcrJobServiceResult {
   runId: string;
   summary: BatchSummary;
   result: OcrRunResult;
+}
+
+/**
+ * Where this job's artifacts and job metadata go. Resolved once so the batch
+ * lock and the manifest can never disagree about whether the run owns an output
+ * directory.
+ */
+interface OutputPlan {
+  shouldWriteFiles: boolean;
+  needsManifest: boolean;
 }
 
 type EventPayload = Omit<OcrJobEvent, 'protocolVersion' | 'runId' | 'sequence' | 'timestamp'>;
@@ -266,6 +277,30 @@ export class OcrJobService {
     assertProviderMediaTypeSupported(input.mimeType, options);
   }
 
+  private async planOutput(
+    inputs: ResolvedInput[],
+    options: ResolvedCliOptions,
+    runtime: OcrJobServiceRuntime,
+  ): Promise<OutputPlan> {
+    const explicitDelivery = runtime.deliveryMode;
+    const shouldWriteFiles = explicitDelivery === 'reference'
+      || (explicitDelivery === undefined && (
+        inputs.length > 1 || Boolean(options.output) || options.format === 'all'
+      ));
+    // Job metadata needs a directory of its own; `--output report.md` leaves it
+    // nowhere to go. This is what the historical single-input opt-in was really
+    // protecting, so gate on the output layout rather than the document count.
+    const singleArtifactFile = await resolvesToSingleArtifactFile(options, inputs.length);
+    // One document resumes exactly like several, provided it has a stable
+    // manifest key. stdin and URL documents all key on '<stdin>', so they stay
+    // on the caller's explicit opt-in rather than sharing one entry.
+    const keyedByPath = inputs.every((input) => input.absolutePath !== undefined);
+    const needsManifest = shouldWriteFiles && !singleArtifactFile && (
+      inputs.length > 1 || keyedByPath || runtime.enableSingleInputResume === true
+    );
+    return { shouldWriteFiles, needsManifest };
+  }
+
   async run(
     inputs: ResolvedInput[],
     options: ResolvedCliOptions,
@@ -293,9 +328,11 @@ export class OcrJobService {
     });
 
     try {
-      const needsManifest = runtime.deliveryMode !== 'inline'
-        && (inputs.length > 1 || runtime.enableSingleInputResume === true);
-      if (needsManifest && !options.dryRun) {
+      // The lock guards the manifest, so both follow one plan: a run that keeps
+      // no manifest (stdout, inline delivery, or a single-artifact-file output)
+      // must not create a lock directory either.
+      const plan = await this.planOutput(inputs, options, runtime);
+      if (plan.needsManifest && !options.dryRun) {
         try {
           batchLock = await BatchOutputLock.acquire(defaultOutputDirectory(options), {
             forceUnlock: options.forceUnlock,
@@ -305,7 +342,7 @@ export class OcrJobService {
           throw asCliExitError(error, 2);
         }
       }
-      summary = await this.runBatchInternal(inputs, options, runtime, events, providerRuntime);
+      summary = await this.runBatchInternal(inputs, options, runtime, events, providerRuntime, plan);
     } catch (error) {
       failure = error;
     }
@@ -356,6 +393,7 @@ export class OcrJobService {
     runtime: OcrJobServiceRuntime,
     events: EventDispatcher,
     providerRuntime: ProviderExecutionContext,
+    plan: OutputPlan,
   ): Promise<BatchSummary> {
     const started = performance.now();
     const startedAt = new Date().toISOString();
@@ -364,12 +402,7 @@ export class OcrJobService {
     // detailed streaming run does not re-hash tens of megabytes for every
     // model delta.
     const documentIds = inputs.map((input) => ocrDocumentId({ input }));
-    const shouldWriteFiles = explicitDelivery === 'reference'
-      || (explicitDelivery === undefined && (
-        inputs.length > 1 || Boolean(options.output) || options.format === 'all'
-      ));
-    const needsManifest = shouldWriteFiles
-      && (inputs.length > 1 || runtime.enableSingleInputResume === true);
+    const { shouldWriteFiles, needsManifest } = plan;
     if (shouldWriteFiles) {
       try {
         await assertNoOutputCollisions(inputs, options, needsManifest);
@@ -385,6 +418,8 @@ export class OcrJobService {
     }
     const fingerprintMode = modeFingerprint(options);
     const resumableEntries = new Map<number, ManifestEntry>();
+    const staleArtifacts = new Map<number, ReadonlySet<string>>();
+    const resumeActive = Boolean(options.resume) && manifest !== undefined;
     // Runs regardless of --dry-run. An occupied destination is checkable without
     // a credential and without a provider call, so a dry run that stayed silent
     // about it would approve a job the live run rejects. Resolving resume state
@@ -395,11 +430,28 @@ export class OcrJobService {
         await Promise.all(inputs.map(async (input, index) => {
           const key = input.absolutePath ?? '<stdin>';
           const fingerprint = inputFingerprint(input, fingerprintMode);
-          const completedEntry = options.resume && manifest
-            ? await manifest.completedEntry(key, fingerprint)
+          const completedEntry = resumeActive
+            ? await manifest?.completedEntry(key, fingerprint)
             : undefined;
-          if (completedEntry) resumableEntries.set(index, completedEntry);
-          else if (shouldWriteFiles) await assertArtifactTargetsAvailable(input, options, inputs.length);
+          if (completedEntry) {
+            resumableEntries.set(index, completedEntry);
+            return;
+          }
+          // A tracked input that changed (or lost part of its output) is exactly
+          // what resume exists for: re-extract it over its own stale artifacts
+          // rather than failing the whole batch on a destination this job owns.
+          // Only paths the manifest recorded for this same input are reclaimed;
+          // anything else at a target path is still a genuine collision.
+          const reclaimable = resumeActive
+            ? manifest?.recordedArtifactPaths(key) ?? new Set<string>()
+            : new Set<string>();
+          if (reclaimable.size > 0) staleArtifacts.set(index, reclaimable);
+          if (shouldWriteFiles) {
+            await assertArtifactTargetsAvailable(input, options, inputs.length, {
+              reclaimable,
+              resumeActive,
+            });
+          }
         }));
       } catch (error) {
         throw asCliExitError(error, 2);
@@ -543,7 +595,7 @@ export class OcrJobService {
               assertArtifactFormatAvailable(artifacts, options.format);
             }
             const outputFiles = shouldWriteFiles
-              ? await writeArtifacts(input, artifacts, options, inputs.length)
+              ? await writeArtifacts(input, artifacts, options, inputs.length, staleArtifacts.get(index))
               : undefined;
             const agentMemory = options.mode === 'agentic' && artifacts.json && typeof artifacts.json === 'object'
               ? artifacts.json as { stopReason?: string }
@@ -573,7 +625,12 @@ export class OcrJobService {
                 ? errorMessage(runtime.abortController.signal.reason ?? error)
                 : errorMessage(error);
             const typedError = timedOut
-              ? new CliExitError(message, 1, { code: 'TIMEOUT', category: 'limit', retryable: true })
+              ? new CliExitError(message, 1, {
+                  code: 'TIMEOUT',
+                  category: 'limit',
+                  retryable: true,
+                  hint: 'Retry with a longer --timeout or a smaller document.',
+                })
               : cancelled
                 ? new CliExitError(message, 130, { cause: error })
                 : error;
@@ -622,6 +679,7 @@ export class OcrJobService {
         : unscheduledSkipReason === 'cost-limit'
           ? ocrErrorPayload(new CliExitError(unscheduledReason, 1, {
               code: 'COST_LIMIT', category: 'limit', retryable: false,
+              hint: 'Rerun the remaining documents with a higher --max-cost, or accept the partial batch.',
             }))
           : ocrErrorPayload(new CliExitError(unscheduledReason, 1, {
               code: 'NOT_RUN', category: 'execution', retryable: true,

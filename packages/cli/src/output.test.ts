@@ -226,6 +226,72 @@ describe('CLI output', () => {
     );
   });
 
+  it('reclaims only the artifact paths a manifest entry recorded for the same input', async () => {
+    const markdownTarget = path.join(directory, 'nested', 'invoice.md');
+    const jsonTarget = path.join(directory, 'nested', 'invoice.json');
+    await fs.mkdir(path.dirname(markdownTarget), { recursive: true });
+    await writeFile(markdownTarget, 'stale markdown\n');
+    await writeFile(jsonTarget, 'written by something else\n');
+
+    // The recorded path is this input's own stale output, so re-extracting may
+    // replace it. The unrecorded one at another possible target is a collision.
+    await expect(assertArtifactTargetsAvailable(input, options, 2, {
+      reclaimable: new Set([markdownTarget]),
+      resumeActive: true,
+    })).rejects.toThrow(`no resume manifest entry claims it for ${input.displayPath}: ${jsonTarget}`);
+
+    await fs.rm(jsonTarget);
+    await expect(assertArtifactTargetsAvailable(input, options, 2, {
+      reclaimable: new Set([markdownTarget]),
+      resumeActive: true,
+    })).resolves.toBeUndefined();
+  });
+
+  it('replaces a reclaimed artifact without enabling a blanket overwrite', async () => {
+    const markdownTarget = path.join(directory, 'nested', 'invoice.md');
+    const jsonTarget = path.join(directory, 'nested', 'invoice.json');
+    await fs.mkdir(path.dirname(markdownTarget), { recursive: true });
+    await writeFile(markdownTarget, 'stale markdown\n');
+    await writeFile(jsonTarget, 'written by something else\n');
+
+    await expect(writeArtifacts(
+      input,
+      { markdown: '# Fresh', json: { fresh: true } },
+      { ...options, format: 'all' },
+      2,
+      new Set([markdownTarget]),
+    )).rejects.toThrow('Output already exists');
+    // The unreclaimed destination is untouched, and the transaction rolled back.
+    await expect(readFile(jsonTarget, 'utf8')).resolves.toBe('written by something else\n');
+    await expect(readFile(markdownTarget, 'utf8')).resolves.toBe('stale markdown\n');
+
+    await fs.rm(jsonTarget);
+    await expect(writeArtifacts(
+      input,
+      { markdown: '# Fresh', json: { fresh: true } },
+      { ...options, format: 'all' },
+      2,
+      new Set([markdownTarget]),
+    )).resolves.toContain(markdownTarget);
+    await expect(readFile(markdownTarget, 'utf8')).resolves.toBe('# Fresh\n');
+  });
+
+  it('reports the artifact paths a manifest already attributes to an input', async () => {
+    const manifest = new ManifestStore(directory);
+    await manifest.update('/workspace/invoice.pdf', {
+      fingerprint: 'stale',
+      status: 'succeeded',
+      outputFiles: [path.join(directory, 'invoice.md')],
+      completedAt: new Date().toISOString(),
+    });
+
+    // Reported whatever the fingerprint: a changed input still owns the output
+    // its previous attempt wrote.
+    expect(manifest.recordedArtifactPaths('/workspace/invoice.pdf'))
+      .toEqual(new Set([path.join(directory, 'invoice.md')]));
+    expect(manifest.recordedArtifactPaths('/workspace/other.pdf')).toEqual(new Set());
+  });
+
   it('restores every existing artifact if an overwrite transaction fails', async () => {
     const markdownTarget = path.join(directory, 'invoice.md');
     const jsonTarget = path.join(directory, 'invoice.json');

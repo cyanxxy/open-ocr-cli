@@ -47,14 +47,39 @@ export interface OcrErrorPayload extends OcrErrorDetails {
 
 interface CliExitErrorOptions extends ErrorOptions, Partial<OcrErrorDetails> {}
 
+/**
+ * The next action for each error code, used whenever a construction site does
+ * not supply a more specific one. Agents treat `hint` as the recovery step, so
+ * a typed error without one is a dead end; keying the fallback on the code
+ * rather than the exit status keeps that floor from drifting into advice that
+ * contradicts the code it is attached to.
+ */
+const DEFAULT_ERROR_HINTS: Record<OcrErrorCode, string> = {
+  INPUT_NOT_FOUND: 'Check the input path and working directory.',
+  INPUT_INVALID: 'Use a supported, non-empty image or PDF within the documented limits.',
+  CONFIG_INVALID: 'Check the request, command flags, and configuration.',
+  AUTH_MISSING: 'Configure the named credential environment variable; never pass a raw key as an argument.',
+  AUTH_INVALID: 'Verify the configured provider credential.',
+  PERMISSION_DENIED: 'Verify that the credential and project are allowed to use this model or operation.',
+  SCHEMA_INVALID: 'Validate the JSON Schema against the supported structured-output subset.',
+  OUTPUT_CONFLICT: 'Choose a new output path or resume a matching job.',
+  RATE_LIMITED: 'Retry later or lower request concurrency/rate.',
+  TIMEOUT: 'Retry with a longer timeout or a smaller document.',
+  COST_LIMIT: 'Review partial output or explicitly raise the cost ceiling.',
+  CANCELLED: 'Resume or rerun the interrupted job when ready.',
+  NOT_RUN: 'Rerun the skipped documents after addressing the failure that stopped the batch.',
+  PROVIDER_FAILURE: 'Review the reported provider message and adjust the request before retrying.',
+  INTERNAL: 'Retry once, then report the failure with non-secret diagnostics if it persists.',
+};
+
 function defaultErrorDetails(exitCode: CliExitCode): OcrErrorDetails {
   if (exitCode === 130 || exitCode === 143) {
-    return { code: 'CANCELLED', category: 'cancelled', retryable: true, hint: 'Resume or rerun the interrupted job when ready.' };
+    return { code: 'CANCELLED', category: 'cancelled', retryable: true, hint: DEFAULT_ERROR_HINTS.CANCELLED };
   }
   if (exitCode === 1) {
-    return { code: 'PROVIDER_FAILURE', category: 'provider', retryable: false };
+    return { code: 'PROVIDER_FAILURE', category: 'provider', retryable: false, hint: DEFAULT_ERROR_HINTS.PROVIDER_FAILURE };
   }
-  return { code: 'CONFIG_INVALID', category: 'configuration', retryable: false, hint: 'Check the request, command flags, and configuration.' };
+  return { code: 'CONFIG_INVALID', category: 'configuration', retryable: false, hint: DEFAULT_ERROR_HINTS.CONFIG_INVALID };
 }
 
 /** Legacy inference for untyped third-party or filesystem errors only. */
@@ -151,7 +176,7 @@ function classifyKnownError(error: unknown, exitCode: CliExitCode): OcrErrorDeta
         code: current.code,
         category: current.category,
         retryable: current.retryable,
-        ...(current.hint ? { hint: current.hint } : {}),
+        hint: current.hint,
       };
     }
     const name = recordValue(current, 'name');
@@ -250,7 +275,14 @@ function classifyKnownError(error: unknown, exitCode: CliExitCode): OcrErrorDeta
       if (status === 409) {
         return { code: 'PROVIDER_FAILURE', category: 'provider', retryable: true, hint: 'Retry with backoff after the provider conflict.' };
       }
-      if (providerError) return { code: 'PROVIDER_FAILURE', category: 'provider', retryable: false };
+      if (providerError) {
+        return {
+          code: 'PROVIDER_FAILURE',
+          category: 'provider',
+          retryable: false,
+          hint: 'The provider rejected this request; fix what its message names before retrying the same call.',
+        };
+      }
     }
     const systemCode = recordValue(current, 'code');
     if (systemCode === 'EEXIST') {
@@ -284,7 +316,7 @@ export class CliExitError extends Error {
   readonly code: OcrErrorCode;
   readonly category: OcrErrorCategory;
   readonly retryable: boolean;
-  readonly hint?: string;
+  readonly hint: string;
 
   constructor(
     message: string,
@@ -297,7 +329,9 @@ export class CliExitError extends Error {
     this.code = options.code ?? classified.code;
     this.category = options.category ?? classified.category;
     this.retryable = options.retryable ?? classified.retryable;
-    this.hint = options.hint ?? classified.hint;
+    // Fall back on the code, not the exit status: a site that names a code but
+    // no hint would otherwise inherit advice meant for a different failure.
+    this.hint = options.hint ?? DEFAULT_ERROR_HINTS[this.code];
   }
 }
 
@@ -369,7 +403,7 @@ export function ocrErrorPayload(error: unknown, fallbackExitCode: CliExitCode = 
     category: typed.category,
     message: typed.message,
     retryable: typed.retryable,
-    ...(typed.hint ? { hint: typed.hint } : {}),
+    hint: typed.hint,
   };
 }
 

@@ -5,7 +5,12 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { ocrErrorPayload } from './errors';
-import { assertCustomSchemaOutput, loadCustomSchema, validateCustomSchema } from './schema';
+import {
+  assertCustomSchemaOutput,
+  customSchemaCompatibilityWarning,
+  loadCustomSchema,
+  validateCustomSchema,
+} from './schema';
 
 let directory: string;
 
@@ -98,5 +103,32 @@ describe('custom JSON schemas', () => {
     expect(schema).not.toBe(input);
     expect(schema).not.toHaveProperty('$schema');
     expect(input).toHaveProperty('$schema');
+  });
+
+  // An array bound the provider cannot compile is rejected as a bare 400 that
+  // names no field, so the cost has to be explained before the request is sent.
+  it('warns that a costly array bound will likely be rejected', () => {
+    const warning = customSchemaCompatibilityWarning({
+      type: 'object',
+      properties: {
+        rows: {
+          type: 'array',
+          maxItems: 1000,
+          items: { type: 'object', properties: { a: { type: 'string' }, b: { type: 'string' } } },
+        },
+      },
+    });
+    expect(warning).toContain('properties.rows');
+    expect(warning).toContain('maxItems');
+    expect(warning).toContain('cap the collection after parsing');
+  });
+
+  it('stays silent for a schema built from accepted constructs', () => {
+    expect(customSchemaCompatibilityWarning({
+      type: 'object',
+      required: ['total'],
+      additionalProperties: false,
+      properties: { total: { anyOf: [{ type: 'string' }, { type: 'null' }] } },
+    })).toBeUndefined();
   });
 });

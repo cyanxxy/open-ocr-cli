@@ -40,7 +40,7 @@ import { describeDiscoverySkips, discoverInputSet } from './inputs';
 import { runInit, validateProviderCredentials, type InitFlags } from './init';
 import { promptInteractiveArguments } from './interactive';
 import { primaryArtifact } from './output';
-import { loadCustomSchema } from './schema';
+import { customSchemaCompatibilityWarning, loadCustomSchema } from './schema';
 import { executeOcrJobRequest, readOcrJobRequestRaw } from './machine';
 import {
   assertOcrJobEvent,
@@ -317,6 +317,12 @@ CLI flags take precedence.
         const customSchema = schemaPath
           ? await loadCustomSchema(schemaPath, cwd)
           : undefined;
+        if (customSchema) {
+          // A schema the provider will reject otherwise surfaces as a bare 400
+          // naming no field, so say which construct is at fault up front.
+          const schemaWarning = customSchemaCompatibilityWarning(customSchema);
+          if (schemaWarning) process.stderr.write(`${schemaWarning}\n`);
+        }
         const resolvedOptions = resolveCliOptions(flags, fileConfig, cwd);
         const options = customSchema
           ? { ...resolvedOptions, customSchema }

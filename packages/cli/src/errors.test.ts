@@ -8,6 +8,7 @@ import {
   cliExitCode,
   cliRunStatusExitCode,
   cliSignalExitCode,
+  OCR_ERROR_CODES,
   ocrErrorPayload,
   renderCliError,
 } from './errors';
@@ -229,6 +230,42 @@ describe('CLI exit errors', () => {
     expect(cliRunStatusExitCode('partial')).toBe(1);
     expect(cliRunStatusExitCode('cost_limited')).toBe(1);
     expect(cliRunStatusExitCode('failed')).toBe(1);
+  });
+
+  it('carries a next action on every typed error code', () => {
+    // Agents branch on `hint` to decide what to do next, so a typed error that
+    // omits one leaves them with nothing but prose to parse.
+    for (const code of OCR_ERROR_CODES) {
+      const error = new CliExitError(`${code} failure`, 1, { code });
+      expect(error.hint, `missing hint for ${code}`).toEqual(expect.any(String));
+      expect(error.hint.length, `empty hint for ${code}`).toBeGreaterThan(0);
+      expect(ocrErrorPayload(error, 1).hint).toBe(error.hint);
+    }
+  });
+
+  it('hints the untyped and provider-rejected failures that used to arrive bare', () => {
+    // A provider 400 with no structured code fell through to the generic
+    // default, and the default itself carried no hint.
+    expect(ocrErrorPayload(new ProviderApiError('Unsupported response schema keyword', 400), 1))
+      .toMatchObject({
+        code: 'PROVIDER_FAILURE',
+        category: 'provider',
+        retryable: false,
+        hint: expect.stringContaining('provider rejected'),
+      });
+    expect(ocrErrorPayload(new Error('Something the classifiers do not recognize'), 1))
+      .toMatchObject({ code: 'PROVIDER_FAILURE', hint: expect.any(String) });
+  });
+
+  it('does not let an exit-status default contradict an explicitly named code', () => {
+    // Exit 1 defaults to PROVIDER_FAILURE. A limit error that names its own code
+    // must not inherit provider advice just because it shares the exit status.
+    expect(new CliExitError('Timed out after 30s', 1, {
+      code: 'TIMEOUT', category: 'limit', retryable: true,
+    }).hint).toContain('timeout');
+    expect(new CliExitError('Reached the cost ceiling', 1, {
+      code: 'COST_LIMIT', category: 'limit', retryable: false,
+    }).hint).toContain('cost');
   });
 
   it('preserves typed details through wrapper error causes', () => {

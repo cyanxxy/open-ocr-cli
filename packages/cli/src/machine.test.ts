@@ -309,6 +309,69 @@ describe('machine request execution', () => {
     expect(warnings).toEqual([]);
   });
 
+  it('says that an explicit resume cannot match anything without an output directory', async () => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    const warnings: string[] = [];
+
+    await executeOcrJobRequest({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+      delivery: { mode: 'reference', resume: true },
+      dryRun: true,
+    }, {
+      cwd: directory,
+      runId: 'resume-without-output-run',
+      abortController: new AbortController(),
+      onWarning: (message) => warnings.push(message),
+      noConfig: true,
+    });
+
+    // The default output directory is per-run, so this resume can never match.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('delivery.resume was requested without delivery.outputDirectory');
+    expect(warnings[0]).toContain(path.join('.open-ocr-results', 'resume-without-output-run'));
+  });
+
+  it.each([
+    {
+      label: 'resume is only the default',
+      delivery: { mode: 'reference' as const },
+      runId: 'default-resume-run',
+    },
+    {
+      label: 'an explicit resume names its output directory',
+      delivery: { mode: 'reference' as const, resume: true, outputDirectory: 'results' },
+      runId: 'explicit-resume-run',
+    },
+    {
+      label: 'resume is explicitly switched off',
+      delivery: { mode: 'reference' as const, resume: false },
+      runId: 'disabled-resume-run',
+    },
+  ])('stays quiet about resume when $label', async ({ delivery, runId }) => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    const warnings: string[] = [];
+
+    await executeOcrJobRequest({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+      delivery,
+      dryRun: true,
+    }, {
+      cwd: directory,
+      runId,
+      abortController: new AbortController(),
+      onWarning: (message) => warnings.push(message),
+      noConfig: true,
+    });
+
+    // `resume` defaults to true, so warning on every run would train callers to
+    // ignore the channel.
+    expect(warnings).toEqual([]);
+  });
+
   it('does not warn when every supplied extraction field is used', async () => {
     await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
     const warnings: string[] = [];

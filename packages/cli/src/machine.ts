@@ -16,7 +16,7 @@ import { CliExitError } from './errors';
 import { describeDiscoverySkips, discoverInputSet } from './inputs';
 import { createOcrJobService } from './runner';
 import type { OcrJobServiceResult } from './ocrJobService';
-import { loadCustomSchema, validateCustomSchema } from './schema';
+import { customSchemaCompatibilityWarning, loadCustomSchema, validateCustomSchema } from './schema';
 import {
   defaultAgentOutputDirectory,
   ocrExtractionSemanticError,
@@ -315,6 +315,12 @@ export async function executeOcrJobRequest(
   } catch (error) {
     throw schemaError(error);
   }
+  if (customSchema) {
+    // Same diagnostic as the CLI, routed through the warning channel so `run`
+    // and MCP callers are not left with an unexplained provider 400.
+    const schemaWarning = customSchemaCompatibilityWarning(customSchema);
+    if (schemaWarning) execution.onWarning?.(schemaWarning);
+  }
   const deliveryMode = request.protocolVersion === 1
     ? 'reference'
     : request.delivery?.mode ?? 'reference';
@@ -323,6 +329,23 @@ export async function executeOcrJobRequest(
       ? path.resolve(execution.cwd, request.delivery.outputDirectory)
       : defaultAgentOutputDirectory(execution.cwd, execution.runId)
     : undefined;
+  // The default output directory is per-run, so a resume there can never match
+  // an earlier run and the caller silently pays for the same documents again.
+  // `resume` defaults to true, so only an explicit request states an intent the
+  // default directory cannot honor; warning on every run would be pure noise.
+  // The v1/v2 result and event schemas are strict, so this rides the warning
+  // channel rather than a new response field.
+  if (
+    deliveryMode === 'reference'
+    && request.delivery?.resume === true
+    && request.delivery.outputDirectory === undefined
+  ) {
+    execution.onWarning?.(
+      'delivery.resume was requested without delivery.outputDirectory, so this run wrote to a new '
+      + `per-run directory (${outputDirectory}) that no earlier run can match. `
+      + 'Pass the same delivery.outputDirectory on every run for resume to skip unchanged documents.',
+    );
+  }
   const effectiveFileConfig = request.extraction?.schema !== undefined
     ? { ...fileConfig, schema: undefined }
     : fileConfig;
