@@ -9,6 +9,7 @@ import {
   assertOcrMachineResult,
   createOcrCapabilities,
   OCR_PROTOCOL_SCHEMAS,
+  ocrExtractionSemanticError,
   parseOcrJobRequest,
   toOcrRunFailure,
   toOcrRunResult,
@@ -166,6 +167,114 @@ describe('agent protocols', () => {
       expect(payload.message).toContain('extraction.preset');
       expect(payload.message).not.toContain('--schema');
     }
+  });
+
+  it('refuses csv for a record-shaped preset before a provider call is billed', () => {
+    const capabilities = createOcrCapabilities('2.6.0');
+    const recordPreset = capabilities.presets.find((preset) => preset.outputShape === 'record');
+    const tablePreset = capabilities.presets.find((preset) => preset.outputShape === 'table');
+    if (!recordPreset || !tablePreset) throw new Error('Expected both preset shapes to be published');
+
+    const csvRequest = (preset: string): Record<string, unknown> => ({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'card.png' }],
+      extraction: { mode: 'template', preset, contentFormat: 'csv' },
+      dryRun: true,
+    });
+
+    expect(ocrExtractionSemanticError({
+      mode: 'template',
+      preset: recordPreset.id,
+      hasSchema: false,
+      contentFormat: 'csv',
+    })).toContain('cannot produce CSV rows');
+    // A dry run used to answer `validated` for this, a green light for a
+    // combination that can only fail after the call is paid for.
+    try {
+      parseOcrJobRequest(csvRequest(recordPreset.id));
+      throw new Error('Expected the record-shaped preset to be rejected for csv');
+    } catch (error) {
+      const payload = ocrErrorPayload(error);
+      expect(payload.code).toBe('CONFIG_INVALID');
+      expect(payload.message).toContain(recordPreset.id);
+      expect(payload.message).toContain(tablePreset.id);
+      expect(payload.message).not.toContain('--format');
+    }
+
+    expect(parseOcrJobRequest(csvRequest(tablePreset.id))).toMatchObject({
+      extraction: { preset: tablePreset.id, contentFormat: 'csv' },
+    });
+    // Other formats stay available for a record preset, and an unknown preset is
+    // still the preset lookup's failure to report.
+    expect(ocrExtractionSemanticError({
+      mode: 'template',
+      preset: recordPreset.id,
+      hasSchema: false,
+      contentFormat: 'json',
+    })).toBeUndefined();
+    expect(ocrExtractionSemanticError({
+      mode: 'template',
+      preset: 'not-a-preset',
+      hasSchema: false,
+      contentFormat: 'csv',
+    })).toBeUndefined();
+  });
+
+  it('names both fields when inline delivery is combined with file placement', () => {
+    const inlineRequest = (delivery: Record<string, unknown>): Record<string, unknown> => ({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'card.png' }],
+      delivery,
+    });
+
+    try {
+      parseOcrJobRequest(inlineRequest({ mode: 'inline', outputDirectory: 'out' }));
+      throw new Error('Expected inline delivery with an output directory to be rejected');
+    } catch (error) {
+      const payload = ocrErrorPayload(error);
+      expect(payload.code).toBe('CONFIG_INVALID');
+      expect(payload.message).toContain('delivery.outputDirectory');
+      expect(payload.message).toContain('delivery.mode inline');
+      expect(payload.message).toContain('reference');
+      // The schema's own `not` keyword reports this as `must NOT be valid`,
+      // which names neither field.
+      expect(payload.message).not.toContain('must NOT be valid');
+    }
+    expect(() => parseOcrJobRequest(inlineRequest({ mode: 'inline', resume: true })))
+      .toThrow('delivery.resume');
+    expect(() => parseOcrJobRequest(inlineRequest({
+      mode: 'inline',
+      outputDirectory: 'out',
+      resume: false,
+    }))).toThrow('delivery.outputDirectory and delivery.resume');
+    expect(parseOcrJobRequest(inlineRequest({ mode: 'inline' }))).toMatchObject({
+      delivery: { mode: 'inline' },
+    });
+    expect(parseOcrJobRequest(inlineRequest({ mode: 'reference', outputDirectory: 'out' })))
+      .toMatchObject({ delivery: { mode: 'reference', outputDirectory: 'out' } });
+  });
+
+  it('resolves the schema identifiers capabilities publishes', () => {
+    const capabilities = createOcrCapabilities('2.6.0');
+    // capabilities hands agents `$id` URLs next to networkFetch: false, so the
+    // local schema command has to accept exactly those identifiers.
+    for (const identifier of Object.values(capabilities.schemas)) {
+      expect(identifier in OCR_PROTOCOL_SCHEMAS).toBe(true);
+      const schema: { $id: string } = OCR_PROTOCOL_SCHEMAS[
+        identifier as keyof typeof OCR_PROTOCOL_SCHEMAS
+      ];
+      expect(schema.$id).toBe(identifier);
+    }
+    for (const [name, schema] of Object.entries(OCR_PROTOCOL_SCHEMAS)) {
+      const bundled: { $id: string } = schema;
+      // Every bundled schema is reachable by its own `$id`, not just the five
+      // current-version ones capabilities lists.
+      expect(OCR_PROTOCOL_SCHEMAS[bundled.$id as keyof typeof OCR_PROTOCOL_SCHEMAS]).toBe(schema);
+      if (name.startsWith('https://')) expect(name).toBe(bundled.$id);
+    }
+    expect(capabilities.schemaAccess.networkFetch).toBe(false);
   });
 
   it('publishes every v2 runtime request constraint without mutating v1', () => {

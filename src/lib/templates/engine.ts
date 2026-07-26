@@ -473,8 +473,10 @@ export function buildPresetPrompt(preset: ExtractionPreset): string {
     .map((rule) => `- ${rule.field} (${rule.type}${rule.required ? ', required' : ''}): ${rule.description}${rule.example ? ` Example: ${rule.example}.` : ''}`)
     .join('\n');
 
+  // The row cap lives in the prompt rather than as a `maxItems` bound on the
+  // response schema; see `buildPresetResponseSchema`.
   const rowInstructions = preset.outputShape === 'table'
-    ? `Also extract line-item rows into a "rows" array. Use these columns when present: ${(preset.tableColumns || []).join(', ')}.`
+    ? `Also extract line-item rows into a "rows" array of at most ${MAX_ROWS} entries. Use these columns when present: ${(preset.tableColumns || []).join(', ')}.`
     : 'Do not include a "rows" array unless the preset requires one.';
 
   return [
@@ -536,9 +538,14 @@ export function buildPresetResponseSchema(preset: ExtractionPreset): Record<stri
         required: preset.rules.map((rule) => rule.field),
         properties: fieldProperties,
       },
+      // No `maxItems` here: constrained decoding compiles array bounds into a
+      // repeated grammar, and `MAX_ROWS` copies of a multi-column row object blows
+      // past the provider's schema-complexity budget — every preset 400'd with
+      // INVALID_ARGUMENT before any OCR happened. The cap is enforced after parsing
+      // in `normalizeRows`, which also reports the truncation, so the wire schema
+      // does not need to restate it. See `findSchemaCompatibilityIssues`.
       rows: {
         type: 'array',
-        maxItems: MAX_ROWS,
         items: {
           type: 'object',
           additionalProperties: preset.tableColumns?.length ? false : { type: 'string' },

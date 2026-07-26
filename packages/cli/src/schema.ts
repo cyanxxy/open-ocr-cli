@@ -5,10 +5,12 @@ import path from 'node:path';
 import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
+import { findSchemaCompatibilityIssues } from '../../../src/lib/gemini/schemaCompat';
 import type { JsonValue } from '../../../src/lib/gemini/types';
 import { CliExitError } from './errors';
 
 const MAX_SCHEMA_BYTES = 1024 * 1024;
+const MAX_LISTED_SCHEMA_ISSUES = 3;
 // Mirrors @google/genai's documented responseJsonSchema subset. `$schema` is
 // accepted only as file metadata and removed before the request.
 const SUPPORTED_KEYWORDS = new Set([
@@ -121,6 +123,31 @@ function unreadableSchemaError(error: unknown, schemaPath: string): CliExitError
     return schemaFileError(`Schema file is not readable: ${schemaPath}`, error);
   }
   return undefined;
+}
+
+/**
+ * Describe constructs in a user-supplied schema that the provider is likely to
+ * reject when it compiles the schema into a decoding grammar. Reported as a
+ * warning rather than an error: the thresholds in `schemaCompat` come from
+ * probes against one model, so a schema failing them may still be accepted
+ * elsewhere. Without this the caller sees only a bare 400 naming no field.
+ */
+export function customSchemaCompatibilityWarning(
+  schema: Record<string, unknown>,
+  // Named in the caller's own vocabulary: a `run`/MCP caller never passed
+  // `--schema` and cannot act on advice that points at a flag it has no access to.
+  subject = '--schema',
+): string | undefined {
+  const issues = findSchemaCompatibilityIssues(schema);
+  if (issues.length === 0) return undefined;
+  const listed = issues
+    .slice(0, MAX_LISTED_SCHEMA_ISSUES)
+    .map((issue) => `${issue.path || 'schema'} (${issue.keyword}): ${issue.reason}`)
+    .join('; ');
+  const remainder = issues.length > MAX_LISTED_SCHEMA_ISSUES
+    ? `, and ${issues.length - MAX_LISTED_SCHEMA_ISSUES} more`
+    : '';
+  return `${subject} may be rejected by the provider: ${listed}${remainder}`;
 }
 
 export async function loadCustomSchema(schemaPath: string, cwd: string): Promise<Record<string, unknown>> {

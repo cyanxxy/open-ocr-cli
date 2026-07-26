@@ -4,7 +4,8 @@ import { hostname } from 'node:os';
 import path from 'node:path';
 
 import { parseBatchLockOwner, type BatchLockOwner } from './jsonValidation';
-import { CliExitError } from './errors';
+import { CliExitError, type OcrErrorPayload } from './errors';
+import type { InputDiscoverySkips } from './inputs';
 import { parseCliManifest } from './manifest';
 import type {
   BatchSummary,
@@ -18,13 +19,15 @@ import type {
 
 const EMPTY_MANIFEST: CliManifest = { version: 1, entries: {} };
 
-function outputConflict(message: string, cause?: unknown): CliExitError {
+const OUTPUT_CONFLICT_HINT = 'Choose a new output path or resume a matching job.';
+
+function outputConflict(message: string, cause?: unknown, hint = OUTPUT_CONFLICT_HINT): CliExitError {
   return new CliExitError(message, 2, {
     ...(cause !== undefined ? { cause } : {}),
     code: 'OUTPUT_CONFLICT',
     category: 'output',
     retryable: false,
-    hint: 'Choose a new output path or resume a matching job.',
+    hint,
   });
 }
 
@@ -128,21 +131,32 @@ export function defaultOutputDirectory(options: ResolvedCliOptions): string {
   return path.resolve(options.cwd, options.output ?? 'gemini-ocr-output');
 }
 
+/**
+ * True when `--output` names the single artifact file itself rather than a
+ * directory this job owns.
+ *
+ * In that layout {@link defaultOutputDirectory} resolves to the artifact path,
+ * so job metadata — manifest, lock, batch summary — has nowhere to live: writing
+ * it would create a directory exactly where the extraction must write its file.
+ */
+export async function resolvesToSingleArtifactFile(
+  options: ResolvedCliOptions,
+  totalInputs: number,
+): Promise<boolean> {
+  if (totalInputs !== 1 || !options.output || options.format === 'all') return false;
+  if (!path.extname(options.output)) return false;
+  const explicitOutput = path.resolve(options.cwd, options.output);
+  return !(await pathExists(explicitOutput) && (await fs.stat(explicitOutput)).isDirectory());
+}
+
 async function resolveArtifactTargets(
   input: ResolvedInput,
   extensions: string[],
   options: ResolvedCliOptions,
   totalInputs: number,
 ): Promise<string[]> {
-  const explicitOutput = options.output ? path.resolve(options.cwd, options.output) : undefined;
-  const explicitSingleFile = totalInputs === 1
-    && Boolean(explicitOutput)
-    && options.format !== 'all'
-    && Boolean(path.extname(options.output!))
-    && !(await pathExists(explicitOutput!) && (await fs.stat(explicitOutput!)).isDirectory());
-
-  return explicitSingleFile
-    ? [explicitOutput!]
+  return await resolvesToSingleArtifactFile(options, totalInputs)
+    ? [path.resolve(options.cwd, options.output!)]
     : extensions.map((extension) => (
         path.join(defaultOutputDirectory(options), `${safeOutputRelative(input)}.${extension}`)
       ));
@@ -158,14 +172,36 @@ export async function plannedArtifactTargets(
   return resolveArtifactTargets(input, plannedArtifactExtensions(options), options, totalInputs);
 }
 
+/**
+ * Comparison key for an artifact path recorded by an earlier run. Deliberately
+ * exact rather than case-folded: reclaiming a path means agreeing to replace
+ * it, so a near-miss must fall through to the conflict error instead.
+ */
+export function artifactPathKey(target: string): string {
+  return path.resolve(target);
+}
+
+export interface ArtifactAvailabilityOptions {
+  /**
+   * Artifact paths this input's own manifest entry recorded. They are stale
+   * output of a previous attempt at the same document, so a resume may replace
+   * them; every other occupied destination is still a conflict.
+   */
+  reclaimable?: ReadonlySet<string>;
+  /** A manifest-backed resume is active, which changes the conflict guidance. */
+  resumeActive?: boolean;
+}
+
 /** Reject every destination this extraction could write before paid work starts. */
 export async function assertArtifactTargetsAvailable(
   input: ResolvedInput,
   options: ResolvedCliOptions,
   totalInputs: number,
+  availability: ArtifactAvailabilityOptions = {},
 ): Promise<void> {
   const writesFiles = totalInputs > 1 || Boolean(options.output) || options.format === 'all';
   if (!writesFiles || options.overwrite) return;
+  const reclaimable = availability.reclaimable ?? new Set<string>();
   const targets = await resolveArtifactTargets(
     input,
     possibleArtifactExtensions(options),
@@ -173,6 +209,7 @@ export async function assertArtifactTargetsAvailable(
     totalInputs,
   );
   const existing = (await Promise.all(targets.map(async (target): Promise<string | undefined> => {
+    if (reclaimable.has(artifactPathKey(target))) return undefined;
     try {
       // lstat treats a dangling symlink as occupied; access() would follow it,
       // report ENOENT, and allow paid extraction before the final EEXIST.
@@ -183,11 +220,21 @@ export async function assertArtifactTargetsAvailable(
       throw error;
     }
   }))).filter((target): target is string => target !== undefined);
-  if (existing.length > 0) {
+  if (existing.length === 0) return;
+  if (availability.resumeActive) {
+    // Telling a caller who is already resuming to "resume a matching job" sends
+    // them back to the thing they just did. Name what resume cannot claim.
     throw outputConflict(
-      `Output already exists before extraction: ${existing.join(', ')}. Choose a new output path or resume a matching job.`,
+      `Output already exists before extraction and no resume manifest entry claims it for ${input.displayPath}: `
+      + `${existing.join(', ')}.`,
+      undefined,
+      'Move or remove the untracked file, or pick a different output directory; '
+      + 'resume only replaces artifacts its own manifest recorded for this input.',
     );
   }
+  throw outputConflict(
+    `Output already exists before extraction: ${existing.join(', ')}. ${OUTPUT_CONFLICT_HINT}`,
+  );
 }
 
 export async function assertNoOutputCollisions(
@@ -293,40 +340,44 @@ async function commitStagedNoClobber(
 async function commitArtifacts(
   targets: ReadonlyArray<readonly [string, string]>,
   overwrite: boolean,
+  reclaimable: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   const transactionId = `${process.pid}-${randomUUID()}`;
   const staged: Array<{
     target: string;
     temporary: string;
     content: string;
+    /** Replace an occupied destination instead of refusing it. */
+    replace: boolean;
     backup?: string;
     committed: boolean;
   }> = [];
   try {
     for (const [target, content] of targets) {
       await fs.mkdir(path.dirname(target), { recursive: true });
-      if (!overwrite && await pathExists(target)) {
-        throw outputConflict(`Output already exists: ${target}. Choose a new output path or resume a matching job.`);
+      const replace = overwrite || reclaimable.has(artifactPathKey(target));
+      if (!replace && await pathExists(target)) {
+        throw outputConflict(`Output already exists: ${target}. ${OUTPUT_CONFLICT_HINT}`);
       }
       const temporary = `${target}.${transactionId}.tmp`;
       await fs.writeFile(temporary, content, { encoding: 'utf8', flag: 'wx' });
-      staged.push({ target, temporary, content, committed: false });
+      staged.push({ target, temporary, content, replace, committed: false });
     }
 
     for (const entry of staged) {
-      if (overwrite && await pathExists(entry.target)) {
+      if (entry.replace && await pathExists(entry.target)) {
         entry.backup = `${entry.target}.${transactionId}.bak`;
         await fs.rename(entry.target, entry.backup);
-      } else if (!overwrite && await pathExists(entry.target)) {
-        throw outputConflict(`Output already exists: ${entry.target}. Choose a new output path or resume a matching job.`);
+      } else if (!entry.replace && await pathExists(entry.target)) {
+        throw outputConflict(`Output already exists: ${entry.target}. ${OUTPUT_CONFLICT_HINT}`);
       }
-      if (overwrite) {
+      if (entry.replace) {
         await fs.rename(entry.temporary, entry.target);
       } else {
         await commitStagedNoClobber(entry.temporary, entry.target, entry.content);
       }
       entry.committed = true;
-      if (!overwrite) await fs.rm(entry.temporary, { force: true });
+      if (!entry.replace) await fs.rm(entry.temporary, { force: true });
     }
     await Promise.all(staged.map(async (entry) => {
       if (entry.backup) await fs.rm(entry.backup, { force: true }).catch(() => undefined);
@@ -401,6 +452,8 @@ export async function writeArtifacts(
   artifacts: OcrArtifacts,
   options: ResolvedCliOptions,
   totalInputs: number,
+  /** Stale artifact paths this input's manifest entry recorded (see {@link ArtifactAvailabilityOptions}). */
+  reclaimable?: ReadonlySet<string>,
 ): Promise<string[]> {
   const entries = artifactEntries(artifacts, options.format);
   const targetPaths = await resolveArtifactTargets(
@@ -410,7 +463,7 @@ export async function writeArtifacts(
     totalInputs,
   );
   const targets = targetPaths.map((target, index) => [target, entries[index][1]] as const);
-  await commitArtifacts(targets, options.overwrite);
+  await commitArtifacts(targets, options.overwrite, reclaimable);
   return targetPaths;
 }
 
@@ -449,6 +502,16 @@ export class ManifestStore {
     ) return undefined;
     if (!(await Promise.all(entry.outputFiles.map(pathExists))).every(Boolean)) return undefined;
     return { ...entry, outputFiles: [...entry.outputFiles] };
+  }
+
+  /**
+   * Artifact paths this manifest already attributes to `key`, whatever the
+   * recorded fingerprint or status. A resume owns these destinations: they are
+   * this input's own output from an earlier attempt, so re-extracting the input
+   * may replace them.
+   */
+  recordedArtifactPaths(key: string): ReadonlySet<string> {
+    return new Set((this.manifest.entries[key]?.outputFiles ?? []).map(artifactPathKey));
   }
 
   update(key: string, entry: ManifestEntry): Promise<void> {
@@ -566,10 +629,28 @@ export async function writeBatchSummary(summary: BatchSummary, outputDirectory: 
   return target;
 }
 
+/**
+ * The direct-CLI `extract --jsonl` stream dialect, in one place.
+ *
+ * Every record on that stream — `document`, `summary`, `error` — is built here
+ * and shares one shape contract: a `type` discriminator, this `version`, and no
+ * protocol envelope. It is deliberately *not* the `run --response-format jsonl`
+ * lifecycle-event protocol: that stream carries `protocolVersion`, `runId`,
+ * `sequence`, and `timestamp`, and its `type` values name lifecycle transitions
+ * (`run.failed`, `document.completed`, …).
+ *
+ * Mixing the two is what this contract exists to prevent. A consumer picks a
+ * dialect by choosing a command, then discriminates on `type` alone, and the
+ * `type` vocabularies are disjoint so a misrouted record cannot be mistaken for
+ * a valid one of the other kind.
+ */
+export const JSONL_STREAM_VERSION = 1;
+
 /** Established direct-CLI JSONL document record (separate from `run` protocol events). */
 export function jsonlResult(result: OcrJobResult): string {
   return JSON.stringify({
     type: 'document',
+    version: JSONL_STREAM_VERSION,
     status: result.status,
     source: result.input.displayPath,
     mode: result.mode,
@@ -591,5 +672,53 @@ export function jsonlResult(result: OcrJobResult): string {
     // carries the code/category/retryable/hint an agent needs to decide what to
     // do next without parsing prose.
     errorDetails: result.errorDetails,
+  });
+}
+
+/**
+ * Terminal `summary` record: the stream's last line whenever the batch ran far
+ * enough to produce one, including a cancelled batch whose documents carry
+ * `skipReason: "cancelled"`.
+ */
+export function jsonlSummary(summary: BatchSummary, discovery?: InputDiscoverySkips): string {
+  return JSON.stringify({
+    type: 'summary',
+    ...summary,
+    // `version` arrives with the spread and is the same stream version the other
+    // records carry; assert that here so the two cannot drift apart silently.
+    version: JSONL_STREAM_VERSION satisfies BatchSummary['version'],
+    results: undefined,
+    // Always present so a consumer can rely on the field rather than infer
+    // silence. Counts only: a scan may pass over thousands of entries, and this
+    // record has to stay a bounded single line. `defaultExcluded` counts pruned
+    // directories, not the files inside them — the subtree is never walked,
+    // which is the point of pruning it.
+    discovery: {
+      unsupported: discovery?.unsupported.count ?? 0,
+      defaultExcluded: discovery?.defaultExcluded.count ?? 0,
+    },
+  });
+}
+
+/**
+ * Terminal `error` record: the stream's last line when the run dies before a
+ * summary exists.
+ *
+ * Without it a fatal error is only human prose on stderr and a machine consumer
+ * sees an empty stdout it cannot distinguish from "nothing to do". It carries
+ * the same typed error contract as every other CLI surface, so the recovery
+ * decision does not depend on which dialect reported the failure.
+ */
+export function jsonlRunError(error: OcrErrorPayload): string {
+  return JSON.stringify({
+    type: 'error',
+    version: JSONL_STREAM_VERSION,
+    error: {
+      code: error.code,
+      category: error.category,
+      message: error.message,
+      retryable: error.retryable,
+      hint: error.hint,
+    },
   });
 }

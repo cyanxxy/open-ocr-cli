@@ -197,6 +197,25 @@ npm ci && npm run dev   # http://localhost:5173 — add your key under Settings
 > strong encryption. Anyone with access to that browser profile can recover it.
 > Prefer a backend proxy for organization-owned credentials.
 
+## Repository layout
+
+One repository, three entry points over a shared extraction engine:
+
+| Path | What it is |
+| --- | --- |
+| `src/lib` | The engine: providers, extraction modes, agent loop, protocol types. No browser APIs, so both front ends use it. |
+| `src/` (rest) | The React web app — the `npm run dev` target described above. |
+| `packages/cli` | The published `open-ocr-cli` npm package. Owns its own source, build, and protocol schemas. |
+| `integrations/open-ocr/skills` | Agent skill definitions. Source of truth; `packages/cli/skills` is a generated copy. |
+| `evals/` | The evaluation corpus and runner. |
+
+`open-ocr-cli mcp` is not a separate package — it is a third front end inside
+the CLI, alongside `extract` (human-facing) and `run` (versioned protocol), all
+routed through the same job service.
+
+The CLI is typechecked without DOM libraries on purpose, so a browser API cannot
+reach it through the shared engine.
+
 ## Contributing
 
 Setup, PR gates, and release steps are in [CONTRIBUTING.md](CONTRIBUTING.md).

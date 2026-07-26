@@ -1,3 +1,20 @@
+import {
+  providerErrorMessage,
+  providerErrorPayloadOf,
+  providerErrorSubject,
+  redactSensitiveErrorText,
+  renderProviderErrorPayload,
+  type ProviderErrorPayload,
+  type ProviderErrorSubject,
+} from '../../../src/lib/gemini/errorPayload';
+
+/**
+ * Redaction is defined beside the provider-body reader so the engine renders
+ * text through it too, and re-exported here because this module is where the
+ * CLI's error contract lives.
+ */
+export { redactSensitiveErrorText };
+
 export type CliExitCode = 1 | 2 | 130 | 143;
 export type CliInterruptSignal = 'SIGINT' | 'SIGTERM';
 
@@ -47,37 +64,68 @@ export interface OcrErrorPayload extends OcrErrorDetails {
 
 interface CliExitErrorOptions extends ErrorOptions, Partial<OcrErrorDetails> {}
 
+/**
+ * The next action for each error code, used whenever a construction site does
+ * not supply a more specific one. Agents treat `hint` as the recovery step, so
+ * a typed error without one is a dead end; keying the fallback on the code
+ * rather than the exit status keeps that floor from drifting into advice that
+ * contradicts the code it is attached to.
+ */
+const DEFAULT_ERROR_HINTS: Record<OcrErrorCode, string> = {
+  INPUT_NOT_FOUND: 'Check the input path and working directory.',
+  INPUT_INVALID: 'Use a supported, non-empty image or PDF within the documented limits.',
+  CONFIG_INVALID: 'Check the request, command flags, and configuration.',
+  AUTH_MISSING: 'Configure the named credential environment variable; never pass a raw key as an argument.',
+  AUTH_INVALID: 'Verify the configured provider credential.',
+  PERMISSION_DENIED: 'Verify that the credential and project are allowed to use this model or operation.',
+  SCHEMA_INVALID: 'Validate the JSON Schema against the supported structured-output subset.',
+  OUTPUT_CONFLICT: 'Choose a new output path or resume a matching job.',
+  RATE_LIMITED: 'Retry later or lower request concurrency/rate.',
+  TIMEOUT: 'Retry with a longer timeout or a smaller document.',
+  COST_LIMIT: 'Review partial output or explicitly raise the cost ceiling.',
+  CANCELLED: 'Resume or rerun the interrupted job when ready.',
+  NOT_RUN: 'Rerun the skipped documents after addressing the failure that stopped the batch.',
+  PROVIDER_FAILURE: 'Review the reported provider message and adjust the request before retrying.',
+  INTERNAL: 'Retry once, then report the failure with non-secret diagnostics if it persists.',
+};
+
 function defaultErrorDetails(exitCode: CliExitCode): OcrErrorDetails {
   if (exitCode === 130 || exitCode === 143) {
-    return { code: 'CANCELLED', category: 'cancelled', retryable: true, hint: 'Resume or rerun the interrupted job when ready.' };
+    return { code: 'CANCELLED', category: 'cancelled', retryable: true, hint: DEFAULT_ERROR_HINTS.CANCELLED };
   }
   if (exitCode === 1) {
-    return { code: 'PROVIDER_FAILURE', category: 'provider', retryable: false };
+    return { code: 'PROVIDER_FAILURE', category: 'provider', retryable: false, hint: DEFAULT_ERROR_HINTS.PROVIDER_FAILURE };
   }
-  return { code: 'CONFIG_INVALID', category: 'configuration', retryable: false, hint: 'Check the request, command flags, and configuration.' };
+  return { code: 'CONFIG_INVALID', category: 'configuration', retryable: false, hint: DEFAULT_ERROR_HINTS.CONFIG_INVALID };
 }
 
-/** Legacy inference for untyped third-party or filesystem errors only. */
+/**
+ * The document page-limit rejection, matched on the clause both producers write
+ * (`inputs.ts` for the CLI, `fileUtils.ts` for the browser) rather than on the
+ * words "page" and "maximum" appearing anywhere in the message. Those two are
+ * ordinary English and ordinary property names: a schema with properties called
+ * `page` and `maximum` used to be classified as a bad document.
+ */
+const PAGE_LIMIT_PATTERN = /\bhas \d+ pages?; the maximum is \d+/u;
+
+/**
+ * Legacy inference for untyped third-party or filesystem errors only.
+ *
+ * Every rule here is a substring match against a message that may embed text
+ * the caller supplied — a schema path, a filename, a property name — so each one
+ * is a standing collision risk. The durable fix is at the throw site: a call
+ * site that knows what the failure is throws a typed error and
+ * `classifyKnownError` short-circuits before this function is ever reached.
+ * Treat anything below as a fallback for errors nobody typed, and prefer typing
+ * a new producer over adding a rule.
+ *
+ * Rule order matters, because these are not mutually exclusive. The schema rules
+ * run first: they are anchored on phrasing this codebase writes itself, so when
+ * one matches the message is unambiguously about a schema, whereas the input
+ * rules match short common words that a schema message can easily contain.
+ */
 function classifyErrorMessage(message: string, exitCode: CliExitCode): OcrErrorDetails | undefined {
   const normalized = message.toLowerCase();
-  if (normalized.includes('input does not exist')) {
-    return { code: 'INPUT_NOT_FOUND', category: 'input', retryable: false, hint: 'Check the input path and working directory.' };
-  }
-  if (
-    normalized.includes('unsupported document')
-    || normalized.includes('unsupported mime')
-    || normalized.includes('does not match its declared type')
-    || normalized.includes('is empty')
-    || normalized.includes('no supported documents')
-    || normalized.includes('exceeding --max-files')
-    || normalized.includes('exceeding --max-total-mb')
-    || (normalized.includes('page') && normalized.includes('maximum'))
-  ) {
-    return { code: 'INPUT_INVALID', category: 'input', retryable: false, hint: 'Use a supported, non-empty image or PDF within the documented limits.' };
-  }
-  if (normalized.includes('api key is missing') || (normalized.includes('requires') && normalized.includes('gateway authentication'))) {
-    return { code: 'AUTH_MISSING', category: 'authentication', retryable: false, hint: 'Configure the named credential environment variable; never pass a raw key as an argument.' };
-  }
   if (
     normalized.startsWith('invalid json schema')
     || normalized.startsWith('invalid json in schema')
@@ -90,6 +138,24 @@ function classifyErrorMessage(message: string, exitCode: CliExitCode): OcrErrorD
     || normalized.includes('"$ref" must reference this schema document')
   ) {
     return { code: 'SCHEMA_INVALID', category: 'schema', retryable: false, hint: 'Validate the JSON Schema against the supported structured-output subset.' };
+  }
+  if (normalized.includes('input does not exist')) {
+    return { code: 'INPUT_NOT_FOUND', category: 'input', retryable: false, hint: 'Check the input path and working directory.' };
+  }
+  if (
+    normalized.includes('unsupported document')
+    || normalized.includes('unsupported mime')
+    || normalized.includes('does not match its declared type')
+    || normalized.includes('is empty')
+    || normalized.includes('no supported documents')
+    || normalized.includes('exceeding --max-files')
+    || normalized.includes('exceeding --max-total-mb')
+    || PAGE_LIMIT_PATTERN.test(normalized)
+  ) {
+    return { code: 'INPUT_INVALID', category: 'input', retryable: false, hint: 'Use a supported, non-empty image or PDF within the documented limits.' };
+  }
+  if (normalized.includes('api key is missing') || (normalized.includes('requires') && normalized.includes('gateway authentication'))) {
+    return { code: 'AUTH_MISSING', category: 'authentication', retryable: false, hint: 'Configure the named credential environment variable; never pass a raw key as an argument.' };
   }
   if (normalized.includes('output already exists') || normalized.includes('output path collision') || normalized.includes('batch output directory is already in use')) {
     return { code: 'OUTPUT_CONFLICT', category: 'output', retryable: false, hint: 'Choose a new output path or resume a matching job.' };
@@ -140,6 +206,59 @@ function invalidCredentialMessage(value: unknown): boolean {
     || message.includes('api_key_invalid');
 }
 
+/**
+ * Read the provider's own error body off a thrown error, falling back to its
+ * bare message. Providers whose client already reduced the body to a sentence
+ * are represented as that sentence alone, so the same subject rules apply to a
+ * parsed Gemini body and to an OpenAI-compatible `ProviderApiError` alike.
+ */
+function providerPayloadOf(value: unknown): ProviderErrorPayload | undefined {
+  const structured = providerErrorPayloadOf(value);
+  if (structured) return structured;
+  const message = recordValue(value, 'message');
+  if (typeof message !== 'string' || !message) return undefined;
+  return { message, reasons: [], fields: [] };
+}
+
+/**
+ * Type a provider rejection by what the provider named. Gemini returns
+ * 400 INVALID_ARGUMENT for an undecodable document, a malformed request field,
+ * and an unsupported response schema alike, so the numeric status alone would
+ * send all three down the generic provider path and invite a pointless retry.
+ */
+function classifyProviderSubject(subject: ProviderErrorSubject): OcrErrorDetails {
+  switch (subject) {
+    case 'input-media':
+      return {
+        code: 'INPUT_INVALID',
+        category: 'input',
+        retryable: false,
+        hint: 'The provider could not read this document; convert or re-export it before retrying.',
+      };
+    case 'response-schema':
+      return {
+        code: 'SCHEMA_INVALID',
+        category: 'schema',
+        retryable: false,
+        hint: 'Simplify the response schema to the supported structured-output subset before retrying.',
+      };
+    case 'model':
+      return {
+        code: 'CONFIG_INVALID',
+        category: 'configuration',
+        retryable: false,
+        hint: 'Select a model this provider supports for this operation.',
+      };
+    case 'request-field':
+      return {
+        code: 'CONFIG_INVALID',
+        category: 'configuration',
+        retryable: false,
+        hint: 'Correct the request field named in the provider message, then retry.',
+      };
+  }
+}
+
 function classifyKnownError(error: unknown, exitCode: CliExitCode): OcrErrorDetails | undefined {
   const seen = new Set<unknown>();
   let current: unknown = error;
@@ -151,7 +270,7 @@ function classifyKnownError(error: unknown, exitCode: CliExitCode): OcrErrorDeta
         code: current.code,
         category: current.category,
         retryable: current.retryable,
-        ...(current.hint ? { hint: current.hint } : {}),
+        hint: current.hint,
       };
     }
     const name = recordValue(current, 'name');
@@ -175,6 +294,14 @@ function classifyKnownError(error: unknown, exitCode: CliExitCode): OcrErrorDeta
     const ocrType = recordValue(current, 'type');
     if (name === 'OcrError' && ocrType === 'API_KEY_MISSING') {
       return { code: 'AUTH_MISSING', category: 'authentication', retryable: false, hint: 'Configure the named credential environment variable; never pass a raw key as an argument.' };
+    }
+    // The engine already established that the caller's response schema is why
+    // the provider refused. Reading that verdict off the type is the whole point
+    // of the type: its message quotes the caller's own schema paths, so leaving
+    // it to `classifyErrorMessage` means matching substrings of user-supplied
+    // text. Same verdict as the `response-schema` subject, by construction.
+    if (name === 'OcrError' && ocrType === 'SCHEMA_INVALID') {
+      return classifyProviderSubject('response-schema');
     }
     if (
       structuredCode === 'API_KEY_INVALID'
@@ -250,7 +377,20 @@ function classifyKnownError(error: unknown, exitCode: CliExitCode): OcrErrorDeta
       if (status === 409) {
         return { code: 'PROVIDER_FAILURE', category: 'provider', retryable: true, hint: 'Retry with backoff after the provider conflict.' };
       }
-      if (providerError) return { code: 'PROVIDER_FAILURE', category: 'provider', retryable: false };
+      // Last resort before the generic provider verdict: every status-specific
+      // rule above already had its say, so reading the body can only refine a
+      // failure that would otherwise be reported as an unexplained 4xx.
+      const payload = providerPayloadOf(current);
+      const subject = payload ? providerErrorSubject(payload) : undefined;
+      if (subject) return classifyProviderSubject(subject);
+      if (providerError) {
+        return {
+          code: 'PROVIDER_FAILURE',
+          category: 'provider',
+          retryable: false,
+          hint: 'The provider rejected this request; fix what its message names before retrying the same call.',
+        };
+      }
     }
     const systemCode = recordValue(current, 'code');
     if (systemCode === 'EEXIST') {
@@ -284,7 +424,7 @@ export class CliExitError extends Error {
   readonly code: OcrErrorCode;
   readonly category: OcrErrorCategory;
   readonly retryable: boolean;
-  readonly hint?: string;
+  readonly hint: string;
 
   constructor(
     message: string,
@@ -297,20 +437,10 @@ export class CliExitError extends Error {
     this.code = options.code ?? classified.code;
     this.category = options.category ?? classified.category;
     this.retryable = options.retryable ?? classified.retryable;
-    this.hint = options.hint ?? classified.hint;
+    // Fall back on the code, not the exit status: a site that names a code but
+    // no hint would otherwise inherit advice meant for a different failure.
+    this.hint = options.hint ?? DEFAULT_ERROR_HINTS[this.code];
   }
-}
-
-/** Strip credential-like fragments from provider/CLI error text before stdout. */
-export function redactSensitiveErrorText(message: string): string {
-  return message
-    .replace(/\bBearer\s+[A-Za-z0-9._+=/-]+/giu, 'Bearer [REDACTED]')
-    .replace(/\b(?:sk|rk)-[A-Za-z0-9_-]{8,}/gu, '[REDACTED_KEY]')
-    .replace(/\bAIza[0-9A-Za-z_-]{10,}/gu, '[REDACTED_KEY]')
-    .replace(
-      /\b((?:api[_-]?key|token|authorization))\s*[:=]\s*["']?[^\s"',;]+/giu,
-      '$1=[REDACTED]',
-    );
 }
 
 export function asCliExitError(error: unknown, exitCode: CliExitCode): CliExitError {
@@ -325,8 +455,14 @@ export function asCliExitError(error: unknown, exitCode: CliExitCode): CliExitEr
       hint: error.hint,
     });
   }
+  // Providers that answer with a JSON body would otherwise put the whole blob
+  // in `message`, on stderr and in every JSONL record. Reduce it to the
+  // sentence the provider wrote first, then redact, so a credential echoed
+  // anywhere inside the body is still scrubbed from what survives.
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const payload = providerErrorPayloadOf(error);
   const message = redactSensitiveErrorText(
-    error instanceof Error ? error.message : String(error),
+    (payload ? renderProviderErrorPayload(payload) : undefined) ?? providerErrorMessage(rawMessage),
   );
   const classified = classifyKnownError(error, exitCode)
     ?? classifyErrorMessage(message, exitCode)
@@ -369,7 +505,7 @@ export function ocrErrorPayload(error: unknown, fallbackExitCode: CliExitCode = 
     category: typed.category,
     message: typed.message,
     retryable: typed.retryable,
-    ...(typed.hint ? { hint: typed.hint } : {}),
+    hint: typed.hint,
   };
 }
 

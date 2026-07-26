@@ -39,8 +39,8 @@ import {
 import { describeDiscoverySkips, discoverInputSet } from './inputs';
 import { runInit, validateProviderCredentials, type InitFlags } from './init';
 import { promptInteractiveArguments } from './interactive';
-import { primaryArtifact } from './output';
-import { loadCustomSchema } from './schema';
+import { jsonlRunError, primaryArtifact } from './output';
+import { customSchemaCompatibilityWarning, loadCustomSchema } from './schema';
 import { executeOcrJobRequest, readOcrJobRequestRaw } from './machine';
 import {
   assertOcrJobEvent,
@@ -198,7 +198,7 @@ function addExtractOptions(command: Command): Command {
     .option('--overwrite', 'replace existing output artifacts')
     .option('--force-unlock', 'recover a same-host batch lock only when its owner process is dead')
     .option('--fail-fast', 'stop scheduling new documents after the first failure')
-    .option('--jsonl', 'emit the inline document JSONL stream on stdout, ending in exactly one terminal record: the summary, or a typed run.failed when the run dies before one exists')
+    .option('--jsonl', 'emit the CLI-native JSONL stream on stdout: one {"type":"document"} record per document, then exactly one terminal record — {"type":"summary"} when the batch produced one, otherwise a typed {"type":"error"}. Every record carries version 1 and no protocol envelope; for the versioned lifecycle-event protocol use `run --response-format jsonl`')
     .option('--dry-run', 'resolve and validate the job without calling a provider or writing files')
     .option('--quiet', 'suppress progress output on stderr')
     .option('--verbose', 'show agent steps and detailed progress on stderr')
@@ -235,7 +235,7 @@ Examples:
   $ ${commandName} run --request ocr-request.json --response-format jsonl
   $ ${commandName} mcp                    # stdio MCP server
   $ cat scan.png | ${commandName} extract - --stdin-name scan.png --format json
-  $ ${commandName} web https://example.com/report.pdf --format markdown
+  $ ${commandName} web https://en.wikipedia.org/wiki/Optical_character_recognition --format markdown
   $ ${commandName} status ./results
   $ ${commandName} presets
 
@@ -269,70 +269,80 @@ CLI flags take precedence.
       // `--jsonl` has no config-file source, so the stream's existence is known
       // before any resolution step that could itself be the thing that fails.
       const jsonlRequested = flags.jsonl === true;
-      const runId = randomUUID();
       /**
        * The `--jsonl` stream ends in exactly one terminal record: the `summary`
        * whenever the batch produced one — including a cancelled batch, whose
-       * documents carry `skipReason: "cancelled"` — and otherwise the
-       * `run.failed` below. Never both, never neither.
+       * documents carry `skipReason: "cancelled"` — and otherwise the `error`
+       * below. Never both, never neither.
        */
       let emittedTerminalRecord = false;
       /**
-       * Give the `--jsonl` stream its typed terminal record when the run dies
-       * before a summary exists. Without it a fatal error is only human prose on
-       * stderr, and a machine consumer sees an empty stdout it cannot
-       * distinguish from "nothing to do". Only this event is forwarded — the
-       * document/summary records remain the established direct-CLI format.
+       * Give the `--jsonl` stream its terminal record when the run dies before a
+       * summary exists. It is a CLI-native record from the same family as the
+       * `document` and `summary` lines, not a `run` protocol event: one stream
+       * carries one dialect, so a consumer validating this stream is not told
+       * that its only valid line is the one reporting failure.
        */
       const emitRunFailure = async (error: unknown, fallbackExitCode: CliExitCode): Promise<void> => {
         if (!jsonlRequested || emittedTerminalRecord) return;
         emittedTerminalRecord = true;
-        const event: OcrJobEvent = {
-          protocolVersion: OCR_PROTOCOL_VERSION,
-          type: 'run.failed',
-          runId,
-          sequence: 0,
-          timestamp: new Date().toISOString(),
-          error: errorPayloadForProtocol(
-            ocrErrorPayload(error, fallbackExitCode),
-            OCR_PROTOCOL_VERSION,
-          ),
-        };
-        assertOcrJobEvent(event);
-        await writeMachineStdout(`${JSON.stringify(event)}\n`);
+        await writeMachineStdout(`${jsonlRunError(ocrErrorPayload(error, fallbackExitCode))}\n`);
       };
+      /**
+       * The interrupt runtime, readable from the outer handler once installed.
+       *
+       * Cancellation is not confined to the batch: an interrupt during config
+       * loading or input discovery unwinds past {@link withInterruptHandling},
+       * and the outer handler still has to recognise it as cancellation rather
+       * than reporting a generic failure for a run the caller chose to stop.
+       */
+      let interruptedExitCode: () => CliExitCode | undefined = () => undefined;
       try {
-        assertConfigFlagsDoNotConflict(command);
-        const cwd = process.cwd();
-        const noConfig = cliConfigDisabled(flags.config);
-        loadLocalEnv(cwd, noConfig);
-        const fileConfig = await loadCliConfig(
-          cwd,
-          typeof flags.config === 'string' ? flags.config : undefined,
-          noConfig,
-        );
-        // A malformed schema is a local request error and must be reported
-        // before credential resolution can fail or any provider work begins.
-        const schemaPath = flags.schema ?? fileConfig.schema;
-        const customSchema = schemaPath
-          ? await loadCustomSchema(schemaPath, cwd)
-          : undefined;
-        const resolvedOptions = resolveCliOptions(flags, fileConfig, cwd);
-        const options = customSchema
-          ? { ...resolvedOptions, customSchema }
-          : resolvedOptions;
-        const ignoredFlags = ignoredModeScopedOptions(suppliedModeScopedFlags(flags), options.mode);
-        const ignoredWarning = ignoredModeScopedOptionWarning(ignoredFlags, options.mode, 'flag');
-        // Written regardless of --quiet: this reports a request the CLI cannot
-        // honour, not progress, and silence is the bug being fixed.
-        if (ignoredWarning) process.stderr.write(`${ignoredWarning}\n`);
-        const discovery = await discoverInputSet(inputs, options);
-        const resolvedInputs = discovery.inputs;
-        // Credentials are the last gate so a missing key never masks a bad flag
-        // or a missing input, and a live run reports the same first error a
-        // credential-free --dry-run does.
-        assertCredentialsAvailable(options);
-        await withInterruptHandling(async ({ abortController, interruptedExitCode }) => {
+        // Installed before the first await so a SIGINT arriving during config
+        // loading or input discovery is handled here. Installed any later, that
+        // signal reaches Node's default handler instead, which terminates the
+        // process with no terminal record at all — the one hole the stream's
+        // exactly-one-record contract cannot paper over after the fact.
+        await withInterruptHandling(async ({ abortController, interruptedExitCode: interrupted }) => {
+          interruptedExitCode = interrupted;
+          assertConfigFlagsDoNotConflict(command);
+          const cwd = process.cwd();
+          const noConfig = cliConfigDisabled(flags.config);
+          loadLocalEnv(cwd, noConfig);
+          const fileConfig = await loadCliConfig(
+            cwd,
+            typeof flags.config === 'string' ? flags.config : undefined,
+            noConfig,
+          );
+          // A malformed schema is a local request error and must be reported
+          // before credential resolution can fail or any provider work begins.
+          const schemaPath = flags.schema ?? fileConfig.schema;
+          const customSchema = schemaPath
+            ? await loadCustomSchema(schemaPath, cwd)
+            : undefined;
+          if (customSchema) {
+            // A schema the provider will reject otherwise surfaces as a bare 400
+            // naming no field, so say which construct is at fault up front.
+            const schemaWarning = customSchemaCompatibilityWarning(customSchema);
+            if (schemaWarning) process.stderr.write(`${schemaWarning}\n`);
+          }
+          const resolvedOptions = resolveCliOptions(flags, fileConfig, cwd);
+          const options = customSchema
+            ? { ...resolvedOptions, customSchema }
+            : resolvedOptions;
+          const ignoredFlags = ignoredModeScopedOptions(suppliedModeScopedFlags(flags), options.mode);
+          const ignoredWarning = ignoredModeScopedOptionWarning(ignoredFlags, options.mode, 'flag');
+          // Written regardless of --quiet: this reports a request the CLI cannot
+          // honour, not progress, and silence is the bug being fixed.
+          if (ignoredWarning) process.stderr.write(`${ignoredWarning}\n`);
+          // The signal reaches the stdin read, so a piped document that has not
+          // finished arriving stops on interrupt instead of blocking until EOF.
+          const discovery = await discoverInputSet(inputs, options, abortController.signal);
+          const resolvedInputs = discovery.inputs;
+          // Credentials are the last gate so a missing key never masks a bad flag
+          // or a missing input, and a live run reports the same first error a
+          // credential-free --dry-run does.
+          assertCredentialsAvailable(options);
           try {
             if (!options.quiet) {
               process.stderr.write(
@@ -357,13 +367,13 @@ CLI flags take precedence.
                 + `estimated cost $${summary.usage.estimatedCostUsd.toFixed(6)}\n`,
               );
             }
-            if (abortController.signal.aborted) process.exitCode = interruptedExitCode() ?? 1;
+            if (abortController.signal.aborted) process.exitCode = interrupted() ?? 1;
             else {
               const exitCode = cliBatchExitCode(summary);
               if (exitCode !== 0) process.exitCode = exitCode;
             }
           } catch (error) {
-            const signalExitCode = interruptedExitCode();
+            const signalExitCode = interrupted();
             if (signalExitCode !== undefined) {
               // An interrupt is swallowed into an exit code rather than rethrown,
               // so this is the stream's last chance at a terminal record. It is
@@ -372,6 +382,9 @@ CLI flags take precedence.
               await emitRunFailure(error, signalExitCode);
               return;
             }
+            // Anything that unwinds out of the batch is an execution failure,
+            // which exits 1; pre-flight rejections keep the usage-error 2 the
+            // outer handler applies.
             throw asCliExitError(error, 1);
           }
         });
@@ -379,6 +392,15 @@ CLI flags take precedence.
         // Every fatal path converges here — pre-flight rejections that never
         // reach runBatch, and mid-run failures that unwind out of it — so one
         // guarded emitter covers them all exactly once.
+        const signalExitCode = interruptedExitCode();
+        if (signalExitCode !== undefined) {
+          // Interrupted before the batch could resolve the cancellation itself.
+          // Reported like any other cancellation rather than rethrown, so the
+          // caller sees the signal exit status and not a usage error.
+          process.exitCode = signalExitCode;
+          await emitRunFailure(error, signalExitCode);
+          return;
+        }
         const typed = asCliExitError(error, 2);
         await emitRunFailure(typed, 2);
         throw typed;
@@ -479,7 +501,7 @@ CLI flags take precedence.
 
   program.command('schema')
     .description('print one bundled machine-protocol JSON Schema')
-    .argument('<name>', 'request/result/event/error/capabilities, optionally suffixed with -v1 or -v2')
+    .argument('<name>', 'request/result/event/error/capabilities, optionally suffixed with -v1 or -v2; also accepts the $id URL capabilities publishes')
     .action((name: string) => {
       if (!(name in OCR_PROTOCOL_SCHEMAS)) {
         throw new Error(`Unknown protocol schema: ${name}`);
@@ -788,6 +810,28 @@ CLI flags take precedence.
   return program;
 }
 
+/**
+ * True when this argv asked `extract` for the `--jsonl` stream.
+ *
+ * Read from raw argv rather than resolved options because the only caller runs
+ * after parsing has already failed: Commander rejects an unknown option — or a
+ * missing operand — before the action body, and therefore before the stream's
+ * terminal-record emitter exists. Without this the stream ends in zero records
+ * and a consumer has to special-case empty stdout as a parse failure, while the
+ * neighbouring bad-option-*value* path correctly ends in one.
+ *
+ * `extract` is the only command declaring `--jsonl`, and no option before the
+ * subcommand takes a value, so the first non-flag token names the command
+ * exactly. Tokens after `--` are operands, never flags.
+ */
+export function requestedExtractJsonlStream(argv: string[]): boolean {
+  const tokens = argv.slice(2);
+  const operandsFrom = tokens.indexOf('--');
+  const flags = operandsFrom === -1 ? tokens : tokens.slice(0, operandsFrom);
+  return tokens.find((token) => !token.startsWith('-')) === 'extract'
+    && flags.includes('--jsonl');
+}
+
 export async function main(argv: string[] = process.argv): Promise<void> {
   const program = createProgram(cliBinaryName(argv));
   try {
@@ -800,7 +844,23 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     if (error instanceof CommanderError) {
       // Commander has already rendered parser errors and help. Preserve normal
       // help/version success while mapping usage errors to the CLI contract.
-      if (error.exitCode !== 0) process.exitCode = 2;
+      if (error.exitCode === 0) return;
+      process.exitCode = 2;
+      // A parse failure is still a run of `extract --jsonl` that produced no
+      // summary, so the stream owes its consumer the same single terminal
+      // record every other fatal path emits. Commander's own prose already went
+      // to stderr; this is the machine-readable half.
+      if (requestedExtractJsonlStream(argv)) {
+        await writeMachineStdout(`${jsonlRunError(ocrErrorPayload(
+          new CliExitError(error.message.replace(/^error:\s*/, ''), 2, {
+            code: 'CONFIG_INVALID',
+            category: 'configuration',
+            retryable: false,
+            hint: `Run \`${cliBinaryName(argv)} extract --help\` for the supported options.`,
+          }),
+          2,
+        ))}\n`);
+      }
       return;
     }
     throw error;

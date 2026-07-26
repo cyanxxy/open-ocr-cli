@@ -10,13 +10,18 @@ import {
   assertArtifactTargetsAvailable,
   assertNoOutputCollisions,
   BatchOutputLock,
+  jsonlResult,
+  jsonlRunError,
+  jsonlSummary,
+  JSONL_STREAM_VERSION,
   ManifestStore,
   plannedArtifactTargets,
   primaryArtifact,
   writeArtifacts,
   writeBatchSummary,
 } from './output';
-import type { BatchSummary, OcrArtifacts, ResolvedCliOptions, ResolvedInput } from './types';
+import { OCR_PROTOCOL_SCHEMAS } from './protocol';
+import type { BatchSummary, OcrArtifacts, OcrJobResult, ResolvedCliOptions, ResolvedInput } from './types';
 
 let directory: string;
 let options: ResolvedCliOptions;
@@ -224,6 +229,72 @@ describe('CLI output', () => {
     await expect(assertArtifactTargetsAvailable(input, templateOptions, 2)).rejects.toThrow(
       `Output already exists before extraction: ${csvTarget}`,
     );
+  });
+
+  it('reclaims only the artifact paths a manifest entry recorded for the same input', async () => {
+    const markdownTarget = path.join(directory, 'nested', 'invoice.md');
+    const jsonTarget = path.join(directory, 'nested', 'invoice.json');
+    await fs.mkdir(path.dirname(markdownTarget), { recursive: true });
+    await writeFile(markdownTarget, 'stale markdown\n');
+    await writeFile(jsonTarget, 'written by something else\n');
+
+    // The recorded path is this input's own stale output, so re-extracting may
+    // replace it. The unrecorded one at another possible target is a collision.
+    await expect(assertArtifactTargetsAvailable(input, options, 2, {
+      reclaimable: new Set([markdownTarget]),
+      resumeActive: true,
+    })).rejects.toThrow(`no resume manifest entry claims it for ${input.displayPath}: ${jsonTarget}`);
+
+    await fs.rm(jsonTarget);
+    await expect(assertArtifactTargetsAvailable(input, options, 2, {
+      reclaimable: new Set([markdownTarget]),
+      resumeActive: true,
+    })).resolves.toBeUndefined();
+  });
+
+  it('replaces a reclaimed artifact without enabling a blanket overwrite', async () => {
+    const markdownTarget = path.join(directory, 'nested', 'invoice.md');
+    const jsonTarget = path.join(directory, 'nested', 'invoice.json');
+    await fs.mkdir(path.dirname(markdownTarget), { recursive: true });
+    await writeFile(markdownTarget, 'stale markdown\n');
+    await writeFile(jsonTarget, 'written by something else\n');
+
+    await expect(writeArtifacts(
+      input,
+      { markdown: '# Fresh', json: { fresh: true } },
+      { ...options, format: 'all' },
+      2,
+      new Set([markdownTarget]),
+    )).rejects.toThrow('Output already exists');
+    // The unreclaimed destination is untouched, and the transaction rolled back.
+    await expect(readFile(jsonTarget, 'utf8')).resolves.toBe('written by something else\n');
+    await expect(readFile(markdownTarget, 'utf8')).resolves.toBe('stale markdown\n');
+
+    await fs.rm(jsonTarget);
+    await expect(writeArtifacts(
+      input,
+      { markdown: '# Fresh', json: { fresh: true } },
+      { ...options, format: 'all' },
+      2,
+      new Set([markdownTarget]),
+    )).resolves.toContain(markdownTarget);
+    await expect(readFile(markdownTarget, 'utf8')).resolves.toBe('# Fresh\n');
+  });
+
+  it('reports the artifact paths a manifest already attributes to an input', async () => {
+    const manifest = new ManifestStore(directory);
+    await manifest.update('/workspace/invoice.pdf', {
+      fingerprint: 'stale',
+      status: 'succeeded',
+      outputFiles: [path.join(directory, 'invoice.md')],
+      completedAt: new Date().toISOString(),
+    });
+
+    // Reported whatever the fingerprint: a changed input still owns the output
+    // its previous attempt wrote.
+    expect(manifest.recordedArtifactPaths('/workspace/invoice.pdf'))
+      .toEqual(new Set([path.join(directory, 'invoice.md')]));
+    expect(manifest.recordedArtifactPaths('/workspace/other.pdf')).toEqual(new Set());
   });
 
   it('restores every existing artifact if an overwrite transaction fails', async () => {
@@ -440,5 +511,106 @@ describe('CLI output', () => {
     } finally {
       rename.mockRestore();
     }
+  });
+});
+
+describe('extract --jsonl stream dialect', () => {
+  const jobResult: OcrJobResult = {
+    status: 'succeeded',
+    input,
+    mode: 'simple',
+    model: 'gemini-3.5-flash',
+    startedAt: '2026-07-15T00:00:00.000Z',
+    completedAt: '2026-07-15T00:00:01.000Z',
+    durationMs: 1000,
+    artifacts: { markdown: '# invoice' },
+    outputFiles: ['/workspace/out/invoice.md'],
+    attempts: 1,
+  };
+  const summary: BatchSummary = {
+    version: 1,
+    startedAt: '2026-07-15T00:00:00.000Z',
+    completedAt: '2026-07-15T00:00:01.000Z',
+    durationMs: 1000,
+    total: 1,
+    succeeded: 1,
+    partial: 0,
+    failed: 0,
+    skipped: 0,
+    mode: 'simple',
+    model: 'gemini-3.5-flash',
+    usage: {
+      requests: 1,
+      inputTokens: 10,
+      outputTokens: 5,
+      thoughtTokens: 0,
+      toolTokens: 0,
+      cachedTokens: 0,
+      totalTokens: 15,
+      estimatedCostUsd: 0.0001,
+    },
+    costLimitReached: false,
+    results: [jobResult],
+  };
+  const stream = (): Array<Record<string, unknown>> => [
+    jsonlResult(jobResult),
+    jsonlSummary(summary),
+    jsonlRunError({
+      code: 'INPUT_NOT_FOUND',
+      category: 'input',
+      message: 'Input does not exist: missing.png',
+      retryable: false,
+      hint: 'Check the input path and working directory.',
+    }),
+  ].map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  it('versions every record on one scheme', () => {
+    // A stream whose records version independently cannot be evolved as a unit:
+    // a consumer would have to track three compatibility stories to read one
+    // file. `summary` inherits its version from BatchSummary, so this also pins
+    // that field to the stream version rather than letting the two drift.
+    expect(stream().map((record) => record.type)).toEqual(['document', 'summary', 'error']);
+    for (const record of stream()) expect(record.version).toBe(JSONL_STREAM_VERSION);
+  });
+
+  it('carries no protocol envelope on any record', () => {
+    // The defect this guards: a protocol-shaped terminal record made schema
+    // validity anti-correlated with success — a strict validator rejected every
+    // line of a successful run and accepted the single line of a failed one.
+    for (const record of stream()) {
+      for (const field of ['protocolVersion', 'runId', 'sequence', 'timestamp']) {
+        expect(record).not.toHaveProperty(field);
+      }
+    }
+  });
+
+  it('keeps its type vocabulary disjoint from the run protocol events', () => {
+    // Both streams discriminate on `type`. Overlapping values would make that
+    // discriminator ambiguous, so a consumer could not tell a CLI record from a
+    // protocol event without first knowing which command produced the file.
+    const protocolTypes = new Set<string>(OCR_PROTOCOL_SCHEMAS['event-v2'].properties.type.enum);
+    for (const record of stream()) {
+      expect(protocolTypes.has(record.type as string)).toBe(false);
+    }
+  });
+
+  it('gives the terminal error record the same typed contract as every other surface', () => {
+    const [, , failure] = stream();
+    expect(failure.error).toEqual({
+      code: 'INPUT_NOT_FOUND',
+      category: 'input',
+      message: 'Input does not exist: missing.png',
+      retryable: false,
+      hint: 'Check the input path and working directory.',
+    });
+  });
+
+  it('drops the per-document results from the summary record', () => {
+    // The summary has to stay a bounded single line; a batch of thousands must
+    // not inline every document into it.
+    expect(jsonlSummary(summary)).not.toContain('"results"');
+    expect(JSON.parse(jsonlSummary(summary)) as Record<string, unknown>).toMatchObject({
+      discovery: { unsupported: 0, defaultExcluded: 0 },
+    });
   });
 });

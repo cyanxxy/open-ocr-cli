@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveCliOptions } from './config';
 import {
+  DEFAULT_STDIN_NAME,
   describeDiscoverySkips,
   detectMimeType,
   discoverInputSet,
@@ -14,6 +15,7 @@ import {
   inputFingerprint,
   readAndValidateInput,
   readStdin,
+  stdinDisplayPath,
 } from './inputs';
 import type { ResolvedCliOptions, ResolvedInput } from './types';
 
@@ -437,5 +439,66 @@ describe('CLI input discovery', () => {
     const [input] = await discoverInputs([target], options);
     const result = await readAndValidateInput(input);
     expect(result.dataUrl).toMatch(/^data:application\/pdf;base64,/);
+  });
+});
+
+describe('stdin document identity', () => {
+  /** Drive `discoverInputSet` through the real stdin path with piped bytes. */
+  async function discoverPipedStdin(
+    bytes: Uint8Array,
+    flags: { stdinName?: string } = {},
+  ): Promise<ResolvedInput> {
+    const stream = new PassThrough();
+    stream.end(Buffer.from(bytes));
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+    Object.defineProperty(process, 'stdin', { configurable: true, value: stream });
+    try {
+      const discovery = await discoverInputSet(
+        ['-'],
+        resolveCliOptions({ ...flags, quiet: true }, {}, directory),
+      );
+      return discovery.inputs[0];
+    } finally {
+      if (descriptor) Object.defineProperty(process, 'stdin', descriptor);
+    }
+  }
+
+  it('reports a named stdin document under the name the caller supplied', async () => {
+    const named = await discoverPipedStdin(PNG_BYTES, { stdinName: 'piped-card.png' });
+    // `source` is derived from displayPath, so naming the document is what lets
+    // an agent correlate a result back to the bytes it piped in. The output file
+    // already used this name; only the reported source lagged behind.
+    expect(named.displayPath).toBe('piped-card.png');
+    expect(named.name).toBe('piped-card.png');
+    expect(named.relativePath).toBe('piped-card.png');
+  });
+
+  it('keeps <stdin> for an unnamed document', async () => {
+    const unnamed = await discoverPipedStdin(PNG_BYTES);
+    // The placeholder filename says less than the explicit marker does, and the
+    // marker is what existing consumers already key on.
+    expect(unnamed.displayPath).toBe('<stdin>');
+    expect(unnamed.name).toBe(DEFAULT_STDIN_NAME);
+  });
+
+  it('pins the unnamed sentinel to the resolved stdin default', () => {
+    // stdinDisplayPath decides "named" by comparing against this default. If
+    // config.ts changed its default, every stdin run would silently start
+    // reporting a name instead of <stdin>.
+    expect(resolveCliOptions({}, {}, directory).stdinName).toBe(DEFAULT_STDIN_NAME);
+    expect(stdinDisplayPath(DEFAULT_STDIN_NAME)).toBe('<stdin>');
+    expect(stdinDisplayPath('piped-card.png')).toBe('piped-card.png');
+  });
+
+  it('leaves manifest identity and resume fingerprints unchanged by naming', async () => {
+    // Manifests key stdin on the literal '<stdin>' (see ocrJobService) and
+    // fingerprints key on relativePath plus content. Neither reads displayPath,
+    // so naming a document must not move it to a different manifest entry.
+    const named = await discoverPipedStdin(PNG_BYTES, { stdinName: 'piped-card.png' });
+    expect(named.absolutePath).toBeUndefined();
+    expect(inputFingerprint(named, 'simple')).toBe(inputFingerprint(
+      { ...named, displayPath: '<stdin>' },
+      'simple',
+    ));
   });
 });

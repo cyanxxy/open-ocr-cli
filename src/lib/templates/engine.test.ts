@@ -6,15 +6,17 @@ const { mockTemplateGenerateContent, mockTemplateGenerateContentStream } = vi.ho
 }));
 
 import type { ExtractionPreset, PresetStructuredOutput } from '../gemini/types';
+import { findSchemaCompatibilityIssues } from '../gemini/schemaCompat';
 import {
   buildPresetCsv,
   buildPresetMarkdown,
   buildPresetPrompt,
+  buildPresetResponseSchema,
   normalizeFieldValue,
   presetRunResultFromText,
   runExtractionPreset,
 } from './engine';
-import { getExtractionPreset } from './presets';
+import { EXTRACTION_PRESETS, getExtractionPreset } from './presets';
 
 // Mutable payload so individual tests can drive the mocked model response
 // (used to exercise the validation report and row-cap behavior).
@@ -118,9 +120,46 @@ describe('template engine helpers', () => {
     const invoicePrompt = buildPresetPrompt(getExtractionPreset('invoice'));
     const resumePrompt = buildPresetPrompt(getExtractionPreset('resume'));
 
-    expect(invoicePrompt).toContain('Also extract line-item rows into a "rows" array.');
+    expect(invoicePrompt).toContain('Also extract line-item rows into a "rows" array of at most 500 entries.');
     expect(invoicePrompt).toContain('description, quantity, unit_price, line_total');
     expect(resumePrompt).toContain('Do not include a "rows" array unless the preset requires one.');
+  });
+
+  // Every preset shipped a response schema whose `maxItems: 500` on the rows
+  // array blew the provider's grammar-complexity budget, so template mode 400'd
+  // on the first request for every document. The old tests all passed because
+  // they only ever asserted on the parsed result, never on what went over the
+  // wire. These assert the schema itself stays inside the verified subset.
+  describe.each(EXTRACTION_PRESETS.map((preset) => preset.id))('%s response schema', (presetId) => {
+    it('uses only constructs the structured-output API accepts', () => {
+      const schema = buildPresetResponseSchema(getExtractionPreset(presetId));
+
+      expect(findSchemaCompatibilityIssues(schema)).toEqual([]);
+    });
+
+    it('leaves the row cap out of the wire schema and enforces it after parsing', () => {
+      const schema = buildPresetResponseSchema(getExtractionPreset(presetId)) as {
+        properties: { rows: Record<string, unknown> };
+      };
+
+      expect(schema.properties.rows).not.toHaveProperty('maxItems');
+      expect(schema.properties.rows).not.toHaveProperty('minItems');
+    });
+  });
+
+  it('caps rows after parsing now that the schema no longer bounds them', () => {
+    const preset = getExtractionPreset('invoice');
+    const rows = Array.from({ length: 520 }, (_, index) => ({ description: `Line ${index + 1}` }));
+
+    const result = presetRunResultFromText(
+      JSON.stringify({ documentType: 'Invoice', summary: 'Long invoice', fields: {}, rows }),
+      preset,
+    );
+
+    expect(result.json.rows).toHaveLength(500);
+    expect(result.json.validationErrors ?? []).toContainEqual(
+      expect.stringContaining('Row output truncated to 500 rows'),
+    );
   });
 
   it('normalizes numeric currency fields to two decimal places', async () => {

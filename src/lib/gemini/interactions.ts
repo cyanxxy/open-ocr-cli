@@ -6,6 +6,7 @@ import {
   recordGeminiInteractionUsage,
 } from './usage';
 import { waitForGeminiRequestSlot } from './requestPolicy';
+import { withReadableProviderErrors } from './errorPayload';
 
 type InteractionToolChoice = 'auto' | 'any' | 'none' | 'validated';
 
@@ -451,10 +452,10 @@ export async function runModelInteraction({
       ...common,
       stream: false,
     };
-    const interaction = await genAI.interactions.create(
+    const interaction = await withReadableProviderErrors(() => genAI.interactions.create(
       params,
       abortSignal ? { fetchOptions: { signal: abortSignal } } : undefined,
-    ) as Interactions.Interaction;
+    )) as Interactions.Interaction;
     recordGeminiInteractionUsage(
       interaction,
       model,
@@ -472,10 +473,10 @@ export async function runModelInteraction({
     ...common,
     stream: true,
   };
-  const stream = await genAI.interactions.create(
+  const stream = await withReadableProviderErrors(() => genAI.interactions.create(
     params,
     abortSignal ? { fetchOptions: { signal: abortSignal } } : undefined,
-  ) as AsyncIterable<Interactions.InteractionSSEEvent>;
+  )) as AsyncIterable<Interactions.InteractionSSEEvent>;
   const steps = new Map<number, InteractionStep>();
   const argumentDeltas = new Map<number, string>();
   const streamedKinds = new Set<'thought_summary' | 'model_output'>();
