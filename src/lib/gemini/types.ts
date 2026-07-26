@@ -248,25 +248,37 @@ export interface GeminiClientConfig {
 }
 
 /**
- * Error types for OCR operations
+ * Error types for OCR operations.
+ *
+ * This is the engine's machine-readable failure vocabulary, and it exists so a
+ * consumer never has to recognize a failure by reading its prose. The CLI keys
+ * `classifyKnownError` on `name`/`type` for exactly that reason: a message
+ * carrying user-supplied text — a schema path, a filename — must not be able to
+ * trip a substring heuristic meant for something else.
  */
 export enum OcrErrorType {
   API_KEY_MISSING = 'API_KEY_MISSING',
   NETWORK_ERROR = 'NETWORK_ERROR',
   RATE_LIMIT = 'RATE_LIMIT',
-  INVALID_RESPONSE = 'INVALID_RESPONSE'
+  INVALID_RESPONSE = 'INVALID_RESPONSE',
+  /** The caller's response schema is why the provider refused the request. */
+  SCHEMA_INVALID = 'SCHEMA_INVALID'
 }
 
 /**
- * Custom error class for OCR operations
+ * Custom error class for OCR operations.
+ *
+ * `options` reaches `Error`, so a diagnosis built here keeps the provider's
+ * untouched error as `cause` while still declaring its own type.
  */
 export class OcrError extends Error {
   constructor(
     public type: OcrErrorType,
     message: string,
-    public details?: unknown
+    public details?: unknown,
+    options?: ErrorOptions
   ) {
-    super(message);
+    super(message, options);
     this.name = 'OcrError';
   }
 }

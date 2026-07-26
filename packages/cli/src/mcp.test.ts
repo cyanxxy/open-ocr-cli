@@ -10,7 +10,9 @@ import {
   buildExtractMcpRequest,
   buildWebMcpRequest,
   createOcrMcpServer,
+  mcpResult,
 } from './mcp';
+import type { OcrMachineResult } from './protocol';
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 
@@ -186,6 +188,47 @@ describe('Open OCR MCP server', () => {
         status: 'failed',
         error: { code: 'CONFIG_INVALID' },
       },
+    });
+  });
+
+  // A live run only reaches `partial` easily, so the remaining not-ok statuses
+  // are pinned here. Enumerating statuses is what let the original bug survive:
+  // `failed` was listed and the other three were not.
+  describe('tool error reporting', () => {
+    const resultWithStatus = (
+      status: OcrMachineResult['status'],
+      ok: boolean,
+    ): OcrMachineResult => ({
+      protocolVersion: 2,
+      type: 'run.result',
+      ok,
+      runId: 'r1',
+      status,
+      documents: [],
+    } as unknown as OcrMachineResult);
+
+    it.each([
+      ['partial', false],
+      ['failed', false],
+      ['cancelled', false],
+      ['cost_limited', false],
+    ] as const)('reports %s as a tool error', (status, ok) => {
+      expect(mcpResult(resultWithStatus(status, ok)).isError).toBe(true);
+    });
+
+    it.each([
+      ['succeeded', true],
+      ['validated', true],
+    ] as const)('does not report %s as a tool error', (status, ok) => {
+      expect(mcpResult(resultWithStatus(status, ok)).isError).toBeUndefined();
+    });
+
+    it('never disagrees with the ok field it is derived from', () => {
+      for (const ok of [true, false]) {
+        const built = mcpResult(resultWithStatus('partial', ok));
+        expect(built.isError === true).toBe(!ok);
+        expect(built.structuredContent.ok).toBe(ok);
+      }
     });
   });
 });

@@ -1,5 +1,60 @@
 # Changelog
 
+## 2.6.0 - 2026-07-26
+
+### Breaking
+
+- `extract --jsonl` now emits one record family. Fatal failures end the stream
+  with `{"type":"error","version":1,...}` instead of a protocol-shaped
+  `run.failed`, so every line carries `"version": 1` and no `protocolVersion`.
+  Previously a strict validator rejected every line when a run succeeded and
+  accepted every line when it failed. `run --response-format jsonl` is
+  unchanged and remains the protocol dialect.
+
+### Fixed
+
+- Template mode produced `400 INVALID_ARGUMENT` for every preset in every
+  earlier release. Structured output compiles an array bound into that many
+  copies of the item grammar, so the row cap in the wire schema exceeded a
+  limit the API enforces. The cap is applied after parsing instead, where it
+  already was, and a static check now fails the build rather than the request.
+- `--resume` aborted an entire batch when a single input changed, leaving even
+  unchanged documents unprocessed. A run now replaces only the artifacts its
+  own manifest recorded for that input, and an unrelated file at an artifact
+  path still conflicts.
+- Single-document runs into an output directory kept no manifest, so re-running
+  one failed against its own output. An output path naming a single file is
+  still left alone, and can no longer be turned into a directory by the lock.
+- Document failures reported an unredacted message alongside a redacted one, so
+  credentials could survive into JSONL records, the resume manifest, and
+  `batch-summary.json`. Both now derive from one redacted source.
+- Provider rejections reported the raw response body. The readable sentence is
+  extracted where the error is created, and the untouched payload is retained
+  as the cause.
+- A rejection naming no field is no longer blamed on the request schema unless
+  the schema exceeds a measured limit; unfamiliar keywords are advisory. Schema
+  identifiers published by `capabilities` now resolve in `schema`.
+- MCP reported a successful tool call when a run was partial, cancelled, or
+  cost-limited. `isError` now derives from the run envelope.
+- CSV asked of a preset that extracts one record per document is refused before
+  the credential gate rather than after a billed request. Inline delivery
+  combined with an output directory names both fields and the conflict.
+- Typed errors carry a next action on every code, and errors identified by the
+  code path are no longer re-classified from their message text.
+
+### Changed
+
+- Directory scans skip `node_modules`, `dist`, `build`, `vendor`, and `target`
+  by default, and report what they passed over. Use `--no-default-excludes` to
+  include them.
+- Directory scans no longer ignore uppercase file extensions, so a folder of
+  `.PNG` or `.PDF` scans is discovered and extracted.
+- A single-document run into a directory now takes the batch lock it needs to
+  keep a manifest, so simultaneous runs into one directory conflict rather than
+  racing. Sequential runs and single-invocation batches are unaffected.
+
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v2.4.1...v2.6.0)
+
 ## 2.4.1 - 2026-07-26
 
 ### Repository metadata

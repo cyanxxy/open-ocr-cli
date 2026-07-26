@@ -5,6 +5,8 @@ import {
   providerErrorPayloadOf,
   providerErrorSubject,
   readableProviderError,
+  redactSensitiveErrorText,
+  renderProviderErrorPayload,
 } from './errorPayload';
 
 /**
@@ -22,6 +24,14 @@ const LIVE_BODIES = {
   negativeMaxTokens: '{"error":{"code":400,"message":"* GenerateContentRequest.generation_config.max_output_tokens: max_output_tokens must be positive.\\n","status":"INVALID_ARGUMENT"}}',
   unknownModel: '{"error":{"code":404,"message":"models/gemini-does-not-exist is not found for API version v1beta, or is not supported for generateContent. Call ModelService.ListModels to see the list of available models and their supported methods.","status":"NOT_FOUND"}}',
 } as const;
+
+/**
+ * A provider is free to echo the request back inside its own error body. Nothing
+ * stops it from quoting the key or the `Authorization` header it rejected, so
+ * every rendered form of a body is treated as attacker-influenced text.
+ */
+const ECHOED_KEY = 'AIzaSyD1234567890abcdefghijklmnopqrstuv';
+const ECHOED_BODY = `{"error":{"code":400,"message":"Provider rejected request for key ${ECHOED_KEY}","status":"INVALID_ARGUMENT"}}`;
 
 describe('parseProviderErrorPayload', () => {
   it('reads message, status, code, and ErrorInfo reasons', () => {
@@ -77,6 +87,58 @@ describe('providerErrorMessage', () => {
   });
 });
 
+describe('renderProviderErrorPayload', () => {
+  it('redacts a credential the provider echoed into its own body', () => {
+    const payload = parseProviderErrorPayload(ECHOED_BODY);
+    if (!payload) throw new Error('Expected a parsed payload');
+    const rendered = renderProviderErrorPayload(payload);
+    expect(rendered).not.toContain(ECHOED_KEY);
+    expect(rendered).toContain('[REDACTED_KEY]');
+  });
+
+  it('cleans the extraction rather than discarding it', () => {
+    const payload = parseProviderErrorPayload(ECHOED_BODY);
+    if (!payload) throw new Error('Expected a parsed payload');
+    // The provider's sentence and its bracketed machine tokens both survive;
+    // only the credential-shaped fragment is replaced.
+    expect(renderProviderErrorPayload(payload))
+      .toBe('Provider rejected request for key [REDACTED_KEY] [INVALID_ARGUMENT]');
+    // The unredacted message stays on the payload, because the phrase rules in
+    // `providerErrorSubject` match on it.
+    expect(payload.message).toContain(ECHOED_KEY);
+  });
+
+  it('leaves a body with nothing credential-shaped in it byte-identical', () => {
+    const payload = parseProviderErrorPayload(LIVE_BODIES.corruptImage);
+    if (!payload) throw new Error('Expected a parsed payload');
+    expect(renderProviderErrorPayload(payload))
+      .toBe('Unable to process input image. Please retry or report in https://developers.generativeai.google/guide/troubleshooting [INVALID_ARGUMENT]');
+  });
+});
+
+describe('redactSensitiveErrorText', () => {
+  it('strips bearer tokens, provider key formats, and named credential fields', () => {
+    const redacted = redactSensitiveErrorText(
+      `Authorization: Bearer ${ECHOED_KEY}; api_key=sk-live-abcdefghijklmnop`,
+    );
+    expect(redacted).not.toContain(ECHOED_KEY);
+    expect(redacted).not.toContain('sk-live');
+  });
+
+  it('is safe to apply twice', () => {
+    const once = redactSensitiveErrorText(`key ${ECHOED_KEY} rejected`);
+    expect(redactSensitiveErrorText(once)).toBe(once);
+  });
+
+  it('does not mangle a request-field path that merely contains "token"', () => {
+    // `max_output_tokens:` looks like a named credential field to a careless
+    // pattern; keeping it intact is what lets `providerErrorSubject` still
+    // recognise a request-field rejection after rendering.
+    const message = '* GenerateContentRequest.generation_config.max_output_tokens: max_output_tokens must be positive.';
+    expect(redactSensitiveErrorText(message)).toBe(message);
+  });
+});
+
 describe('providerErrorPayloadOf', () => {
   /**
    * The Interactions API throws an `ApiError` subclass whose `message` is a
@@ -121,6 +183,22 @@ describe('readableProviderError', () => {
     expect(restated.cause).toBe(original);
     expect(restated.name).toBe('ApiError');
     expect(restated.status).toBe(401);
+  });
+
+  it('redacts the restated message while cause keeps the untouched body', () => {
+    const original = Object.assign(new Error(ECHOED_BODY), { name: 'ApiError', status: 400 });
+    const restated = readableProviderError(original) as Error;
+    expect(restated.message).not.toContain(ECHOED_KEY);
+    expect(restated.message).toContain('[REDACTED_KEY]');
+    // Defence in depth, not a leak: `cause` is a non-enumerable Error property,
+    // so no serialized surface carries it — see the CLI's `cause` guard.
+    expect((restated.cause as Error).message).toContain(ECHOED_KEY);
+    expect(JSON.stringify(restated)).not.toContain(ECHOED_KEY);
+  });
+
+  it('redacts a bare message even when there is no parseable body', () => {
+    const restated = readableProviderError(new Error(`upstream refused key ${ECHOED_KEY}`)) as Error;
+    expect(restated.message).toBe('upstream refused key [REDACTED_KEY]');
   });
 
   it('returns errors that already read well untouched', () => {

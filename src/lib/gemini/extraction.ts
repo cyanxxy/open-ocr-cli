@@ -11,6 +11,7 @@ import {
   generateContentMediaResolution,
   getGenAIClient,
 } from './client';
+import { OcrError, OcrErrorType } from './types';
 import type {
   ExtractedContent,
   StreamingCallbacks,
@@ -29,7 +30,7 @@ import {
   providerErrorSubject,
   readableProviderError,
 } from './errorPayload';
-import { findSchemaCompatibilityIssues } from './schemaCompat';
+import { findSchemaCompatibilityIssues, type SchemaCompatibilityIssue } from './schemaCompat';
 
 /**
  * Helper function to process markdown text into ExtractedContent structure
@@ -113,10 +114,49 @@ function processMarkdownIntoExtractedContent(
   return { title, sections };
 }
 
+/** How many advisory constructs to name before summarizing the rest. */
+const MAX_HINTED_SCHEMA_ISSUES = 3;
+
+function listAdvisoryConstructs(advisory: SchemaCompatibilityIssue[]): string {
+  const listed = advisory
+    .slice(0, MAX_HINTED_SCHEMA_ISSUES)
+    .map((issue) => `${issue.path} (${issue.keyword})`)
+    .join(', ');
+  const remainder = advisory.length > MAX_HINTED_SCHEMA_ISSUES
+    ? `, and ${advisory.length - MAX_HINTED_SCHEMA_ISSUES} more`
+    : '';
+  return `${listed}${remainder}`;
+}
+
+/**
+ * Append untested-construct findings to a rejection nobody can explain, without
+ * claiming they caused it.
+ *
+ * The error stays the provider's own: same name, same `status`, same cause, so
+ * every classifier keyed on those still reads it as the generic provider failure
+ * it is. Only the sentence gains a lead worth checking first.
+ */
+function withUntestedConstructHint(error: unknown, advisory: SchemaCompatibilityIssue[]): unknown {
+  if (advisory.length === 0 || !(error instanceof Error)) return error;
+  const hinted = new Error(
+    `${error.message} The response schema also uses constructs this client has not tested against `
+    + `structured output (${listAdvisoryConstructs(advisory)}); the provider named nothing, so that is `
+    + 'a lead to check rather than the established cause.',
+    { cause: error },
+  );
+  hinted.name = error.name;
+  if (error.stack) hinted.stack = error.stack;
+  const status = (error as { status?: unknown }).status;
+  if (status !== undefined) {
+    Object.defineProperty(hinted, 'status', { value: status, enumerable: true, writable: true, configurable: true });
+  }
+  return hinted;
+}
+
 /**
  * Explain a response schema the provider refused to compile.
  *
- * Constrained decoding rejects an over-budget or unsupported schema with a bare
+ * Constrained decoding rejects an over-budget schema with a bare
  * `400 INVALID_ARGUMENT` whose whole message is "Request contains an invalid
  * argument." — no field, no detail, nothing that separates it from any other
  * malformed request. `findSchemaCompatibilityIssues` is the only evidence that
@@ -124,9 +164,14 @@ function processMarkdownIntoExtractedContent(
  * the diagnosis has to be made here where the schema is still in scope.
  *
  * Runs only when the provider named nothing itself: a rejection that already
- * blamed the document or a specific request field is rethrown untouched, and a
- * schema that clears the static check leaves the error generic rather than
- * inventing a cause for it.
+ * blamed the document or a specific request field is rethrown untouched.
+ *
+ * Only a `confident` finding — a grammar cost past the measured ceiling —
+ * converts the failure into a schema failure. An `advisory` finding means the
+ * schema uses something we have never probed, which is not evidence of anything;
+ * promoting it would tell a caller with a perfectly legitimate modular schema to
+ * go rewrite it while the real cause went unmentioned. Those findings ride along
+ * as a hint and leave the error on the generic provider path.
  */
 function describeSchemaRejection(
   error: unknown,
@@ -137,14 +182,28 @@ function describeSchemaRejection(
   const payload = parseProviderErrorPayload(error.message);
   if (payload && providerErrorSubject(payload)) return readableProviderError(error);
   const issues = findSchemaCompatibilityIssues(responseJsonSchema);
-  if (issues.length === 0) return readableProviderError(error);
-  const detail = issues
+  const confident = issues.filter((issue) => issue.confidence === 'confident');
+  const advisory = issues.filter((issue) => issue.confidence === 'advisory');
+  if (confident.length === 0) return withUntestedConstructHint(readableProviderError(error), advisory);
+  const detail = confident
     .map((issue) => `${issue.path} (${issue.keyword}): ${issue.reason}`)
     .join('; ');
-  return new Error(
+  const alsoUntested = advisory.length > 0
+    ? ` The schema also uses constructs we have not tested (${listAdvisoryConstructs(advisory)}).`
+    : '';
+  // Typed, not prose. This site has the evidence — a measured grammar cost over
+  // the ceiling — so it states the verdict outright and a consumer never has to
+  // infer it from the message. That matters more here than anywhere else in the
+  // engine: `detail` quotes the caller's own schema paths, so any classifier
+  // reduced to substring-matching this sentence is matching user-supplied text.
+  // A schema with properties named `page` and `maximum` read as a page-limit
+  // failure until this became an `OcrError`.
+  return new OcrError(
+    OcrErrorType.SCHEMA_INVALID,
     'Invalid JSON Schema for structured output: the provider rejected the request '
-    + `("${providerErrorMessage(error.message)}") and the schema uses constructs it is `
-    + `not known to accept — ${detail}`,
+    + `("${providerErrorMessage(error.message)}") and the schema exceeds a limit it is `
+    + `measured to reject — ${detail}.${alsoUntested}`,
+    undefined,
     { cause: error },
   );
 }

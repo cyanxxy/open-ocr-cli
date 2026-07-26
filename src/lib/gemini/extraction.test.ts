@@ -8,6 +8,7 @@ vi.mock('./client', async () => {
 });
 
 import { extractStructuredDataFromFile, extractTextFromFile } from './extraction';
+import { OcrError, OcrErrorType } from './types';
 import { getGeminiUsage, resetGeminiUsage } from './usage';
 
 const FILE_DATA = 'data:image/png;base64,ZmFrZQ==';
@@ -137,14 +138,92 @@ describe('extractTextFromFile — output contract', () => {
       required: ['total'],
       additionalProperties: false,
     };
+    /** Shared shapes hoisted into `$defs`: idiomatic, and fully supported. */
+    const MODULAR_SCHEMA = {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: { total: { $ref: '#/$defs/Money' } },
+      required: ['total'],
+      additionalProperties: false,
+      $defs: {
+        Money: {
+          type: 'object',
+          properties: { amount: { type: 'string' }, currency: { type: 'string' } },
+          required: ['amount', 'currency'],
+          additionalProperties: false,
+        },
+      },
+    };
+    /** `pattern` is real JSON Schema we have simply never probed. */
+    const UNTESTED_KEYWORD_SCHEMA = {
+      type: 'object',
+      properties: { code: { type: 'string', pattern: '^[A-Z]+$' } },
+      required: ['code'],
+      additionalProperties: false,
+    };
     const BARE_INVALID_ARGUMENT = '{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}';
 
-    it('names the offending construct when a bare 400 meets an unsupported schema', async () => {
+    it('names the offending construct when a bare 400 meets an over-budget schema', async () => {
       // Constrained decoding rejects an over-budget grammar with a body that
       // names nothing, so the static check is the only thing that can say why.
       mockReject(400, BARE_INVALID_ARGUMENT);
       await expect(extractStructuredDataFromFile(FILE_DATA, 'image/png', CLIENT, OVER_BUDGET))
         .rejects.toThrow(/^Invalid JSON Schema for structured output: .*maxItems.*grammar cost of 2000/su);
+    });
+
+    it('states the schema verdict as a type rather than leaving it in the prose', async () => {
+      // The diagnosis quotes the caller's own schema paths, so a consumer that
+      // has to recognise it by substring is matching user-supplied text. This
+      // site has the evidence, so it declares the verdict outright — and keeps
+      // the provider's untouched error reachable as `cause`.
+      mockReject(400, BARE_INVALID_ARGUMENT);
+      const failure = await extractStructuredDataFromFile(FILE_DATA, 'image/png', CLIENT, OVER_BUDGET)
+        .then(() => undefined, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(OcrError);
+      expect((failure as OcrError).type).toBe(OcrErrorType.SCHEMA_INVALID);
+      expect(((failure as OcrError).cause as Error).message).toBe(BARE_INVALID_ARGUMENT);
+    });
+
+    it('leaves an unexplained rejection untyped, so nothing claims the schema was at fault', async () => {
+      // The counterpart to the rule above: `SCHEMA_INVALID` is only ever
+      // asserted on confident evidence, never on a rejection nobody can explain.
+      mockReject(400, BARE_INVALID_ARGUMENT);
+      const failure = await extractStructuredDataFromFile(FILE_DATA, 'image/png', CLIENT, CLEAN_SCHEMA)
+        .then(() => undefined, (error: unknown) => error);
+      expect(failure).not.toBeInstanceOf(OcrError);
+    });
+
+    it('names the path, cost and remedy so the caller can act on the diagnosis', async () => {
+      mockReject(400, BARE_INVALID_ARGUMENT);
+      const failure = await extractStructuredDataFromFile(FILE_DATA, 'image/png', CLIENT, OVER_BUDGET)
+        .then(() => undefined, (error: unknown) => error as Error);
+      expect(failure?.message).toContain('properties.rows (maxItems)');
+      expect(failure?.message).toContain('grammar cost of 2000');
+      expect(failure?.message).toContain('above the largest cost (200) observed to compile');
+      expect(failure?.message).toContain('cap the collection after parsing instead');
+    });
+
+    it('does not blame a modular $defs/$ref schema for an unexplained 400', async () => {
+      // Every keyword here is supported; blaming it would send the caller off to
+      // rewrite a correct schema while the real cause stayed unmentioned.
+      mockReject(400, BARE_INVALID_ARGUMENT);
+      const failure = await extractStructuredDataFromFile(FILE_DATA, 'image/png', CLIENT, MODULAR_SCHEMA)
+        .then(() => undefined, (error: unknown) => error as Error);
+      expect(failure?.message).toBe('Request contains an invalid argument. [INVALID_ARGUMENT]');
+    });
+
+    it('offers an untested construct as a lead without blaming the schema', async () => {
+      // "We have not probed this" is not "this is broken": the provider is
+      // documented to ignore properties it does not support. The provider's own
+      // sentence still leads, and the classifier still sees a provider failure.
+      mockReject(400, BARE_INVALID_ARGUMENT);
+      const failure = await extractStructuredDataFromFile(FILE_DATA, 'image/png', CLIENT, UNTESTED_KEYWORD_SCHEMA)
+        .then(() => undefined, (error: unknown) => error as Error);
+      expect(failure?.message).not.toMatch(/^Invalid JSON Schema/u);
+      expect(failure?.message).toMatch(/^Request contains an invalid argument\. \[INVALID_ARGUMENT\]/u);
+      expect(failure?.message).toContain('properties.code (pattern)');
+      expect(failure?.message).toContain('rather than the established cause');
+      expect((failure as unknown as { status?: number }).status).toBe(400);
     });
 
     it('leaves the rejection unexplained when the schema clears the static check', async () => {

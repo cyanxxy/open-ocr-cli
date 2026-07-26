@@ -6,7 +6,7 @@
  * checker is perfectly happy with can still be rejected at request time with a
  * bare `400 INVALID_ARGUMENT` that names no field, so unit tests over the schema
  * builders cannot tell a working schema from a broken one. This module encodes
- * the two limits we have confirmed against the live API so those tests can.
+ * the one limit we have confirmed against the live API so those tests can.
  *
  * Evidence (gemini-3.1-flash-lite, text-only probes, 2026-07-26):
  *
@@ -24,43 +24,102 @@
  * multiplied by the per-item complexity exceeds a budget that sits between 200
  * and 400. Prefer enforcing collection caps after parsing and leaving the bound
  * out of the wire schema entirely.
+ *
+ * Every row above varied `maxItems`. `minItems` was never probed, so this module
+ * says nothing about it — see `findSchemaCompatibilityIssues`.
+ *
+ * Findings carry a confidence, because the two things this module can notice are
+ * not equally good evidence. A grammar cost over the measured ceiling reproduces
+ * a rejection we have actually seen (`confident`). A keyword outside the
+ * documented subset only means we have not tested it — the provider documents
+ * that it commonly *ignores* properties it does not support, and rejects on
+ * complexity instead — so that is a hint, never a diagnosis (`advisory`).
  */
 
 /**
- * Schema keywords confirmed to survive grammar compilation. Anything outside
- * this set is treated as unproven rather than known-broken — extend it only
- * alongside a live probe that shows the keyword being accepted.
+ * Keywords the provider documents for `responseJsonSchema`. Mirrors
+ * `SUPPORTED_KEYWORDS` in `packages/cli/src/schema.ts`, which is the gate a
+ * user-supplied schema must already pass; the two are kept in sync by hand
+ * because `src/lib` cannot import from the package that depends on it. Anything
+ * accepted there must be accepted here, or the CLI would warn about schemas it
+ * just told the caller were supported.
+ *
+ * `oneOf` appears in that portable subset while the provider docs list only
+ * `anyOf`; it is kept here so the CLI's own allowlist is not contradicted, but
+ * prefer `anyOf` in schemas we generate.
  */
-export const VERIFIED_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
-  'type',
-  'properties',
-  'required',
-  'additionalProperties',
-  'items',
-  'anyOf',
-  'enum',
-  'format',
-  'description',
-  'title',
-  'minimum',
-  'maximum',
-  'minItems',
-  'maxItems',
+const PORTABLE_SCHEMA_KEYWORDS: readonly string[] = [
+  '$schema', '$id', '$defs', '$ref', '$anchor',
+  'type', 'format', 'title', 'description', 'enum',
+  'items', 'prefixItems', 'minItems', 'maxItems',
+  'minimum', 'maximum', 'anyOf', 'oneOf',
+  'properties', 'additionalProperties', 'required', 'propertyOrdering',
+];
+
+/**
+ * Schema keywords we do not flag: the documented subset above, plus keywords our
+ * own builders emit and the live probes exercised. Anything outside this set is
+ * reported as unproven rather than known-broken — extend it alongside either a
+ * live probe or a documented guarantee.
+ */
+export const KNOWN_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
+  ...PORTABLE_SCHEMA_KEYWORDS,
+  // OpenAPI spelling the provider still accepts alongside `anyOf: [..., null]`.
   'nullable',
 ]);
 
 /**
- * Largest `bound x per-item complexity` product observed to compile. Chosen at
- * the top of the accepted range in the table above so the check fires before a
- * schema reaches the provider, not after.
+ * Keywords whose value is a *map of schemas* keyed by a name the author chose.
+ * Recursing into one of these as if it were a schema reports the author's own
+ * definition names as unknown keywords, which is how a legitimate `$defs`
+ * document used to produce findings for `Money` and `LineItem`.
+ */
+const CHILD_SCHEMA_MAP_KEYWORDS: ReadonlySet<string> = new Set([
+  'properties',
+  '$defs',
+  'definitions',
+  'patternProperties',
+  'dependentSchemas',
+]);
+
+/**
+ * Keywords whose value is data rather than a schema. Their contents are the
+ * author's payload — object keys inside a `const` or `default` are values, not
+ * keywords — so the walk stops at them.
+ */
+const NON_SCHEMA_VALUE_KEYWORDS: ReadonlySet<string> = new Set([
+  'required',
+  'enum',
+  'const',
+  'default',
+  'examples',
+  'propertyOrdering',
+  'dependentRequired',
+]);
+
+/**
+ * Largest `bound x per-item complexity` product observed to compile. There is no
+ * published provider limit; this is an empirical threshold read off the probe
+ * table above, chosen at the top of the accepted range so the check fires before
+ * a schema reaches the provider rather than after.
  */
 export const MAX_ARRAY_GRAMMAR_COST = 200;
+
+/**
+ * How much weight a finding carries.
+ *
+ * - `confident`: reproduces a rejection measured against the live API. Enough to
+ *   tell a caller their schema is why the request failed.
+ * - `advisory`: untested construct. Worth mentioning, never worth blaming.
+ */
+export type SchemaCompatibilityConfidence = 'confident' | 'advisory';
 
 export interface SchemaCompatibilityIssue {
   /** JSON-pointer-ish path to the offending node, e.g. `properties.rows`. */
   path: string;
   keyword: string;
   reason: string;
+  confidence: SchemaCompatibilityConfidence;
 }
 
 function isSchemaObject(value: unknown): value is Record<string, unknown> {
@@ -70,7 +129,9 @@ function isSchemaObject(value: unknown): value is Record<string, unknown> {
 /**
  * Approximate the grammar a schema expands into, counting one unit per leaf
  * value the decoder must be able to emit. Deliberately coarse: it only has to
- * order schemas the same way the provider's own budget does.
+ * order schemas the same way the provider's own budget does. `$ref` is not
+ * resolved, so a referenced object counts as one unit and the result is a lower
+ * bound on the true cost.
  */
 function schemaComplexity(schema: unknown): number {
   if (!isSchemaObject(schema)) {
@@ -100,8 +161,11 @@ function schemaComplexity(schema: unknown): number {
 /**
  * Walk a `responseJsonSchema` and report constructs that have not been shown to
  * survive the provider's grammar compilation. An empty array means the schema
- * uses only verified constructs — not that the provider is guaranteed to accept
- * it, but that it avoids every rejection we have actually reproduced.
+ * uses only known constructs — not that the provider is guaranteed to accept it,
+ * but that it avoids every rejection we have actually reproduced.
+ *
+ * Callers deciding whether to blame the schema for a failure must filter to
+ * `confidence: 'confident'`; the advisory findings say only "untested".
  */
 export function findSchemaCompatibilityIssues(
   schema: unknown,
@@ -119,35 +183,42 @@ export function findSchemaCompatibilityIssues(
   const at = (key: string) => (path ? `${path}.${key}` : key);
 
   for (const keyword of Object.keys(schema)) {
-    if (!VERIFIED_SCHEMA_KEYWORDS.has(keyword)) {
+    if (!KNOWN_SCHEMA_KEYWORDS.has(keyword)) {
       issues.push({
         path: path || '(root)',
         keyword,
-        reason: `"${keyword}" has not been verified against the live structured-output API`,
+        reason: `"${keyword}" is outside the documented structured-output subset and has not been verified `
+          + 'against the live API; the provider commonly ignores properties it does not support and rejects '
+          + 'on grammar complexity instead, so treat this as a hint rather than a cause',
+        confidence: 'advisory',
       });
     }
   }
 
-  for (const keyword of ['minItems', 'maxItems'] as const) {
-    const bound = schema[keyword];
-    if (typeof bound !== 'number') {
-      continue;
-    }
-    const cost = bound * schemaComplexity(schema.items);
+  // Only `maxItems` was measured. `minItems` shares the same shape in a grammar
+  // and may well share the ceiling, but no probe ever exercised it, so asserting
+  // a bound on it would be inventing evidence.
+  const maxItems = schema.maxItems;
+  if (typeof maxItems === 'number') {
+    const itemComplexity = schemaComplexity(schema.items);
+    const cost = maxItems * itemComplexity;
     if (cost > MAX_ARRAY_GRAMMAR_COST) {
       issues.push({
         path: path || '(root)',
-        keyword,
-        reason: `${keyword}=${bound} over items of complexity ${schemaComplexity(schema.items)} compiles to a grammar cost of ${cost}, above the ${MAX_ARRAY_GRAMMAR_COST} the API accepts; cap the collection after parsing instead`,
+        keyword: 'maxItems',
+        reason: `maxItems=${maxItems} over items of complexity ${itemComplexity} compiles to a grammar cost `
+          + `of ${cost}, above the largest cost (${MAX_ARRAY_GRAMMAR_COST}) observed to compile in live probes; `
+          + 'cap the collection after parsing instead',
+        confidence: 'confident',
       });
     }
   }
 
   for (const [key, value] of Object.entries(schema)) {
-    if (key === 'required' || key === 'enum') {
+    if (NON_SCHEMA_VALUE_KEYWORDS.has(key)) {
       continue;
     }
-    if (key === 'properties' && isSchemaObject(value)) {
+    if (CHILD_SCHEMA_MAP_KEYWORDS.has(key) && isSchemaObject(value)) {
       for (const [child, childSchema] of Object.entries(value)) {
         issues.push(...findSchemaCompatibilityIssues(childSchema, `${at(key)}.${child}`));
       }

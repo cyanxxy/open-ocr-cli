@@ -132,7 +132,12 @@ function unreadableSchemaError(error: unknown, schemaPath: string): CliExitError
  * probes against one model, so a schema failing them may still be accepted
  * elsewhere. Without this the caller sees only a bare 400 naming no field.
  */
-export function customSchemaCompatibilityWarning(schema: Record<string, unknown>): string | undefined {
+export function customSchemaCompatibilityWarning(
+  schema: Record<string, unknown>,
+  // Named in the caller's own vocabulary: a `run`/MCP caller never passed
+  // `--schema` and cannot act on advice that points at a flag it has no access to.
+  subject = '--schema',
+): string | undefined {
   const issues = findSchemaCompatibilityIssues(schema);
   if (issues.length === 0) return undefined;
   const listed = issues
@@ -142,7 +147,7 @@ export function customSchemaCompatibilityWarning(schema: Record<string, unknown>
   const remainder = issues.length > MAX_LISTED_SCHEMA_ISSUES
     ? `, and ${issues.length - MAX_LISTED_SCHEMA_ISSUES} more`
     : '';
-  return `--schema may be rejected by the provider: ${listed}${remainder}`;
+  return `${subject} may be rejected by the provider: ${listed}${remainder}`;
 }
 
 export async function loadCustomSchema(schemaPath: string, cwd: string): Promise<Record<string, unknown>> {

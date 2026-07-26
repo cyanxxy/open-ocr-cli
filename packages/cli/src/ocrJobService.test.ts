@@ -7,7 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveCliOptions } from './config';
 import { discoverInputs } from './inputs';
 import { OcrJobService, type OcrDocumentExtractor } from './ocrJobService';
+import { jsonlResult } from './output';
 import type { OcrJobEvent } from './protocol';
+import type { OcrJobResult } from './types';
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 const HEIC_BYTES = (() => {
@@ -18,6 +20,42 @@ const HEIC_BYTES = (() => {
   bytes.write('mif1', 16, 'ascii');
   return Uint8Array.from(bytes);
 })();
+/** A provider that quotes the rejected key back inside its own JSON error body. */
+const ECHOED_KEY = 'AIzaSyD1234567890abcdefghijklmnopqrstuv';
+
+function echoedCredentialFailure(): Error {
+  const error = new Error(JSON.stringify({
+    error: {
+      code: 400,
+      message: `Provider rejected request for key ${ECHOED_KEY}`,
+      status: 'INVALID_ARGUMENT',
+    },
+  }));
+  error.name = 'ApiError';
+  Object.defineProperty(error, 'status', { value: 400, enumerable: true });
+  return error;
+}
+
+/**
+ * A document reports one failure through two fields: `error` for the CLI-native
+ * surfaces (the `--jsonl` records, the stderr status lines, the resume manifest,
+ * batch-summary.json) and `errorDetails` for the machine protocol. Only the
+ * typed field is built through `ocrErrorPayload`, which is what renders a
+ * provider's body and strips credentials out of it — so a bare `Error.message`
+ * taken alongside it is an unredacted copy of the same failure on exactly the
+ * surfaces that get persisted and logged.
+ *
+ * Pinning them to one string is the guard: reintroducing a bare message
+ * anywhere in the service fails this, whatever the failure kind.
+ */
+function expectOneFailureSource(results: readonly OcrJobResult[]): void {
+  for (const result of results) {
+    if (result.error === undefined && result.errorDetails === undefined) continue;
+    expect(result.errorDetails).toBeDefined();
+    expect(result.error).toBe(result.errorDetails?.message);
+  }
+}
+
 let directory: string;
 
 beforeEach(async () => {
@@ -270,6 +308,105 @@ describe('OcrJobService', () => {
       skipReason: 'cancelled',
       error: { code: 'CANCELLED' },
     });
+  });
+
+  it('redacts an echoed credential on every surface a document failure reaches', async () => {
+    const first = path.join(directory, 'first.jpg');
+    const second = path.join(directory, 'second.jpg');
+    const outputDirectory = path.join(directory, 'artifacts');
+    await Promise.all([writeFile(first, JPEG_BYTES), writeFile(second, JPEG_BYTES)]);
+    const baseOptions = resolveCliOptions({ dryRun: true }, {}, directory);
+    const options = {
+      ...baseOptions, apiKey: 'test-key', dryRun: false, quiet: true, output: outputDirectory,
+    };
+    const inputs = await discoverInputs([first, second], options);
+    const extractDocument = vi.fn<OcrDocumentExtractor>(() => Promise.reject(echoedCredentialFailure()));
+
+    const execution = await new OcrJobService({ extractDocument }).run(inputs, options, {
+      runId: 'echoed-credential-run',
+      abortController: new AbortController(),
+    });
+
+    const result = execution.summary.results[0];
+    // The provider's sentence still arrives; only the credential is replaced.
+    expect(result.error).toBe('Provider rejected request for key [REDACTED_KEY] [INVALID_ARGUMENT]');
+    expectOneFailureSource(execution.summary.results);
+    // Each persisted sink, read back as bytes: the `--jsonl` document record,
+    // the resume manifest, and the batch summary.
+    expect(jsonlResult(result)).not.toContain(ECHOED_KEY);
+    const [manifest, summary] = await Promise.all([
+      readFile(path.join(outputDirectory, '.gemini-ocr-manifest.json'), 'utf8'),
+      readFile(path.join(outputDirectory, 'batch-summary.json'), 'utf8'),
+    ]);
+    expect(manifest).toContain('[REDACTED_KEY]');
+    expect(manifest).not.toContain(ECHOED_KEY);
+    expect(summary).toContain('[REDACTED_KEY]');
+    expect(summary).not.toContain(ECHOED_KEY);
+    // The stderr status line interpolates `result.error` verbatim, so the bare
+    // string being clean is what makes that surface clean.
+    expect(JSON.stringify(execution.result)).not.toContain(ECHOED_KEY);
+  });
+
+  it('reports one failure message per document across every failure kind', async () => {
+    const failing = path.join(directory, 'failing.jpg');
+    const skipped = path.join(directory, 'skipped.jpg');
+    const spoofed = path.join(directory, 'spoofed.jpg');
+    await Promise.all([
+      writeFile(failing, JPEG_BYTES),
+      writeFile(skipped, JPEG_BYTES),
+      writeFile(spoofed, 'not a jpeg'),
+    ]);
+    const baseOptions = resolveCliOptions({ dryRun: true }, {}, directory);
+    const shared = { ...baseOptions, apiKey: 'test-key', quiet: true };
+
+    // A provider rejection plus the fail-fast remainder that never ran.
+    const failFastOptions = {
+      ...shared, dryRun: false, failFast: true, concurrency: 1,
+      output: path.join(directory, 'fail-fast'),
+    };
+    const failFast = await new OcrJobService({
+      extractDocument: () => Promise.reject(echoedCredentialFailure()),
+    }).run(await discoverInputs([failing, skipped], failFastOptions), failFastOptions, {
+      runId: 'fail-fast-run', abortController: new AbortController(),
+    });
+    expect(failFast.summary.results.map((result) => result.errorDetails?.code))
+      .toEqual(['PROVIDER_FAILURE', 'NOT_RUN']);
+    expectOneFailureSource(failFast.summary.results);
+
+    // A document timeout.
+    const timeoutOptions = { ...shared, dryRun: false, timeoutSeconds: 0.02 };
+    const timedOut = await new OcrJobService({
+      extractDocument: (_input, _options, signal) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => { reject(signal.reason as Error); }, { once: true });
+      }),
+    }).run(await discoverInputs([failing], timeoutOptions), timeoutOptions, {
+      runId: 'timeout-run', abortController: new AbortController(),
+    });
+    expect(timedOut.summary.results[0]?.errorDetails?.code).toBe('TIMEOUT');
+    expectOneFailureSource(timedOut.summary.results);
+
+    // A cancelled document.
+    const cancelController = new AbortController();
+    const cancelOptions = { ...shared, dryRun: false };
+    const cancelled = await new OcrJobService({
+      extractDocument: (_input, _options, signal) => {
+        cancelController.abort(new Error('Interrupted by SIGINT'));
+        return Promise.reject(signal.reason as Error);
+      },
+    }).run(await discoverInputs([failing], cancelOptions), cancelOptions, {
+      runId: 'cancel-run', abortController: cancelController,
+    });
+    expect(cancelled.summary.results[0]?.errorDetails?.code).toBe('CANCELLED');
+    expectOneFailureSource(cancelled.summary.results);
+
+    // A dry run that fails validation before any provider call.
+    const dryRunOptions = { ...shared, dryRun: true, output: path.join(directory, 'dry-run') };
+    const dryRun = await new OcrJobService({ extractDocument: vi.fn() })
+      .run(await discoverInputs([spoofed], dryRunOptions), dryRunOptions, {
+        runId: 'dry-run', abortController: new AbortController(),
+      });
+    expect(dryRun.summary.results[0]?.errorDetails?.code).toBe('INPUT_INVALID');
+    expectOneFailureSource(dryRun.summary.results);
   });
 
   it('reports validation failures as typed document errors without calling a provider', async () => {

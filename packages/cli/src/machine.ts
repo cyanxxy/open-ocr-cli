@@ -317,8 +317,12 @@ export async function executeOcrJobRequest(
   }
   if (customSchema) {
     // Same diagnostic as the CLI, routed through the warning channel so `run`
-    // and MCP callers are not left with an unexplained provider 400.
-    const schemaWarning = customSchemaCompatibilityWarning(customSchema);
+    // and MCP callers are not left with an unexplained provider 400. Named for
+    // the field the caller actually sent, since it never passed a CLI flag.
+    const schemaWarning = customSchemaCompatibilityWarning(
+      customSchema,
+      request.extraction?.schema ? 'extraction.schema' : 'extraction.schemaPath',
+    );
     if (schemaWarning) execution.onWarning?.(schemaWarning);
   }
   const deliveryMode = request.protocolVersion === 1

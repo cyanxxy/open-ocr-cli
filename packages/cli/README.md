@@ -263,9 +263,15 @@ Either directory holds the same layout: artifacts, `.gemini-ocr-manifest.json`,
 - `--resume` fingerprints every output-affecting option, including provider,
   gateway route, model, schema, and agent settings.
 - Progress and diagnostics use stderr; machine results use stdout. Direct
-  `extract --jsonl` keeps its established inline document/summary records.
-  `run --response-format jsonl` emits the separately versioned lifecycle-event
-  protocol for coding agents.
+  `extract --jsonl` emits its own record family — `document`, `summary`, and
+  `error` — every line carrying `"version": 1`. `run --response-format jsonl`
+  emits the separately versioned lifecycle-event protocol for coding agents.
+  The two are different dialects; do not validate one against the other.
+- An `extract --jsonl` stream always ends in exactly one terminal record: the
+  `summary` when the batch produced one, otherwise a single `error` record
+  carrying the same `code`, `category`, `retryable`, and `hint` fields as the
+  protocol. Unknown flags and pre-flight failures end the stream that way too,
+  so an empty stream never has to be interpreted.
 - Request starts are evenly spaced by `--requests-per-minute` across every API
   surface, including agent continuations and Kimi file extraction.
 - `--max-cost` blocks future requests after recorded or estimated cost reaches

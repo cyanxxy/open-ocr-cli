@@ -145,12 +145,38 @@ export function providerErrorPayloadOf(error: unknown): ProviderErrorPayload | u
 }
 
 /**
+ * Strip credential-like fragments from provider/CLI error text.
+ *
+ * Lives beside the payload reader because rendering is where a provider's body
+ * turns into text a caller will print, persist, or hand to an agent, and a
+ * provider that echoes a request header or key into its own error body would
+ * otherwise put that credential on every one of those surfaces. Applying it
+ * twice is safe: each replacement's output no longer matches its own pattern.
+ */
+export function redactSensitiveErrorText(message: string): string {
+  return message
+    .replace(/\bBearer\s+[A-Za-z0-9._+=/-]+/giu, 'Bearer [REDACTED]')
+    .replace(/\b(?:sk|rk)-[A-Za-z0-9_-]{8,}/gu, '[REDACTED_KEY]')
+    .replace(/\bAIza[0-9A-Za-z_-]{10,}/gu, '[REDACTED_KEY]')
+    .replace(
+      /\b((?:api[_-]?key|token|authorization))\s*[:=]\s*["']?[^\s"',;]+/giu,
+      '$1=[REDACTED]',
+    );
+}
+
+/**
  * One readable line: the sentence the provider wrote, followed in brackets by
  * the machine tokens it carried that the sentence does not already repeat.
  *
  * The bracketed tokens exist so nothing actionable is lost when the raw body is
  * dropped; the discarded remainder (`@type` URLs, service/method metadata) is
  * still reachable on the thrown error, which classifiers keep as `cause`.
+ *
+ * Redaction is applied here, at the single point where a payload becomes text,
+ * so no caller can render a body without it. It cleans the extraction rather
+ * than discarding it: the provider's sentence and its bracketed tokens both
+ * survive, and `payload.message` keeps the unredacted text for the classifiers
+ * that match phrases on it.
  */
 export function renderProviderErrorPayload(payload: ProviderErrorPayload): string | undefined {
   const message = payload.message;
@@ -158,7 +184,7 @@ export function renderProviderErrorPayload(payload: ProviderErrorPayload): strin
   const tokens = [...new Set([payload.status, ...payload.reasons, ...payload.fields])]
     .filter((token): token is string => typeof token === 'string' && token.length > 0)
     .filter((token) => !message.includes(token));
-  return tokens.length > 0 ? `${message} [${tokens.join('; ')}]` : message;
+  return redactSensitiveErrorText(tokens.length > 0 ? `${message} [${tokens.join('; ')}]` : message);
 }
 
 /**
@@ -184,11 +210,17 @@ export function providerErrorMessage(text: string): string {
  * `status` own-property classifiers key on — reachable. Errors whose message is
  * already prose are returned as-is, so this is safe to apply anywhere and safe
  * to apply twice.
+ *
+ * The restated message is redacted, including when there is no parseable body
+ * and the bare message is all there is: `message` is what renderers print, and
+ * a provider is free to echo a request header or key into either one.
  */
 export function readableProviderError(error: unknown): unknown {
   if (!(error instanceof Error)) return error;
   const payload = providerErrorPayloadOf(error);
-  const readable = payload ? renderProviderErrorPayload(payload) : undefined;
+  const readable = redactSensitiveErrorText(
+    (payload ? renderProviderErrorPayload(payload) : undefined) ?? error.message,
+  );
   if (!readable || readable === error.message) return error;
   const restated = new Error(readable, { cause: error });
   restated.name = error.name;

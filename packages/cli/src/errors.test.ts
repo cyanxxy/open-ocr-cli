@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { findSchemaCompatibilityIssues } from '../../../src/lib/gemini/schemaCompat';
+import { OcrError, OcrErrorType } from '../../../src/lib/gemini/types';
 import { ProviderApiError } from '../../../src/lib/providers';
 import {
   asCliExitError,
@@ -340,6 +342,74 @@ describe('CLI exit errors', () => {
         .toMatchObject({ code: 'INPUT_INVALID', category: 'input', retryable: false });
     });
 
+    /**
+     * A caller's schema whose property names collide with the words the input
+     * heuristics match on. Nothing about it is unusual — `page` and `maximum`
+     * are ordinary field names — and both properties are over the measured
+     * grammar budget, so the engine's diagnosis quotes both paths.
+     */
+    const COLLIDING_SCHEMA = {
+      type: 'object',
+      properties: {
+        page: { type: 'array', maxItems: 500, items: { type: 'string' } },
+        maximum: { type: 'array', maxItems: 500, items: { type: 'string' } },
+      },
+    };
+
+    /** The sentence `describeSchemaRejection` builds, from the real findings. */
+    function schemaRejectionMessage(): string {
+      const detail = findSchemaCompatibilityIssues(COLLIDING_SCHEMA)
+        .filter((issue) => issue.confidence === 'confident')
+        .map((issue) => `${issue.path} (${issue.keyword}): ${issue.reason}`)
+        .join('; ');
+      expect(detail).toContain('properties.page');
+      expect(detail).toContain('properties.maximum');
+      return 'Invalid JSON Schema for structured output: the provider rejected the request '
+        + `("Request contains an invalid argument. [INVALID_ARGUMENT]") and the schema exceeds a limit it is `
+        + `measured to reject — ${detail}.`;
+    }
+
+    it('reads a schema verdict off the type, not out of the caller\'s property names', () => {
+      // The message embeds the caller's own schema paths. Classified by prose,
+      // properties named `page` and `maximum` tripped the page-limit heuristic
+      // and the failure came back as INPUT_INVALID — telling an agent to fix its
+      // document while the schema stayed broken. The type settles it first.
+      const message = schemaRejectionMessage();
+      expect(message.toLowerCase()).toContain('page');
+      expect(message.toLowerCase()).toContain('maximum');
+      const typed = new OcrError(
+        OcrErrorType.SCHEMA_INVALID,
+        message,
+        undefined,
+        { cause: geminiError(400, '{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}') },
+      );
+      expect(ocrErrorPayload(typed, 1)).toMatchObject({
+        code: 'SCHEMA_INVALID',
+        category: 'schema',
+        retryable: false,
+        hint: 'Simplify the response schema to the supported structured-output subset before retrying.',
+      });
+    });
+
+    it('lets the schema rules win over the input rules in the residual sniffer', () => {
+      // Defence in depth for producers nobody has typed yet: the same message,
+      // untyped, must not be read as a bad document either.
+      expect(ocrErrorPayload(new Error(schemaRejectionMessage()), 1))
+        .toMatchObject({ code: 'SCHEMA_INVALID', category: 'schema' });
+    });
+
+    it('still types a real page-limit rejection as an input failure', () => {
+      // The narrowed rule has to keep catching what it was written for: both
+      // producers of the page-limit message, CLI and browser.
+      expect(ocrErrorPayload(new Error('scan.pdf has 1200 pages; the maximum is 1000'), 2))
+        .toMatchObject({ code: 'INPUT_INVALID', category: 'input' });
+      expect(ocrErrorPayload(new Error('PDF "scan.pdf" has 1200 pages; the maximum is 1000.'), 2))
+        .toMatchObject({ code: 'INPUT_INVALID', category: 'input' });
+      // ...without claiming any message that merely contains both words.
+      expect(ocrErrorPayload(new Error('The maximum retries were spent on one page.'), 1))
+        .not.toMatchObject({ code: 'INPUT_INVALID' });
+    });
+
     it('types a rejected request field as a configuration failure', () => {
       const body = '{"error":{"code":400,"message":"Invalid value at \'generation_config.thinking_config.thinking_level\'","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"generation_config.thinking_config.thinking_level","description":"bad value"}]}]}}';
       expect(ocrErrorPayload(geminiError(400, body), 1)).toMatchObject({
@@ -406,6 +476,17 @@ describe('CLI exit errors', () => {
       expect(payload.message).not.toContain('AIzaSyDeadBeef');
       expect(payload.message).toContain('[REDACTED_KEY]');
       expect(payload).toMatchObject({ code: 'AUTH_INVALID', category: 'authentication' });
+    });
+
+    it('keeps the raw body reachable as cause without letting it escape a render', () => {
+      const body = '{"error":{"code":400,"message":"API key not valid: AIzaSyDeadBeefDeadBeefDeadBeef","status":"INVALID_ARGUMENT"}}';
+      const typed = asCliExitError(geminiError(400, body), 1);
+      // Defence in depth: the untouched body stays on `cause` for a debugger,
+      // and every rendered or serialized form of the error is without it.
+      expect((typed.cause as Error).message).toContain('AIzaSyDeadBeef');
+      expect(renderCliError(typed, 'open-ocr-cli')).not.toContain('AIzaSyDeadBeef');
+      expect(JSON.stringify(ocrErrorPayload(typed, 1))).not.toContain('AIzaSyDeadBeef');
+      expect(JSON.stringify(typed)).not.toContain('AIzaSyDeadBeef');
     });
   });
 

@@ -4,7 +4,14 @@ import {
   isProviderCostLimitError,
   type ProviderExecutionContext,
 } from '../../../src/lib/providers';
-import { asCliExitError, CliExitError, ocrErrorPayload } from './errors';
+import {
+  asCliExitError,
+  CliExitError,
+  ocrErrorPayload,
+  redactSensitiveErrorText,
+  type CliExitCode,
+  type OcrErrorPayload,
+} from './errors';
 import { inputFingerprint, readAndValidateInput } from './inputs';
 import { assertProviderMediaTypeSupported } from './providerInputs';
 import {
@@ -179,6 +186,27 @@ function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
   return 'Unknown error';
+}
+
+/**
+ * The `error`/`errorDetails` pair a failed or skipped document reports, built
+ * once from one source.
+ *
+ * Both fields are read: `errorDetails` by the machine protocol, the bare string
+ * by the `--jsonl` document records, the stderr status lines, the resume
+ * manifest, and batch-summary.json. `ocrErrorPayload` is what reduces a
+ * provider's JSON body to the sentence it wrote and strips credential-shaped
+ * fragments out of it, so a bare `Error.message` taken alongside it is an
+ * unredacted copy of the same failure on the surfaces most likely to be
+ * persisted and logged. Returning the two together is what makes them
+ * unable to diverge.
+ */
+function documentFailure(error: unknown, fallbackExitCode: CliExitCode = 2): {
+  error: string;
+  errorDetails: OcrErrorPayload;
+} {
+  const errorDetails = ocrErrorPayload(error, fallbackExitCode);
+  return { error: errorDetails.message, errorDetails };
 }
 
 function errorAttempts(error: unknown): number {
@@ -361,7 +389,9 @@ export class OcrJobService {
     if (failure !== undefined) {
       const typedFailure = failure instanceof CliExitError
         ? failure
-        : new CliExitError(errorMessage(failure), 1, {
+        // Redact here as well as at every renderer: this error is thrown, and a
+        // caller that logs `error.message` directly bypasses `ocrErrorPayload`.
+        : new CliExitError(redactSensitiveErrorText(errorMessage(failure)), 1, {
             cause: failure,
             code: 'INTERNAL',
             category: 'internal',
@@ -524,7 +554,7 @@ export class OcrJobService {
               status: 'failed', input, provider: options.provider, gateway: options.gateway,
               mode: options.mode, model: options.model, startedAt: jobStartedAt,
               completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart,
-              attempts: 0, error: errorMessage(error), errorDetails: ocrErrorPayload(error),
+              attempts: 0, ...documentFailure(error),
             };
             if (options.failFast) failFastTriggered = true;
           }
@@ -619,28 +649,24 @@ export class OcrJobService {
           } catch (error) {
             if (progressFailure !== undefined && error === progressFailure) throw error;
             const cancelled = runtime.abortController.signal.aborted && !timedOut;
-            const message = timedOut
-              ? `Timed out after ${options.timeoutSeconds}s`
-              : cancelled
-                ? errorMessage(runtime.abortController.signal.reason ?? error)
-                : errorMessage(error);
             const typedError = timedOut
-              ? new CliExitError(message, 1, {
+              ? new CliExitError(`Timed out after ${options.timeoutSeconds}s`, 1, {
                   code: 'TIMEOUT',
                   category: 'limit',
                   retryable: true,
                   hint: 'Retry with a longer --timeout or a smaller document.',
                 })
               : cancelled
-                ? new CliExitError(message, 130, { cause: error })
+                ? new CliExitError(errorMessage(runtime.abortController.signal.reason ?? error), 130, { cause: error })
                 : error;
+            const failure = documentFailure(typedError, 1);
             if (isProviderCostLimitError(error)) costLimitReached = true;
             result = {
               status: cancelled ? 'skipped' : 'failed', input, provider: options.provider, gateway: options.gateway,
               mode: options.mode, model: options.model, startedAt: jobStartedAt,
               completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart,
               ...(cancelled ? { skipReason: 'cancelled' as const } : {}),
-              error: message, errorDetails: ocrErrorPayload(typedError, 1), attempts: errorAttempts(error),
+              ...failure, attempts: errorAttempts(error),
             };
             // An interrupted document must remain resumable. The manifest has no
             // cancelled state, so persist it as failed while exposing the richer
@@ -650,7 +676,7 @@ export class OcrJobService {
               status: 'failed',
               outputFiles: [],
               completedAt: result.completedAt,
-              error: message,
+              error: failure.error,
             });
             if (options.failFast && !cancelled) failFastTriggered = true;
           } finally {
@@ -674,14 +700,14 @@ export class OcrJobService {
     for (let index = 0; index < inputs.length; index += 1) {
       if (results[index]) continue;
       const timestamp = new Date().toISOString();
-      const errorDetails = unscheduledSkipReason === 'cancelled'
-        ? ocrErrorPayload(new CliExitError(unscheduledReason, 130))
+      const failure = unscheduledSkipReason === 'cancelled'
+        ? documentFailure(new CliExitError(unscheduledReason, 130))
         : unscheduledSkipReason === 'cost-limit'
-          ? ocrErrorPayload(new CliExitError(unscheduledReason, 1, {
+          ? documentFailure(new CliExitError(unscheduledReason, 1, {
               code: 'COST_LIMIT', category: 'limit', retryable: false,
               hint: 'Rerun the remaining documents with a higher --max-cost, or accept the partial batch.',
             }))
-          : ocrErrorPayload(new CliExitError(unscheduledReason, 1, {
+          : documentFailure(new CliExitError(unscheduledReason, 1, {
               code: 'NOT_RUN', category: 'execution', retryable: true,
               hint: 'Rerun the skipped documents without --fail-fast after addressing the first failure.',
             }));
@@ -698,7 +724,7 @@ export class OcrJobService {
         status: 'skipped', input: inputs[index], provider: options.provider, gateway: options.gateway,
         mode: options.mode, model: options.model, startedAt: timestamp, completedAt: timestamp,
         durationMs: 0, attempts: 0, skipReason: unscheduledSkipReason,
-        error: unscheduledReason, errorDetails,
+        ...failure,
       };
       await publishResult(index, result);
     }

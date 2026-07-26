@@ -217,7 +217,7 @@ function progressMessage(event: OcrJobEvent): string {
   return event.type;
 }
 
-function mcpResult(result: OcrMachineResult): {
+export function mcpResult(result: OcrMachineResult): {
   content: Array<{ type: 'text'; text: string }>;
   structuredContent: Record<string, unknown>;
   isError?: boolean;
