@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.4.1 - 2026-07-26
+
+### Repository metadata
+
+- Updated the npm package repository, homepage, issue, container, and release
+  references to the canonical `cyanxxy/open-ocr-cli` repository.
+- Kept the private `cyanxxy/gemini-ocr` web application repository separate
+  from the public CLI package. There are no runtime behavior changes.
+
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v2.4.0...v2.4.1)
+
 ## 2.4.0 - 2026-07-25
 
 ### CLI packaging and development boundaries
