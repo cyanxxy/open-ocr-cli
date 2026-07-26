@@ -701,7 +701,7 @@ describe('OpenAI-compatible transport', () => {
     expect(JSON.parse(request.body) as unknown).toMatchObject({
       reasoning: { effort: 'minimal', exclude: false },
     });
-    expect(new Headers(request.headers).get('http-referer')).toBe('https://github.com/cyanxxy/gemini-ocr');
+    expect(new Headers(request.headers).get('http-referer')).toBe('https://github.com/cyanxxy/open-ocr-cli');
     // cost:0 with known Kimi pricing falls back to a local estimate so --max-cost cannot fail open.
     expect(getProviderUsage().estimatedCostUsd).toBeGreaterThan(0);
   });

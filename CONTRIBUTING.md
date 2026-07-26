@@ -18,8 +18,8 @@ Look for issues labeled:
 ## Local Setup
 
 ```bash
-git clone https://github.com/cyanxxy/gemini-ocr.git
-cd gemini-ocr
+git clone https://github.com/cyanxxy/open-ocr-cli.git
+cd open-ocr-cli
 npm ci
 npm run dev
 ```

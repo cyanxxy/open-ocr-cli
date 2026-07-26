@@ -74,7 +74,7 @@ async function requestOnce(url: URL, signal?: AbortSignal): Promise<IncomingMess
       headers: {
         Accept: 'text/html,application/xhtml+xml,application/pdf,image/*,text/plain;q=0.9,*/*;q=0.5',
         'Accept-Encoding': 'gzip, deflate, br',
-        'User-Agent': 'open-ocr-cli/2 (+https://github.com/cyanxxy/gemini-ocr)',
+        'User-Agent': 'open-ocr-cli/2 (+https://github.com/cyanxxy/open-ocr-cli)',
       },
       lookup: (_hostname, _options, callback) => callback(null, selected.address, selected.family),
       ...(url.protocol === 'https:' ? { servername: url.hostname } : {}),

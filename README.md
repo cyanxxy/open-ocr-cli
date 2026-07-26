@@ -10,9 +10,9 @@ Turn images, PDFs, and public URLs into text or validated structured data —
 through Gemini, Kimi K3, Meta Muse Spark, OpenRouter, or any OpenAI-compatible
 endpoint — behind one consistent extraction contract.
 
-[![CI](https://github.com/cyanxxy/gemini-ocr/actions/workflows/ci.yml/badge.svg)](https://github.com/cyanxxy/gemini-ocr/actions/workflows/ci.yml)
+[![CI](https://github.com/cyanxxy/open-ocr-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/cyanxxy/open-ocr-cli/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/open-ocr-cli?logo=npm&label=open-ocr-cli)](https://www.npmjs.com/package/open-ocr-cli)
-[![Release](https://img.shields.io/github/v/release/cyanxxy/gemini-ocr?display_name=tag)](https://github.com/cyanxxy/gemini-ocr/releases)
+[![Release](https://img.shields.io/github/v/release/cyanxxy/open-ocr-cli?display_name=tag)](https://github.com/cyanxxy/open-ocr-cli/releases)
 [![Node.js](https://img.shields.io/badge/Node.js-20.19%2B-43853d?logo=node.js&logoColor=white)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-0f766e.svg)](LICENSE)
 
@@ -57,7 +57,7 @@ guided paths.
 
 Also available as a [Docker image](packages/cli/README.md#distribution)
 (`ghcr.io/cyanxxy/open-ocr-cli`), a [GitHub Action](action.yml)
-(`cyanxxy/gemini-ocr@v2`), and a Homebrew formula.
+(`cyanxxy/open-ocr-cli@v2`), and a Homebrew formula.
 
 ## Extraction modes
 
@@ -205,8 +205,8 @@ documented in [evals/README.md](evals/README.md).
 
 <div align="center">
 
-[Issues](https://github.com/cyanxxy/gemini-ocr/issues) ·
-[Releases](https://github.com/cyanxxy/gemini-ocr/releases) ·
+[Issues](https://github.com/cyanxxy/open-ocr-cli/issues) ·
+[Releases](https://github.com/cyanxxy/open-ocr-cli/releases) ·
 [Changelog](CHANGELOG.md) · [Security](SECURITY.md) ·
 [Code of Conduct](CODE_OF_CONDUCT.md)
 

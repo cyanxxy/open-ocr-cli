@@ -467,7 +467,7 @@ validation, confidence/coverage stop criteria, and region cropper.
 
 - npm: `npm install --global open-ocr-cli`
 - container: `ghcr.io/cyanxxy/open-ocr-cli:latest`
-- GitHub Action: `uses: cyanxxy/gemini-ocr@v2`
+- GitHub Action: `uses: cyanxxy/open-ocr-cli@v2`
 - Homebrew: tagged releases attach a generated `open-ocr-cli.rb` formula
 
 The container runs as the non-root `node` user. Mount input and output beneath
@@ -484,4 +484,4 @@ smoke, npm provenance publishing, multi-architecture container publishing, and
 GitHub release generation from the same tag.
 
 Full architecture, security, development, and evaluation documentation lives in
-the [project README](https://github.com/cyanxxy/gemini-ocr#readme).
+the [project README](https://github.com/cyanxxy/open-ocr-cli#readme).
