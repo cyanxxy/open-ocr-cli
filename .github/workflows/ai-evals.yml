@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 120
     # Scheduled reports and their commits must always use the authoritative
     # default branch, including manually-dispatched runs.
-    if: github.repository == 'cyanxxy/gemini-ocr' && github.ref == 'refs/heads/main'
+    if: github.repository == 'cyanxxy/open-ocr-cli' && github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout repository

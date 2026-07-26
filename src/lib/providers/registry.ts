@@ -174,7 +174,7 @@ export function providerRequestHeaders(config: ProviderRuntimeConfig): Record<st
   if (config.gatewayToken) headers['cf-aig-authorization'] = `Bearer ${config.gatewayToken}`;
   if (config.cloudflareByokAlias) headers['cf-aig-byok-alias'] = config.cloudflareByokAlias;
   if (config.provider === 'openrouter') {
-    headers['HTTP-Referer'] = 'https://github.com/cyanxxy/gemini-ocr';
+    headers['HTTP-Referer'] = 'https://github.com/cyanxxy/open-ocr-cli';
     headers['X-Title'] = 'Open OCR CLI';
   }
   return headers;

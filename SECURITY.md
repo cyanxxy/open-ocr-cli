@@ -17,7 +17,7 @@ We take security seriously. If you discover a security vulnerability, please rep
 
 Instead, use GitHub's private vulnerability reporting:
 
-1. Go to the [Security Advisories](https://github.com/cyanxxy/gemini-ocr/security/advisories) page
+1. Go to the [Security Advisories](https://github.com/cyanxxy/open-ocr-cli/security/advisories) page
 2. Click "Report a vulnerability"
 3. Fill out the form with details about the vulnerability
 

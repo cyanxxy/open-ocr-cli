@@ -27,7 +27,7 @@
   Dependabot coverage, and narrowed the audit exception to the remaining
   transitive development-tool advisory.
 
-[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v2.3.0...v2.4.0)
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v2.3.0...v2.4.0)
 
 ## 2.3.0 - 2026-07-22
 
@@ -56,7 +56,7 @@
   automation, MCP setup, credential hygiene, and the explicit `interactive`
   command.
 
-[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v2.2.0...v2.3.0)
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v2.2.0...v2.3.0)
 
 ## 2.2.0 - 2026-07-21
 
@@ -89,7 +89,7 @@
   conflicts, resumable fingerprints, ordered event delivery, and stdout
   backpressure for large automation batches.
 
-[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v2.1.0...v2.2.0)
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v2.1.0...v2.2.0)
 
 ## 2.1.0 - 2026-07-18
 
@@ -121,7 +121,7 @@
   the npm tarball, documented schema identifiers as non-fetchable, and added
   `.open-ocr-results/<runId>` as the default agent output location.
 
-[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v2.0.1...v2.1.0)
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v2.0.1...v2.1.0)
 
 ## 2.0.0 - 2026-07-15
 
@@ -163,7 +163,7 @@ Existing Gemini commands, configuration, manifests, output directories, and
 the `gemini-ocr` executable continue to work. Provider-neutral support is a CLI
 feature; the bundled React application still uses Gemini.
 
-[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v1.6.0...v2.0.0)
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v1.6.0...v2.0.0)
 
 ## 1.6.0 - 2026-07-15
 
@@ -216,7 +216,7 @@ feature; the bundled React application still uses Gemini.
 - Added clear macOS/Linux, PowerShell, and project `.env` API-key setup guidance
   to CLI errors, `init`, `doctor`, and documentation.
 
-[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v1.5.0...v1.6.0)
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v1.5.0...v1.6.0)
 
 ## 1.5.0 - 2026-07-13
 
@@ -228,7 +228,7 @@ feature; the bundled React application still uses Gemini.
 - Hardened queued-request cancellation, multi-request cost ceilings, local-only
   schema references, conflicting option validation, and non-interactive setup feedback.
 
-[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v1.4.0...v1.5.0)
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v1.4.0...v1.5.0)
 
 ## 1.4.0 - 2026-07-13
 
@@ -249,7 +249,7 @@ feature; the bundled React application still uses Gemini.
   configuration allowlisting, per-document input failures, and native PDF global
   isolation before release.
 
-[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v1.3.0...v1.4.0)
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v1.3.0...v1.4.0)
 
 ## 1.3.0 - 2026-07-13
 
@@ -287,7 +287,7 @@ feature; the bundled React application still uses Gemini.
 
 No application settings or stored OCR results need to be migrated.
 
-[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v1.2.0...v1.3.0)
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v1.2.0...v1.3.0)
 
 ## 1.2.0 - 2026-07-13
 
@@ -322,4 +322,4 @@ No application settings or stored OCR results need to be migrated. Public
 benchmark downloads are optional; the bundled local evaluation suite works on
 its own.
 
-[Full comparison](https://github.com/cyanxxy/gemini-ocr/compare/v1.1.0...v1.2.0)
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v1.1.0...v1.2.0)

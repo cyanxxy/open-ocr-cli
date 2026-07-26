@@ -7,11 +7,11 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cyanxxy/gemini-ocr.git"
+    "url": "git+https://github.com/cyanxxy/open-ocr-cli.git"
   },
-  "homepage": "https://github.com/cyanxxy/gemini-ocr#readme",
+  "homepage": "https://github.com/cyanxxy/open-ocr-cli#readme",
   "bugs": {
-    "url": "https://github.com/cyanxxy/gemini-ocr/issues"
+    "url": "https://github.com/cyanxxy/open-ocr-cli/issues"
   },
   "keywords": [
     "ocr",

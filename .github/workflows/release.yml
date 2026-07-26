@@ -18,7 +18,7 @@ permissions:
 jobs:
   prepare:
     name: Verify & Prepare Release
-    if: github.repository == 'cyanxxy/gemini-ocr'
+    if: github.repository == 'cyanxxy/open-ocr-cli'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -169,7 +169,7 @@ jobs:
   publish:
     name: Publish Release
     needs: prepare
-    if: github.repository == 'cyanxxy/gemini-ocr'
+    if: github.repository == 'cyanxxy/open-ocr-cli'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
