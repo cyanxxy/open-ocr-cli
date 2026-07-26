@@ -1,3 +1,12 @@
+import {
+  providerErrorMessage,
+  providerErrorPayloadOf,
+  providerErrorSubject,
+  renderProviderErrorPayload,
+  type ProviderErrorPayload,
+  type ProviderErrorSubject,
+} from '../../../src/lib/gemini/errorPayload';
+
 export type CliExitCode = 1 | 2 | 130 | 143;
 export type CliInterruptSignal = 'SIGINT' | 'SIGTERM';
 
@@ -165,6 +174,59 @@ function invalidCredentialMessage(value: unknown): boolean {
     || message.includes('api_key_invalid');
 }
 
+/**
+ * Read the provider's own error body off a thrown error, falling back to its
+ * bare message. Providers whose client already reduced the body to a sentence
+ * are represented as that sentence alone, so the same subject rules apply to a
+ * parsed Gemini body and to an OpenAI-compatible `ProviderApiError` alike.
+ */
+function providerPayloadOf(value: unknown): ProviderErrorPayload | undefined {
+  const structured = providerErrorPayloadOf(value);
+  if (structured) return structured;
+  const message = recordValue(value, 'message');
+  if (typeof message !== 'string' || !message) return undefined;
+  return { message, reasons: [], fields: [] };
+}
+
+/**
+ * Type a provider rejection by what the provider named. Gemini returns
+ * 400 INVALID_ARGUMENT for an undecodable document, a malformed request field,
+ * and an unsupported response schema alike, so the numeric status alone would
+ * send all three down the generic provider path and invite a pointless retry.
+ */
+function classifyProviderSubject(subject: ProviderErrorSubject): OcrErrorDetails {
+  switch (subject) {
+    case 'input-media':
+      return {
+        code: 'INPUT_INVALID',
+        category: 'input',
+        retryable: false,
+        hint: 'The provider could not read this document; convert or re-export it before retrying.',
+      };
+    case 'response-schema':
+      return {
+        code: 'SCHEMA_INVALID',
+        category: 'schema',
+        retryable: false,
+        hint: 'Simplify the response schema to the supported structured-output subset before retrying.',
+      };
+    case 'model':
+      return {
+        code: 'CONFIG_INVALID',
+        category: 'configuration',
+        retryable: false,
+        hint: 'Select a model this provider supports for this operation.',
+      };
+    case 'request-field':
+      return {
+        code: 'CONFIG_INVALID',
+        category: 'configuration',
+        retryable: false,
+        hint: 'Correct the request field named in the provider message, then retry.',
+      };
+  }
+}
+
 function classifyKnownError(error: unknown, exitCode: CliExitCode): OcrErrorDetails | undefined {
   const seen = new Set<unknown>();
   let current: unknown = error;
@@ -275,6 +337,12 @@ function classifyKnownError(error: unknown, exitCode: CliExitCode): OcrErrorDeta
       if (status === 409) {
         return { code: 'PROVIDER_FAILURE', category: 'provider', retryable: true, hint: 'Retry with backoff after the provider conflict.' };
       }
+      // Last resort before the generic provider verdict: every status-specific
+      // rule above already had its say, so reading the body can only refine a
+      // failure that would otherwise be reported as an unexplained 4xx.
+      const payload = providerPayloadOf(current);
+      const subject = payload ? providerErrorSubject(payload) : undefined;
+      if (subject) return classifyProviderSubject(subject);
       if (providerError) {
         return {
           code: 'PROVIDER_FAILURE',
@@ -359,8 +427,14 @@ export function asCliExitError(error: unknown, exitCode: CliExitCode): CliExitEr
       hint: error.hint,
     });
   }
+  // Providers that answer with a JSON body would otherwise put the whole blob
+  // in `message`, on stderr and in every JSONL record. Reduce it to the
+  // sentence the provider wrote first, then redact, so a credential echoed
+  // anywhere inside the body is still scrubbed from what survives.
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const payload = providerErrorPayloadOf(error);
   const message = redactSensitiveErrorText(
-    error instanceof Error ? error.message : String(error),
+    (payload ? renderProviderErrorPayload(payload) : undefined) ?? providerErrorMessage(rawMessage),
   );
   const classified = classifyKnownError(error, exitCode)
     ?? classifyErrorMessage(message, exitCode)

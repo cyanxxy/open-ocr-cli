@@ -151,6 +151,45 @@ describe('machine request execution', () => {
     });
   });
 
+  it('refuses csv from a config-supplied record preset instead of validating it', async () => {
+    await writeFile(path.join(directory, 'card.png'), JPEG_BYTES);
+    // The preset arrives from file configuration, so the request itself parses
+    // cleanly and only the merged view can catch the combination.
+    await writeFile(path.join(directory, 'agent-config.json'), JSON.stringify({
+      mode: 'template',
+      preset: 'business-card',
+    }));
+    let thrown: unknown;
+    try {
+      await executeOcrJobRequest({
+        protocolVersion: 2,
+        operation: 'extract',
+        inputs: [{ type: 'path', path: 'card.png' }],
+        configPath: 'agent-config.json',
+        extraction: { contentFormat: 'csv' },
+        delivery: { mode: 'inline' },
+        dryRun: true,
+      }, {
+        cwd: directory,
+        runId: 'csv-record-preset-run',
+        abortController: new AbortController(),
+        noConfig: true,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    // A dry run answered `validated`, ok: true for this before — a green light
+    // for a combination that fails only after the provider call is billed.
+    expect(ocrErrorPayload(thrown, 2)).toMatchObject({
+      code: 'CONFIG_INVALID',
+      category: 'configuration',
+      retryable: false,
+    });
+    expect((thrown as Error).message).toContain('business-card');
+    expect((thrown as Error).message).toContain('cannot produce CSV rows');
+  });
+
   it('reports a missing document before a missing credential', async () => {
     delete process.env.GEMINI_API_KEY;
     let thrown: unknown;

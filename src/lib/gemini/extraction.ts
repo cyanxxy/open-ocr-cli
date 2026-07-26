@@ -23,6 +23,13 @@ import type {
 } from './types';
 import { recordGeminiUsage } from './usage';
 import { waitForGeminiRequestSlot } from './requestPolicy';
+import {
+  parseProviderErrorPayload,
+  providerErrorMessage,
+  providerErrorSubject,
+  readableProviderError,
+} from './errorPayload';
+import { findSchemaCompatibilityIssues } from './schemaCompat';
 
 /**
  * Helper function to process markdown text into ExtractedContent structure
@@ -106,6 +113,42 @@ function processMarkdownIntoExtractedContent(
   return { title, sections };
 }
 
+/**
+ * Explain a response schema the provider refused to compile.
+ *
+ * Constrained decoding rejects an over-budget or unsupported schema with a bare
+ * `400 INVALID_ARGUMENT` whose whole message is "Request contains an invalid
+ * argument." — no field, no detail, nothing that separates it from any other
+ * malformed request. `findSchemaCompatibilityIssues` is the only evidence that
+ * can name the cause and it needs the schema, which the error does not carry, so
+ * the diagnosis has to be made here where the schema is still in scope.
+ *
+ * Runs only when the provider named nothing itself: a rejection that already
+ * blamed the document or a specific request field is rethrown untouched, and a
+ * schema that clears the static check leaves the error generic rather than
+ * inventing a cause for it.
+ */
+function describeSchemaRejection(
+  error: unknown,
+  responseJsonSchema: Record<string, unknown>,
+): unknown {
+  if (!(error instanceof Error)) return error;
+  if ((error as { status?: unknown }).status !== 400) return readableProviderError(error);
+  const payload = parseProviderErrorPayload(error.message);
+  if (payload && providerErrorSubject(payload)) return readableProviderError(error);
+  const issues = findSchemaCompatibilityIssues(responseJsonSchema);
+  if (issues.length === 0) return readableProviderError(error);
+  const detail = issues
+    .map((issue) => `${issue.path} (${issue.keyword}): ${issue.reason}`)
+    .join('; ');
+  return new Error(
+    'Invalid JSON Schema for structured output: the provider rejected the request '
+    + `("${providerErrorMessage(error.message)}") and the schema uses constructs it is `
+    + `not known to accept — ${detail}`,
+    { cause: error },
+  );
+}
+
 /** Extract a document directly into a caller-provided JSON Schema contract. */
 export async function extractStructuredDataFromFile(
   fileData: string,
@@ -138,17 +181,22 @@ export async function extractStructuredDataFromFile(
 
   const genAI = getGenAIClient(apiKey, { baseUrl, headers });
   await waitForGeminiRequestSlot(options?.abortSignal, runtime);
-  const response = await genAI.models.generateContent({
-    model,
-    contents: [{
-      role: 'user',
-      parts: [
-        { text: prompt },
-        { inlineData: { mimeType, data: base64Data } },
-      ],
-    }],
-    config: generationConfig,
-  });
+  let response;
+  try {
+    response = await genAI.models.generateContent({
+      model,
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType, data: base64Data } },
+        ],
+      }],
+      config: generationConfig,
+    });
+  } catch (error) {
+    throw describeSchemaRejection(error, responseJsonSchema);
+  }
   recordGeminiUsage(response, model, runtime);
   assertCompleteGeminiResponse(response, 'Schema extraction');
   const text = response.text?.trim() ?? '';

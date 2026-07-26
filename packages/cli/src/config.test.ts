@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { listExtractionPresets } from '../../../src/lib/templates';
 import {
   assertCredentialsAvailable,
   credentialSetupGuidance,
@@ -16,6 +17,7 @@ import {
 } from './config';
 import { ocrErrorPayload } from './errors';
 import { modeFingerprint } from './ocrJobService';
+import { ocrExtractionSemanticError } from './protocol';
 import type { ExtractCommandFlags } from './types';
 
 const originalApiKey = process.env.GEMINI_API_KEY;
@@ -150,6 +152,65 @@ describe('CLI configuration', () => {
       {},
       '/workspace',
     )).toThrow('ambiguous silent upgrade');
+  });
+
+  it('refuses --format csv for a preset that extracts one record per document', () => {
+    expect(() => resolveCliOptions(
+      { preset: 'business-card', format: 'csv', dryRun: true },
+      {},
+      '/workspace',
+    )).toThrow(/cannot produce CSV rows.*invoice, receipt/su);
+    // The same rejection has to fire when the preset comes from configuration,
+    // which is the shape that reached the provider and billed a call before.
+    expect(() => resolveCliOptions(
+      { format: 'csv', dryRun: true },
+      { preset: 'resume' },
+      '/workspace',
+    )).toThrow('cannot produce CSV rows');
+    expect(resolveCliOptions(
+      { preset: 'invoice', format: 'csv', dryRun: true },
+      {},
+      '/workspace',
+    )).toMatchObject({ preset: 'invoice', format: 'csv' });
+    expect(resolveCliOptions(
+      { preset: 'business-card', format: 'json', dryRun: true },
+      {},
+      '/workspace',
+    )).toMatchObject({ preset: 'business-card', format: 'json' });
+  });
+
+  it('states the csv preset-shape rule the same way the request vocabulary does', () => {
+    // `extract` resolves through resolveCliOptions while `run` and `mcp` resolve
+    // through parseOcrJobRequest, so this rule exists twice. It has to teach the
+    // same thing from either surface, in that surface's vocabulary.
+    const requestMessage = ocrExtractionSemanticError({
+      mode: 'template',
+      preset: 'business-card',
+      hasSchema: false,
+      contentFormat: 'csv',
+    });
+    let flagMessage = '';
+    try {
+      resolveCliOptions({ preset: 'business-card', format: 'csv', dryRun: true }, {}, '/workspace');
+    } catch (error) {
+      flagMessage = (error as Error).message;
+    }
+
+    const shared = 'business-card extracts a single record per document, so it cannot produce CSV rows';
+    expect(requestMessage).toContain(shared);
+    expect(flagMessage).toContain(shared);
+    expect(requestMessage).toContain('extraction.contentFormat json or markdown, or a table preset');
+    expect(flagMessage).toContain('--format json or markdown, or a table preset');
+    expect(flagMessage).not.toContain('extraction.');
+    expect(requestMessage).not.toContain('--format');
+    // Both offer exactly the tabular presets the registry declares, so a preset
+    // added later is offered by both without either list being hand-maintained.
+    const tablePresets = listExtractionPresets()
+      .filter((candidate) => candidate.outputShape === 'table')
+      .map((candidate) => candidate.id)
+      .join(', ');
+    expect(requestMessage).toContain(`or a table preset: ${tablePresets}`);
+    expect(flagMessage).toContain(`or a table preset: ${tablePresets}`);
   });
 
   it('does not carry provider-coupled legacy settings across a provider switch', () => {

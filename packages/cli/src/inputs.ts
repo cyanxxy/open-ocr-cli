@@ -341,6 +341,32 @@ function safeRelativePath(cwd: string, absolutePath: string): string {
   return `${parsed.name}-${hash}${parsed.ext}`;
 }
 
+/**
+ * Synthetic filename a stdin document carries when the caller did not name it.
+ * Mirrors the resolved default in `config.ts`; `inputs.test.ts` pins the two
+ * together so a change there cannot silently turn every stdin run into a named
+ * one.
+ */
+export const DEFAULT_STDIN_NAME = 'stdin';
+
+/**
+ * How a stdin document reports itself in results, status lines, and errors.
+ *
+ * A caller that named its piped bytes gets that name back, so it can correlate
+ * a result through `source` the same way a file input does — previously every
+ * stdin run reported the opaque `<stdin>` while its *output file* used the
+ * supplied name, leaving the two unlinkable. Unnamed input keeps `<stdin>`,
+ * which says more than the placeholder filename would.
+ *
+ * This is the reported identity only. Manifest keys (`absolutePath ?? '<stdin>'`)
+ * and resume fingerprints (which use `relativePath`) are computed elsewhere and
+ * are deliberately untouched: naming a document must not silently move it to a
+ * different manifest entry.
+ */
+export function stdinDisplayPath(stdinName: string): string {
+  return stdinName === DEFAULT_STDIN_NAME ? '<stdin>' : stdinName;
+}
+
 /** Resolve every requested input, reporting what discovery dropped along the way. */
 export async function discoverInputSet(
   rawInputs: string[],
@@ -365,7 +391,7 @@ export async function discoverInputSet(
     }
     return {
       inputs: [{
-        displayPath: '<stdin>',
+        displayPath: stdinDisplayPath(options.stdinName),
         relativePath: options.stdinName,
         name: options.stdinName,
         mimeType,

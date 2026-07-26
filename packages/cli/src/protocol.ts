@@ -38,6 +38,18 @@ export const OCR_PROTOCOL_SCHEMA_IDS = {
   capabilities: capabilitiesV2Schema.$id,
 } as const;
 
+/**
+ * Every bundled schema, addressable by short name, versioned name, and the
+ * `$id` URL it declares.
+ *
+ * The `$id`s are keys because `capabilities` publishes them in `schemas` next
+ * to `schemaAccess.networkFetch: false`: an agent is handed a URL it is told
+ * not to fetch, so `open-ocr-cli schema <name>` has to accept the identifier
+ * capabilities advertised. Keeping the alias here rather than in the command
+ * leaves `capabilities` output untouched — capabilities-v2 is strict and its
+ * `schemas` shape is frozen. protocol.test.ts asserts every declared `$id`
+ * resolves back to its own schema so the two lists cannot drift.
+ */
 export const OCR_PROTOCOL_SCHEMAS = {
   request: requestV2Schema,
   result: resultV2Schema,
@@ -54,6 +66,16 @@ export const OCR_PROTOCOL_SCHEMAS = {
   'event-v2': eventV2Schema,
   'error-v2': errorV2Schema,
   'capabilities-v2': capabilitiesV2Schema,
+  'https://open-ocr.dev/schemas/request-v1.schema.json': requestV1Schema,
+  'https://open-ocr.dev/schemas/result-v1.schema.json': resultV1Schema,
+  'https://open-ocr.dev/schemas/event-v1.schema.json': eventV1Schema,
+  'https://open-ocr.dev/schemas/error-v1.schema.json': errorV1Schema,
+  'https://open-ocr.dev/schemas/capabilities-v1.schema.json': capabilitiesV1Schema,
+  'https://open-ocr.dev/schemas/request-v2.schema.json': requestV2Schema,
+  'https://open-ocr.dev/schemas/result-v2.schema.json': resultV2Schema,
+  'https://open-ocr.dev/schemas/event-v2.schema.json': eventV2Schema,
+  'https://open-ocr.dev/schemas/error-v2.schema.json': errorV2Schema,
+  'https://open-ocr.dev/schemas/capabilities-v2.schema.json': capabilitiesV2Schema,
 } as const;
 
 export interface OcrJobRequestPathInput {
@@ -703,6 +725,35 @@ export interface OcrExtractionSemantics {
 }
 
 /**
+ * Output shape per shipped preset, the same data `capabilities` publishes.
+ *
+ * A record-shaped preset extracts one row's worth of fields, so it can never
+ * emit CSV. Reading the shape here is what lets that combination be refused
+ * before a billed provider call instead of after one.
+ */
+const PRESET_OUTPUT_SHAPES: ReadonlyMap<string, 'record' | 'table'> = new Map(
+  listExtractionPresets().map((preset) => [preset.id, preset.outputShape]),
+);
+
+const TABLE_PRESET_IDS: readonly string[] = [...PRESET_OUTPUT_SHAPES]
+  .filter(([, shape]) => shape === 'table')
+  .map(([id]) => id);
+
+/**
+ * CSV output requires a preset that produces rows.
+ *
+ * Unknown presets fall through: naming them is the job of the preset lookup,
+ * which reports the supported ids. resolveCliOptions states the same rule in
+ * flag vocabulary; the two wordings are kept parallel so an agent reading
+ * either one learns the same thing.
+ */
+function csvPresetShapeError(preset: string): string | undefined {
+  if (PRESET_OUTPUT_SHAPES.get(preset) !== 'record') return undefined;
+  return `OCR extraction.preset ${preset} extracts a single record per document, so it cannot produce CSV rows. `
+    + `Use extraction.contentFormat json or markdown, or a table preset: ${TABLE_PRESET_IDS.join(', ')}.`;
+}
+
+/**
  * Validate compatibility between the output-affecting extraction options.
  *
  * This deliberately accepts strings instead of already-narrowed CLI types so
@@ -732,6 +783,10 @@ export function ocrExtractionSemanticError(
   if (contentFormat === 'csv' && mode !== 'template' && !(mode === undefined && hasPreset)) {
     return 'OCR extraction.contentFormat csv requires template mode and a preset.';
   }
+  if (contentFormat === 'csv' && preset !== undefined) {
+    const shapeError = csvPresetShapeError(preset);
+    if (shapeError) return shapeError;
+  }
   return undefined;
 }
 
@@ -757,11 +812,33 @@ export function ocrUrlExtractionSemanticError(extraction: {
   return undefined;
 }
 
+/**
+ * Inline delivery is response-only, so the file-placement fields have nothing
+ * to act on.
+ *
+ * The request schemas already forbid the combination, but a failing `not`
+ * keyword renders as `delivery: must NOT be valid`, which names neither field
+ * nor the conflict. Catching it here — semantic checks run before schema
+ * validation — is what makes the failure self-correcting on `run` and MCP
+ * alike, without touching the frozen schemas.
+ */
+function deliverySemanticError(delivery: unknown): string | undefined {
+  if (!isRecord(delivery) || delivery.mode !== 'inline') return undefined;
+  const conflicting = ['outputDirectory', 'resume'].filter((field) => delivery[field] !== undefined);
+  if (conflicting.length === 0) return undefined;
+  const fields = conflicting.map((field) => `delivery.${field}`).join(' and ');
+  return `OCR ${fields} cannot be combined with delivery.mode inline: inline delivery returns content in the `
+    + 'response and writes no artifact files. Set delivery.mode to reference to write artifacts to '
+    + `outputDirectory, or drop ${fields}.`;
+}
+
 function requestSemanticError(value: unknown): string | undefined {
   if (!isRecord(value)) return undefined;
   if (value.noConfig === true && typeof value.configPath === 'string') {
     return 'OCR request noConfig and configPath are mutually exclusive.';
   }
+  const deliveryError = deliverySemanticError(value.delivery);
+  if (deliveryError) return deliveryError;
   if (Array.isArray(value.inputs)) {
     const stdinInputs = value.inputs.filter((input) => (
       isRecord(input)

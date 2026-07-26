@@ -45,7 +45,7 @@ vi.mock('./runner', () => ({
 }));
 
 import { CliExitError, cliExitCode, ocrErrorPayload } from './errors';
-import { cliBinaryName, cliVersion, createProgram, main } from './main';
+import { cliBinaryName, cliVersion, createProgram, main, requestedExtractJsonlStream } from './main';
 
 const originalApiKey = process.env.GEMINI_API_KEY;
 let directory: string;
@@ -166,7 +166,7 @@ describe('CLI command exit contracts', () => {
     expect(mocks.runBatch).not.toHaveBeenCalled();
   });
 
-  it('ends a failed extract --jsonl stream with exactly one typed run.failed record', async () => {
+  it('ends a failed extract --jsonl stream with exactly one CLI-native error record', async () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     let thrown: unknown;
     let output = '';
@@ -188,13 +188,18 @@ describe('CLI command exit contracts', () => {
     // this record can only come from the command's own terminal emitter.
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
-      type: 'run.failed',
+      type: 'error',
+      version: 1,
       error: { code: 'INPUT_NOT_FOUND', category: 'input', retryable: false },
     });
-    // Only the terminal failure crosses over; the rest of the protocol lifecycle
-    // still stays out of the established document/summary stream.
-    expect(records.map((record) => record.type)).not.toContain('run.started');
-    expect(records.map((record) => record.type)).not.toContain('run.completed');
+    // The terminal record belongs to the same CLI-native family as the document
+    // and summary lines. A protocol envelope here would make the failure line
+    // the only schema-valid line on an otherwise CLI-native stream.
+    expect(records[0]).not.toHaveProperty('protocolVersion');
+    expect(records[0]).not.toHaveProperty('runId');
+    expect(records[0]).not.toHaveProperty('sequence');
+    expect(records[0]).not.toHaveProperty('timestamp');
+    expect(records.map((record) => record.type)).not.toContain('run.failed');
   });
 
   it('reports a mid-run fatal on the --jsonl stream without duplicating it', async () => {
@@ -224,7 +229,8 @@ describe('CLI command exit contracts', () => {
     const records = output.trim().split('\n');
     expect(records).toHaveLength(1);
     expect(JSON.parse(records[0]) as unknown).toMatchObject({
-      type: 'run.failed',
+      type: 'error',
+      version: 1,
       error: { code: 'OUTPUT_CONFLICT', category: 'output' },
     });
   });
@@ -258,7 +264,7 @@ describe('CLI command exit contracts', () => {
     expect(process.exitCode).toBe(130);
   });
 
-  it('ends a cancelled --jsonl run that died before its summary with one run.failed', async () => {
+  it('ends a cancelled --jsonl run that died before its summary with one error record', async () => {
     const input = path.join(directory, 'document.jpg');
     await writeFile(input, new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]));
     mocks.runBatch.mockImplementationOnce(() => {
@@ -280,10 +286,47 @@ describe('CLI command exit contracts', () => {
     const records = output.trim().split('\n').map((line) => JSON.parse(line) as { type: string });
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
-      type: 'run.failed',
+      type: 'error',
+      version: 1,
       error: { code: 'CANCELLED', category: 'cancelled' },
     });
     expect(process.exitCode).toBe(130);
+  });
+
+  it('ends a --jsonl run interrupted during pre-flight with one cancelled record', async () => {
+    const { loadCliConfig } = await import('./config');
+    // Pre-flight work happens before runBatch exists, so this is the window
+    // where an interrupt used to reach Node's default SIGINT handler and kill
+    // the process with no record on the stream at all.
+    vi.mocked(loadCliConfig).mockImplementationOnce(() => {
+      process.emit('SIGINT');
+      return Promise.reject(new Error('Interrupted by SIGINT'));
+    });
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let thrown: unknown;
+    let output = '';
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'extract', path.join(directory, 'document.jpg'), '--jsonl', '--quiet',
+      ]);
+    } catch (error) {
+      thrown = error;
+    } finally {
+      output = stdout.mock.calls.flat().join('');
+      stdout.mockRestore();
+    }
+
+    // Cancellation is an exit status, not a usage error: reported, not rethrown.
+    expect(thrown).toBeUndefined();
+    const records = output.trim().split('\n').map((line) => JSON.parse(line) as { type: string });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      type: 'error',
+      version: 1,
+      error: { code: 'CANCELLED', category: 'cancelled' },
+    });
+    expect(process.exitCode).toBe(130);
+    expect(mocks.runBatch).not.toHaveBeenCalled();
   });
 
   it('leaves stdout untouched on failure when --jsonl was not requested', async () => {
@@ -300,6 +343,93 @@ describe('CLI command exit contracts', () => {
       stdout.mockRestore();
     }
     expect(output).toBe('');
+  });
+
+  // A parse failure never reaches the action body, so the stream's own terminal
+  // emitter cannot run. Left alone these paths end in zero records while a bad
+  // option *value* ends in one, forcing a consumer to treat empty stdout as a
+  // third outcome alongside "succeeded" and "failed".
+  it.each([
+    ['unknown option', ['extract', 'document.jpg', '--jsonl', '--totally-bogus'], 'unknown option'],
+    ['missing operand', ['extract', '--jsonl'], 'missing required argument'],
+  ])('ends a --jsonl run rejected by the parser (%s) with one error record', async (
+    _label: string,
+    args: string[],
+    expectedMessage: string,
+  ) => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let output = '';
+    try {
+      await main(['node', 'open-ocr-cli', ...args]);
+    } finally {
+      output = stdout.mock.calls.flat().join('');
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+
+    const records = output.trim().split('\n').map((line) => JSON.parse(line) as {
+      type: string;
+      error: { code: string; message: string; hint?: string };
+    });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      type: 'error',
+      version: 1,
+      error: { code: 'CONFIG_INVALID', category: 'configuration', retryable: false },
+    });
+    expect(records[0].error.message).toContain(expectedMessage);
+    // Commander prefixes its own prose with "error:"; the typed record already
+    // says it is an error, so the message must not repeat it.
+    expect(records[0].error.message).not.toMatch(/^error:/);
+    expect(records[0].error.hint).toContain('--help');
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('keeps parser failures off stdout when --jsonl was not requested', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let output = '';
+    try {
+      await main(['node', 'open-ocr-cli', 'extract', 'document.jpg', '--totally-bogus']);
+    } finally {
+      output = stdout.mock.calls.flat().join('');
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+    expect(output).toBe('');
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('recognises an extract --jsonl request from unparsed argv', () => {
+    const asks = (...args: string[]): boolean => requestedExtractJsonlStream(['node', 'open-ocr-cli', ...args]);
+    expect(asks('extract', 'a.png', '--jsonl', '--bogus')).toBe(true);
+    expect(asks('extract', '--jsonl', '-')).toBe(true);
+    expect(asks('extract', 'a.png')).toBe(false);
+    // Another command's failure must not borrow the extract stream.
+    expect(asks('run', '--request', 'r.json', '--jsonl')).toBe(false);
+    expect(asks('bogus-command', '--jsonl')).toBe(false);
+    // After `--` every token is an operand, so a file literally named --jsonl
+    // is an input, not a request for the stream.
+    expect(asks('extract', '--', '--jsonl')).toBe(false);
+  });
+
+  it('leaves stdout untouched when the parser exits successfully', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let output = '';
+    try {
+      // --help and --version are CommanderError throws too, but successful ones.
+      // Emitting a failure record for them would report a run that never failed.
+      await main(['node', 'open-ocr-cli', 'extract', '--jsonl', '--help']);
+    } finally {
+      output = stdout.mock.calls.flat().join('');
+      stdout.mockRestore();
+    }
+    // Assert structurally rather than by substring: the --jsonl help text names
+    // the record types, so prose alone would trip a substring check.
+    const records = output.split('\n').filter((line) => line.startsWith('{'));
+    expect(records).toEqual([]);
+    expect(process.exitCode).toBeUndefined();
   });
 
   it.each([

@@ -103,6 +103,77 @@ describe('extractTextFromFile — output contract', () => {
     expect(getGeminiUsage().estimatedCostUsd).toBeGreaterThan(0);
   });
 
+  describe('extractStructuredDataFromFile — schema rejections', () => {
+    /** Live Gemini shape: `ApiError` with numeric `status` and the body as `message`. */
+    function mockReject(status: number, body: string) {
+      const generateContent = vi.fn().mockRejectedValue(Object.assign(
+        new Error(body),
+        { name: 'ApiError', status },
+      ));
+      mockGetClient.mockReturnValue({ models: { generateContent } });
+    }
+
+    /** Grammar cost 500 x 4 properties, well over the documented budget. */
+    const OVER_BUDGET = {
+      type: 'object',
+      properties: {
+        rows: {
+          type: 'array',
+          maxItems: 500,
+          items: {
+            type: 'object',
+            properties: { a: { type: 'string' }, b: { type: 'string' }, c: { type: 'string' }, d: { type: 'string' } },
+            required: ['a', 'b', 'c', 'd'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['rows'],
+      additionalProperties: false,
+    };
+    const CLEAN_SCHEMA = {
+      type: 'object',
+      properties: { total: { type: 'number' } },
+      required: ['total'],
+      additionalProperties: false,
+    };
+    const BARE_INVALID_ARGUMENT = '{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}';
+
+    it('names the offending construct when a bare 400 meets an unsupported schema', async () => {
+      // Constrained decoding rejects an over-budget grammar with a body that
+      // names nothing, so the static check is the only thing that can say why.
+      mockReject(400, BARE_INVALID_ARGUMENT);
+      await expect(extractStructuredDataFromFile(FILE_DATA, 'image/png', CLIENT, OVER_BUDGET))
+        .rejects.toThrow(/^Invalid JSON Schema for structured output: .*maxItems.*grammar cost of 2000/su);
+    });
+
+    it('leaves the rejection unexplained when the schema clears the static check', async () => {
+      // No evidence to offer, so the provider's own sentence stands rather than
+      // the schema being blamed on suspicion.
+      mockReject(400, BARE_INVALID_ARGUMENT);
+      await expect(extractStructuredDataFromFile(FILE_DATA, 'image/png', CLIENT, CLEAN_SCHEMA))
+        .rejects.toThrow('Request contains an invalid argument. [INVALID_ARGUMENT]');
+    });
+
+    it('restates a raw JSON body as prose for direct callers', async () => {
+      mockReject(401, '{"error":{"code":401,"message":"API key not valid. Please pass a valid API key.","status":"UNAUTHENTICATED"}}');
+      await expect(extractStructuredDataFromFile(FILE_DATA, 'image/png', CLIENT, CLEAN_SCHEMA))
+        .rejects.toThrow('API key not valid. Please pass a valid API key. [UNAUTHENTICATED]');
+    });
+
+    it('does not blame the schema when the provider blamed the document', async () => {
+      mockReject(400, '{"error":{"code":400,"message":"Unable to process input image. Please retry.","status":"INVALID_ARGUMENT"}}');
+      await expect(extractStructuredDataFromFile(FILE_DATA, 'image/png', CLIENT, OVER_BUDGET))
+        .rejects.toThrow(/Unable to process input image/u);
+    });
+
+    it('does not blame the schema for a transient server failure', async () => {
+      mockReject(503, '{"error":{"code":503,"message":"The model is overloaded.","status":"UNAVAILABLE"}}');
+      await expect(extractStructuredDataFromFile(FILE_DATA, 'image/png', CLIENT, OVER_BUDGET))
+        .rejects.toThrow(/overloaded/u);
+    });
+  });
+
   it('G-02: a safety-blocked response throws instead of returning empty', async () => {
     mockGenerate({ text: '', promptFeedback: { blockReason: 'SAFETY' } });
     await expect(extractTextFromFile(FILE_DATA, 'image/png', CLIENT)).rejects.toThrow(/blocked/i);

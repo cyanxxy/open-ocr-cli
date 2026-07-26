@@ -19,7 +19,7 @@ import { readAndValidateInput, type InputDiscoverySkips } from './inputs';
 import { nodeRegionCropper } from './nodeRegionCropper';
 import { agentProgressMessage, OcrJobService, modeFingerprint } from './ocrJobService';
 import { assertCustomSchemaOutput } from './schema';
-import { jsonlResult, primaryArtifact } from './output';
+import { jsonlResult, jsonlSummary, primaryArtifact } from './output';
 import { providerRuntimeConfig } from './providerRuntime';
 import { runWithProviderRetries } from './providerRetries';
 import type {
@@ -256,8 +256,8 @@ interface BatchRuntime {
   discovery?: InputDiscoverySkips;
   /**
    * Called once the terminal `--jsonl` summary record has been written. The
-   * stream carries exactly one terminal record, so a caller that also owns a
-   * `run.failed` emitter must fall silent after this fires.
+   * stream carries exactly one terminal record, so a caller that also owns the
+   * terminal `error` emitter must fall silent after this fires.
    */
   onTerminalRecord?: () => void;
   writeStdout?: (text: string) => void | Promise<void>;
@@ -307,20 +307,7 @@ export async function runBatch(
     await writeStdout(primaryArtifact(summary.results[0].artifacts, options.format));
   }
   if (options.jsonl) {
-    await writeStdout(`${JSON.stringify({
-      type: 'summary',
-      ...summary,
-      results: undefined,
-      // Always present so a consumer can rely on the field rather than infer
-      // silence. Counts only: a scan may pass over thousands of entries, and
-      // this record has to stay a bounded single line. `defaultExcluded` counts
-      // pruned directories, not the files inside them — the subtree is never
-      // walked, which is the point of pruning it.
-      discovery: {
-        unsupported: runtime.discovery?.unsupported.count ?? 0,
-        defaultExcluded: runtime.discovery?.defaultExcluded.count ?? 0,
-      },
-    })}\n`);
+    await writeStdout(`${jsonlSummary(summary, runtime.discovery)}\n`);
     // A cancelled batch still returns a summary, so this is the terminal record
     // even when the run was interrupted. Report it so the caller does not add a
     // second one.

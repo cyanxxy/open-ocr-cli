@@ -4,7 +4,8 @@ import { hostname } from 'node:os';
 import path from 'node:path';
 
 import { parseBatchLockOwner, type BatchLockOwner } from './jsonValidation';
-import { CliExitError } from './errors';
+import { CliExitError, type OcrErrorPayload } from './errors';
+import type { InputDiscoverySkips } from './inputs';
 import { parseCliManifest } from './manifest';
 import type {
   BatchSummary,
@@ -628,10 +629,28 @@ export async function writeBatchSummary(summary: BatchSummary, outputDirectory: 
   return target;
 }
 
+/**
+ * The direct-CLI `extract --jsonl` stream dialect, in one place.
+ *
+ * Every record on that stream — `document`, `summary`, `error` — is built here
+ * and shares one shape contract: a `type` discriminator, this `version`, and no
+ * protocol envelope. It is deliberately *not* the `run --response-format jsonl`
+ * lifecycle-event protocol: that stream carries `protocolVersion`, `runId`,
+ * `sequence`, and `timestamp`, and its `type` values name lifecycle transitions
+ * (`run.failed`, `document.completed`, …).
+ *
+ * Mixing the two is what this contract exists to prevent. A consumer picks a
+ * dialect by choosing a command, then discriminates on `type` alone, and the
+ * `type` vocabularies are disjoint so a misrouted record cannot be mistaken for
+ * a valid one of the other kind.
+ */
+export const JSONL_STREAM_VERSION = 1;
+
 /** Established direct-CLI JSONL document record (separate from `run` protocol events). */
 export function jsonlResult(result: OcrJobResult): string {
   return JSON.stringify({
     type: 'document',
+    version: JSONL_STREAM_VERSION,
     status: result.status,
     source: result.input.displayPath,
     mode: result.mode,
@@ -653,5 +672,53 @@ export function jsonlResult(result: OcrJobResult): string {
     // carries the code/category/retryable/hint an agent needs to decide what to
     // do next without parsing prose.
     errorDetails: result.errorDetails,
+  });
+}
+
+/**
+ * Terminal `summary` record: the stream's last line whenever the batch ran far
+ * enough to produce one, including a cancelled batch whose documents carry
+ * `skipReason: "cancelled"`.
+ */
+export function jsonlSummary(summary: BatchSummary, discovery?: InputDiscoverySkips): string {
+  return JSON.stringify({
+    type: 'summary',
+    ...summary,
+    // `version` arrives with the spread and is the same stream version the other
+    // records carry; assert that here so the two cannot drift apart silently.
+    version: JSONL_STREAM_VERSION satisfies BatchSummary['version'],
+    results: undefined,
+    // Always present so a consumer can rely on the field rather than infer
+    // silence. Counts only: a scan may pass over thousands of entries, and this
+    // record has to stay a bounded single line. `defaultExcluded` counts pruned
+    // directories, not the files inside them — the subtree is never walked,
+    // which is the point of pruning it.
+    discovery: {
+      unsupported: discovery?.unsupported.count ?? 0,
+      defaultExcluded: discovery?.defaultExcluded.count ?? 0,
+    },
+  });
+}
+
+/**
+ * Terminal `error` record: the stream's last line when the run dies before a
+ * summary exists.
+ *
+ * Without it a fatal error is only human prose on stderr and a machine consumer
+ * sees an empty stdout it cannot distinguish from "nothing to do". It carries
+ * the same typed error contract as every other CLI surface, so the recovery
+ * decision does not depend on which dialect reported the failure.
+ */
+export function jsonlRunError(error: OcrErrorPayload): string {
+  return JSON.stringify({
+    type: 'error',
+    version: JSONL_STREAM_VERSION,
+    error: {
+      code: error.code,
+      category: error.category,
+      message: error.message,
+      retryable: error.retryable,
+      hint: error.hint,
+    },
   });
 }

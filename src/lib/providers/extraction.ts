@@ -14,6 +14,7 @@ import {
   extractStructuredDataFromFile,
   extractTextFromFile,
 } from '../gemini/extraction';
+import { withReadableProviderErrors } from '../gemini/errorPayload';
 import {
   buildPresetPrompt,
   buildPresetResponseSchema,
@@ -81,7 +82,9 @@ export async function extractTextWithProvider(
   options?: ExtractionOptions,
 ): Promise<ExtractedContent> {
   if (config.provider === 'gemini') {
-    return extractTextFromFile(dataUrl, mimeType, geminiConfig(config), instructions, options);
+    return withReadableProviderErrors(
+      () => extractTextFromFile(dataUrl, mimeType, geminiConfig(config), instructions, options),
+    );
   }
   const wantsJson = options?.structuredOutput === true || options?.outputFormat === 'json';
   const result = await createChatCompletion(config, {
@@ -114,14 +117,14 @@ export async function extractStructuredWithProvider(
   options?: Pick<ExtractionOptions, 'abortSignal' | 'maxTokens' | 'detectImages' | 'detectMathEquations'>,
 ): Promise<JsonValue> {
   if (config.provider === 'gemini') {
-    return extractStructuredDataFromFile(
+    return withReadableProviderErrors(() => extractStructuredDataFromFile(
       dataUrl,
       mimeType,
       geminiConfig(config),
       responseJsonSchema,
       instructions,
       options,
-    );
+    ));
   }
   const prompt = [
     'Extract the document into the exact JSON structure described by the response schema.',
@@ -156,7 +159,9 @@ export async function extractPresetWithProvider(
   signal?: AbortSignal,
 ): Promise<PresetRunResult> {
   if (config.provider === 'gemini') {
-    return runExtractionPreset(dataUrl, mimeType, geminiConfig(config), preset, { abortSignal: signal });
+    return withReadableProviderErrors(
+      () => runExtractionPreset(dataUrl, mimeType, geminiConfig(config), preset, { abortSignal: signal }),
+    );
   }
   const result = await createChatCompletion(config, {
     messages: await providerMessages(config, dataUrl, mimeType, filename, buildPresetPrompt(preset), signal),

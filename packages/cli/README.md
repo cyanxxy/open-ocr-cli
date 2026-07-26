@@ -159,7 +159,7 @@ open-ocr-cli extract scan.pdf \
   --max-iterations 6
 
 # Safe public-URL extraction
-open-ocr-cli web https://example.com/report.pdf --format markdown
+open-ocr-cli web https://en.wikipedia.org/wiki/Optical_character_recognition --format markdown
 
 # Validate discovery, schemas, limits, and output plans without credentials
 open-ocr-cli extract ./documents --dry-run
@@ -405,8 +405,8 @@ Public URLs use the same machine job service and lifecycle protocol:
   "protocolVersion": 2,
   "operation": "extract",
   "inputs": [
-    { "type": "url", "url": "https://example.com/report" },
-    { "type": "url", "url": "https://example.com/appendix.pdf" }
+    { "type": "url", "url": "https://en.wikipedia.org/wiki/Optical_character_recognition" },
+    { "type": "url", "url": "https://en.wikipedia.org/wiki/Document_layout_analysis" }
   ],
   "web": { "analysis": "combined" },
   "extraction": { "mode": "simple", "contentFormat": "markdown" },

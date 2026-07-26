@@ -22,7 +22,7 @@ import {
   type GatewayId,
   type ProviderId,
 } from '../../../src/lib/providers';
-import { getExtractionPreset } from '../../../src/lib/templates';
+import { getExtractionPreset, listExtractionPresets } from '../../../src/lib/templates';
 import { CliExitError } from './errors';
 import { asRecord } from './jsonValidation';
 import {
@@ -422,6 +422,20 @@ export function resolveCliOptions(
   if (preset && effectiveMode !== 'template') throw configurationError('--preset is only available in template mode');
   if (preset) getExtractionPreset(preset);
   if (format === 'csv' && effectiveMode !== 'template') throw configurationError('--format csv is only available in template mode');
+  // A record-shaped preset extracts one document's worth of fields and never
+  // rows, so CSV cannot be built from it. Without this the run reaches the
+  // provider, bills a call, and fails afterwards on the missing CSV artifact
+  // (see ocrExtractionSemanticError in protocol.ts for the `run`/MCP wording).
+  if (format === 'csv' && preset && getExtractionPreset(preset).outputShape !== 'table') {
+    const tablePresets = listExtractionPresets()
+      .filter((candidate) => candidate.outputShape === 'table')
+      .map((candidate) => candidate.id)
+      .join(', ');
+    throw configurationError(
+      `--preset ${preset} extracts a single record per document, so it cannot produce CSV rows; `
+      + `use --format json or markdown, or a table preset: ${tablePresets}`,
+    );
+  }
   if (hasSchema && effectiveMode !== 'simple') throw configurationError('--schema is only available in simple mode');
   if (hasSchema && format !== 'json') throw configurationError('--schema requires --format json');
   const defaultMaxTokens = isKimiK3

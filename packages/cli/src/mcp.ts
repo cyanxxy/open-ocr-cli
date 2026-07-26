@@ -225,7 +225,12 @@ function mcpResult(result: OcrMachineResult): {
   return {
     content: [{ type: 'text', text: JSON.stringify(result) }],
     structuredContent: result as unknown as Record<string, unknown>,
-    ...(result.status === 'failed' ? { isError: true } : {}),
+    // Track `ok` rather than the `failed` status alone. `partial`, `cancelled`
+    // and `cost_limited` all hand the caller less than it asked for — a
+    // document failed, the run stopped early, or the budget cut it short — so
+    // reporting the tool call as successful while `structuredContent.ok` is
+    // false lets a client act on results it never received.
+    ...(result.ok ? {} : { isError: true }),
   };
 }
 

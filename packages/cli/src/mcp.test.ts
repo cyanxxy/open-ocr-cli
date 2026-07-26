@@ -1,3 +1,7 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -8,11 +12,17 @@ import {
   createOcrMcpServer,
 } from './mcp';
 
+const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
+
 describe('Open OCR MCP server', () => {
   const closeCallbacks: Array<() => Promise<void>> = [];
+  const cleanupPaths: string[] = [];
 
   afterEach(async () => {
     await Promise.all(closeCallbacks.splice(0).map((close) => close()));
+    await Promise.all(cleanupPaths.splice(0).map(
+      async (directory) => rm(directory, { recursive: true, force: true }),
+    ));
   });
 
   it('builds versioned requests through the shared semantic validator', () => {
@@ -42,6 +52,82 @@ describe('Open OCR MCP server', () => {
       inputs: ['invoice.pdf'],
       mode: 'template',
     })).toThrow('extraction.preset');
+  });
+
+  it('rejects tool arguments the protocol forbids with a message an agent can act on', () => {
+    // The tool takes delivery and outputDirectory as independent arguments, so
+    // the conflict has to be named rather than left to the schema's `not`.
+    expect(() => buildExtractMcpRequest({
+      inputs: ['invoice.pdf'],
+      delivery: 'inline',
+      outputDirectory: 'out',
+    })).toThrow(/delivery\.outputDirectory.*delivery\.mode inline/su);
+    expect(() => buildAgenticMcpRequest({
+      inputs: ['scan.png'],
+      delivery: 'inline',
+      resume: true,
+    })).toThrow('delivery.resume');
+    expect(buildExtractMcpRequest({
+      inputs: ['invoice.pdf'],
+      delivery: 'reference',
+      outputDirectory: 'out',
+    })).toMatchObject({ delivery: { mode: 'reference', outputDirectory: 'out' } });
+
+    // csv from a preset that extracts one record per document can only fail
+    // after the call is billed, so it is refused here.
+    expect(() => buildExtractMcpRequest({
+      inputs: ['card.png'],
+      mode: 'template',
+      preset: 'business-card',
+      contentFormat: 'csv',
+    })).toThrow('cannot produce CSV rows');
+    expect(buildExtractMcpRequest({
+      inputs: ['receipt.png'],
+      mode: 'template',
+      preset: 'receipt',
+      contentFormat: 'csv',
+    })).toMatchObject({ extraction: { preset: 'receipt', contentFormat: 'csv' } });
+  });
+
+  it('reports a partially failed run as a tool error', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-mcp-'));
+    cleanupPaths.push(directory);
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    await writeFile(path.join(directory, 'broken.png'), 'not an image');
+
+    const server = createOcrMcpServer('2.6.0', directory);
+    const client = new Client({ name: 'open-ocr-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    closeCallbacks.push(
+      async () => client.close(),
+      async () => server.close(),
+    );
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+
+    const result = await client.callTool({
+      name: 'ocr_extract',
+      arguments: {
+        inputs: ['invoice.jpg', 'broken.png'],
+        outputDirectory: path.join(directory, 'out'),
+        dryRun: true,
+        noConfig: true,
+      },
+    });
+    const structured = result.structuredContent as {
+      ok: boolean;
+      status: string;
+      documents: Array<{ status: string }>;
+    };
+
+    // One document failed, so the caller did not get what it asked for. Keying
+    // isError on the `failed` status alone left this call looking successful.
+    expect(structured.status).toBe('partial');
+    expect(structured.ok).toBe(false);
+    expect(result.isError).toBe(true);
+    expect(structured.documents.some((document) => document.status === 'failed')).toBe(true);
   });
 
   it('advertises tools and runs URL dry-runs without credentials or network access', async () => {
