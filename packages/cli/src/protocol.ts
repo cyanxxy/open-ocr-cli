@@ -306,7 +306,16 @@ export interface OcrCapabilities {
   };
 }
 
-const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
+const ajv = new Ajv2020({
+  allErrors: true,
+  strict: true,
+  strictRequired: false,
+  // `verbose` attaches the failing subschema and the offending instance to every
+  // error. validationMessage() needs both so it can name the field that broke and
+  // read a union's allowed values straight off the schema instead of repeating
+  // them in a hand-maintained list that would drift.
+  verbose: true,
+});
 addFormats(ajv);
 ajv.addSchema(errorV1Schema);
 ajv.addSchema(errorV2Schema);
@@ -324,8 +333,345 @@ const eventV1Validator: ValidateFunction<OcrJobEvent> = ajv.compile(eventV1Schem
 const eventV2Validator: ValidateFunction<OcrJobEvent> = ajv.compile(eventV2Schema);
 const capabilitiesValidator: ValidateFunction<OcrCapabilities> = ajv.compile(capabilitiesV2Schema);
 
+/** Clauses kept in a validation message before the remainder is summarized. */
+const MAX_VALIDATION_CLAUSES = 4;
+/** Field names listed before an allowed-field list is truncated. */
+const MAX_LISTED_FIELDS = 6;
+
+/**
+ * A union whose branches are told apart by one literal-valued property, such as
+ * the `type` field that separates path, stdin and URL request inputs.
+ */
+interface UnionDiscriminator {
+  field: string;
+  /** Allowed values for each branch, indexed by branch position. */
+  branchValues: string[][];
+  /** Every allowed value across the union, in branch order. */
+  values: string[];
+}
+
+function isSchemaNode(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function schemaProperties(schema: unknown): string[] {
+  if (!isSchemaNode(schema)) return [];
+  return isSchemaNode(schema.properties) ? Object.keys(schema.properties) : [];
+}
+
+function schemaRequired(schema: unknown): string[] {
+  if (!isSchemaNode(schema)) return [];
+  const required: unknown = schema.required;
+  if (!Array.isArray(required)) return [];
+  return required.filter((name): name is string => typeof name === 'string');
+}
+
+/** The string values a subschema pins a property to, via `const` or `enum`. */
+function schemaLiteralValues(schema: unknown): string[] | undefined {
+  if (!isSchemaNode(schema)) return undefined;
+  if (typeof schema.const === 'string') return [schema.const];
+  const allowed: unknown = schema.enum;
+  if (!Array.isArray(allowed) || allowed.length === 0) return undefined;
+  const values = allowed.filter((value): value is string => typeof value === 'string');
+  return values.length === allowed.length ? values : undefined;
+}
+
+function errorParamString(error: ErrorObject, key: string): string | undefined {
+  const value = (error.params as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Find the property that discriminates a union: required by every branch and
+ * pinned to a literal in every branch. Returning the values from the schema is
+ * what keeps the guidance honest when a branch is added or renamed.
+ */
+function unionDiscriminator(branches: unknown[]): UnionDiscriminator | undefined {
+  if (branches.length < 2) return undefined;
+  for (const field of schemaRequired(branches[0])) {
+    const branchValues: string[][] = [];
+    for (const branch of branches) {
+      if (!schemaRequired(branch).includes(field)) break;
+      const properties = isSchemaNode(branch) ? branch.properties : undefined;
+      const values = schemaLiteralValues(isSchemaNode(properties) ? properties[field] : undefined);
+      if (!values) break;
+      branchValues.push(values);
+    }
+    if (branchValues.length === branches.length) {
+      return { field, branchValues, values: [...new Set(branchValues.flat())] };
+    }
+  }
+  return undefined;
+}
+
+/** Render a JSON Pointer instance path as `inputs[0].type`. */
+function instanceLabel(instancePath: string): string {
+  if (!instancePath) return '';
+  return instancePath
+    .split('/')
+    .slice(1)
+    .map((segment) => segment.replace(/~1/gu, '/').replace(/~0/gu, '~'))
+    .reduce<string>((label, segment) => {
+      if (/^\d+$/u.test(segment)) return `${label}[${segment}]`;
+      return label ? `${label}.${segment}` : segment;
+    }, '');
+}
+
+function withInstanceLabel(instancePath: string, clause: string): string {
+  const label = instanceLabel(instancePath);
+  return label ? `${label}: ${clause}` : clause;
+}
+
+function fieldList(fields: string[]): string {
+  if (fields.length <= MAX_LISTED_FIELDS) return fields.join(', ');
+  return `${fields.slice(0, MAX_LISTED_FIELDS).join(', ')}, +${fields.length - MAX_LISTED_FIELDS} more`;
+}
+
+function quotedFields(fields: string[]): string {
+  return fields.map((field) => `'${field}'`).join(', ');
+}
+
+function unknownFieldClause(fields: string[], allowed: string[]): string {
+  const noun = fields.length === 1 ? 'unknown field' : 'unknown fields';
+  const suffix = allowed.length > 0 ? ` — allowed fields: ${fieldList(allowed)}` : '';
+  return `${noun} ${quotedFields(fields)}${suffix}`;
+}
+
+/** Turn a single non-union failure into a clause, preferring Ajv's own wording. */
+function keywordClause(error: ErrorObject): string {
+  if (error.keyword === 'enum') {
+    const allowed: unknown = (error.params as Record<string, unknown>).allowedValues;
+    if (Array.isArray(allowed)) return `must be one of: ${allowed.map((value) => String(value)).join(', ')}`;
+  }
+  if (error.keyword === 'const') {
+    return `must be ${JSON.stringify((error.params as Record<string, unknown>).allowedValue)}`;
+  }
+  return error.message ?? 'is invalid';
+}
+
+/** The branch position an error came from, or undefined if it is not this union's. */
+function unionBranchIndex(unionSchemaPath: string, schemaPath: string): number | undefined {
+  if (!schemaPath.startsWith(`${unionSchemaPath}/`)) return undefined;
+  const [segment] = schemaPath.slice(unionSchemaPath.length + 1).split('/');
+  const index = Number.parseInt(segment, 10);
+  return Number.isInteger(index) ? index : undefined;
+}
+
+/** Collapse every failure recorded against one instance path into few clauses. */
+function instancePathClauses(instancePath: string, group: ErrorObject[]): string[] {
+  const unknownFields: string[] = [];
+  const missingFields: string[] = [];
+  const otherClauses: string[] = [];
+  let allowedFields: string[] = [];
+  for (const error of group) {
+    if (error.keyword === 'additionalProperties') {
+      const field = errorParamString(error, 'additionalProperty');
+      if (field && !unknownFields.includes(field)) unknownFields.push(field);
+      if (allowedFields.length === 0) allowedFields = schemaProperties(error.parentSchema);
+      continue;
+    }
+    if (error.keyword === 'required') {
+      const field = errorParamString(error, 'missingProperty');
+      if (field && !missingFields.includes(field)) missingFields.push(field);
+      continue;
+    }
+    otherClauses.push(keywordClause(error));
+  }
+  const clauses: string[] = [];
+  if (unknownFields.length > 0) clauses.push(unknownFieldClause(unknownFields, allowedFields));
+  if (missingFields.length > 0) {
+    const noun = missingFields.length === 1 ? 'missing required field' : 'missing required fields';
+    clauses.push(`${noun} ${quotedFields(missingFields)}`);
+  }
+  clauses.push(...otherClauses);
+  return clauses.map((clause) => withInstanceLabel(instancePath, clause));
+}
+
+/**
+ * The discriminator is absent but one of the unknown fields carries a value the
+ * discriminator would accept — the caller almost certainly used the wrong key.
+ * `kind` is the discriminator everywhere else in this protocol, so agents reach
+ * for it on inputs too; this is what turns that into a one-read fix.
+ */
+function renamedDiscriminatorField(
+  data: Record<string, unknown>,
+  discriminator: UnionDiscriminator,
+  unknownFields: string[],
+): string | undefined {
+  if (data[discriminator.field] !== undefined) return undefined;
+  return unknownFields.find((field) => {
+    const value = data[field];
+    return typeof value === 'string' && discriminator.values.includes(value);
+  });
+}
+
+/** A union of plain type branches, e.g. `string | null`, reads best as one list. */
+function unionTypeNames(unionError: ErrorObject, branchErrors: ErrorObject[]): string[] {
+  const names: string[] = [];
+  for (const error of branchErrors) {
+    if (error.keyword !== 'type' || error.instancePath !== unionError.instancePath) return [];
+    const name = errorParamString(error, 'type');
+    if (!name) return [];
+    if (!names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+/** The branch that came closest to matching, used when nothing discriminates. */
+function closestBranchErrors(unionError: ErrorObject, branchErrors: ErrorObject[]): ErrorObject[] {
+  const byBranch = new Map<number, ErrorObject[]>();
+  for (const error of branchErrors) {
+    const index = unionBranchIndex(unionError.schemaPath, error.schemaPath);
+    if (index === undefined) continue;
+    const bucket = byBranch.get(index);
+    if (bucket) bucket.push(error);
+    else byBranch.set(index, [error]);
+  }
+  let closest: ErrorObject[] = [];
+  for (const bucket of byBranch.values()) {
+    if (closest.length === 0 || bucket.length < closest.length) closest = bucket;
+  }
+  return closest;
+}
+
+/**
+ * Reduce a failed union to one actionable clause. Every branch fails whenever a
+ * `oneOf` fails, so reporting each branch's complaints buries the real problem.
+ */
+function unionClauses(unionError: ErrorObject, branchErrors: ErrorObject[]): string[] {
+  // Branches behind a `$ref` are reported by Ajv under their resolved schema
+  // path rather than beneath the union, so those failures are already in the
+  // error list and the union itself has nothing left to add.
+  if (branchErrors.length === 0) return [];
+  const branches: unknown[] = Array.isArray(unionError.schema) ? unionError.schema : [];
+  const instancePath = unionError.instancePath;
+  const discriminator = unionDiscriminator(branches);
+  const data = isRecord(unionError.data) ? unionError.data : undefined;
+
+  if (discriminator && data) {
+    const selector = data[discriminator.field];
+    if (typeof selector === 'string') {
+      const matched = discriminator.branchValues
+        .map((values, index) => (values.includes(selector) ? index : -1))
+        .filter((index) => index >= 0);
+      // The discriminator names exactly one branch, so only that branch matters.
+      if (matched.length === 1) {
+        const prefix = `${unionError.schemaPath}/${matched[0]}/`;
+        const clauses = validationClauses(branchErrors.filter((error) => error.schemaPath.startsWith(prefix)));
+        if (clauses.length > 0) return clauses;
+      }
+      return [withInstanceLabel(
+        instancePath,
+        `${discriminator.field} must be one of: ${discriminator.values.join(', ')}`,
+      )];
+    }
+  }
+
+  const knownFields = [...new Set(branches.flatMap((branch) => schemaProperties(branch)))];
+  // With no declared properties there is nothing to call an unknown field against.
+  const unknownFields = data && knownFields.length > 0
+    ? Object.keys(data).filter((field) => !knownFields.includes(field))
+    : [];
+  if (unknownFields.length > 0) {
+    const renamed = discriminator && data
+      ? renamedDiscriminatorField(data, discriminator, unknownFields)
+      : undefined;
+    if (renamed && discriminator) {
+      const hint = unknownFields.length === 1
+        ? `did you mean '${discriminator.field}'?`
+        : `did you mean '${discriminator.field}' instead of '${renamed}'?`;
+      const noun = unknownFields.length === 1 ? 'unknown field' : 'unknown fields';
+      return [withInstanceLabel(
+        instancePath,
+        `${noun} ${quotedFields(unknownFields)} — ${hint} (${discriminator.field} must be one of: ${discriminator.values.join(', ')})`,
+      )];
+    }
+    return [withInstanceLabel(instancePath, unknownFieldClause(unknownFields, knownFields))];
+  }
+
+  if (discriminator) {
+    return [withInstanceLabel(
+      instancePath,
+      `missing required field '${discriminator.field}' — must be one of: ${discriminator.values.join(', ')}`,
+    )];
+  }
+
+  const typeNames = unionTypeNames(unionError, branchErrors);
+  if (typeNames.length > 1) return [withInstanceLabel(instancePath, `must be ${typeNames.join(' or ')}`)];
+
+  const closest = closestBranchErrors(unionError, branchErrors);
+  const closestClauses = closest.length > 0 ? validationClauses(closest) : [];
+  if (closestClauses.length > 0) return closestClauses;
+  return [withInstanceLabel(instancePath, unionError.message ?? 'is invalid')];
+}
+
+/**
+ * Build the clause list for a set of Ajv errors, collapsing unions and merging
+ * everything else by instance path so each clause names one actionable problem.
+ */
+function validationClauses(allErrors: ErrorObject[]): string[] {
+  // An `if` failure only restates that its `then`/`else` branch failed, and that
+  // branch reports itself.
+  const errors = allErrors.filter((error) => error.keyword !== 'if');
+  // Outermost unions first, so a union swallows any nested union beneath it.
+  const unionErrors = errors
+    .filter((error) => error.keyword === 'oneOf' || error.keyword === 'anyOf')
+    .sort((left, right) => left.schemaPath.length - right.schemaPath.length);
+  const consumed = new Set<ErrorObject>();
+  const branchesByUnion = new Map<ErrorObject, ErrorObject[]>();
+  for (const unionError of unionErrors) {
+    if (consumed.has(unionError)) continue;
+    const owned = errors.filter((error) => (
+      error !== unionError
+      && !consumed.has(error)
+      && error.schemaPath.startsWith(`${unionError.schemaPath}/`)
+    ));
+    for (const error of owned) consumed.add(error);
+    branchesByUnion.set(unionError, owned);
+  }
+
+  // Emit each union and each instance-path group where its first error appeared.
+  const renderers: Array<() => string[]> = [];
+  const groupsByPath = new Map<string, ErrorObject[]>();
+  for (const error of errors) {
+    if (consumed.has(error)) continue;
+    const owned = branchesByUnion.get(error);
+    if (owned) {
+      renderers.push(() => unionClauses(error, owned));
+      continue;
+    }
+    const group = groupsByPath.get(error.instancePath);
+    if (group) {
+      group.push(error);
+      continue;
+    }
+    const started = [error];
+    groupsByPath.set(error.instancePath, started);
+    renderers.push(() => instancePathClauses(error.instancePath, started));
+  }
+  return [...new Set(renderers.flatMap((render) => render()))];
+}
+
+/**
+ * Render Ajv failures as a short, single-line, machine-parseable explanation.
+ *
+ * Validation errors are the CLI's front door for coding agents, so a message
+ * has to name the offending field and the fix rather than replay every branch
+ * a union tried.
+ */
 function validationMessage(errors: ErrorObject[] | null | undefined): string {
-  return (errors ?? []).map((error) => `${error.instancePath || '/'} ${error.message ?? 'is invalid'}`).join('; ');
+  const reported = errors ?? [];
+  const collapsed = validationClauses(reported);
+  const clauses = collapsed.length > 0
+    ? collapsed
+    : [...new Set(reported.map((error) => withInstanceLabel(error.instancePath, error.message ?? 'is invalid')))];
+  if (clauses.length === 0) return 'is invalid';
+  const shown = clauses.slice(0, MAX_VALIDATION_CLAUSES);
+  const remaining = clauses.length - shown.length;
+  const message = remaining > 0
+    ? `${shown.join('; ')}; (+${remaining} more ${remaining === 1 ? 'issue' : 'issues'})`
+    : shown.join('; ');
+  return message.replace(/\s+/gu, ' ').trim();
 }
 
 function assertValid<T>(

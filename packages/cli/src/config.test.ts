@@ -4,7 +4,19 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { credentialSetupGuidance, loadCliConfig, loadLocalEnv, resolveCliOptions } from './config';
+import {
+  assertCredentialsAvailable,
+  credentialSetupGuidance,
+  ignoredModeScopedOptionWarning,
+  ignoredModeScopedOptions,
+  loadCliConfig,
+  loadLocalEnv,
+  resolveCliOptions,
+  suppliedModeScopedFlags,
+} from './config';
+import { ocrErrorPayload } from './errors';
+import { modeFingerprint } from './ocrJobService';
+import type { ExtractCommandFlags } from './types';
 
 const originalApiKey = process.env.GEMINI_API_KEY;
 const originalGatewayToken = process.env.CLOUDFLARE_AI_GATEWAY_TOKEN;
@@ -39,6 +51,18 @@ describe('CLI configuration', () => {
       retries: 3,
       resume: true,
     });
+  });
+
+  it('resolves the default directory excludes from config and flags', () => {
+    process.env.GEMINI_API_KEY = 'test-key';
+    expect(resolveCliOptions({}, {}, '/workspace').defaultExcludes).toBe(true);
+    expect(resolveCliOptions({}, { defaultExcludes: false }, '/workspace').defaultExcludes).toBe(false);
+    // --no-default-excludes has to reach the resolver even when a config file
+    // asked for the excludes, and --default-excludes has to win back.
+    expect(resolveCliOptions({ defaultExcludes: false }, { defaultExcludes: true }, '/workspace').defaultExcludes)
+      .toBe(false);
+    expect(resolveCliOptions({ defaultExcludes: true }, { defaultExcludes: false }, '/workspace').defaultExcludes)
+      .toBe(true);
   });
 
   it('lets CLI flags override environment and file configuration', () => {
@@ -295,6 +319,128 @@ describe('CLI configuration', () => {
     expect(options.mode).toBe('template');
     expect(options.preset).toBe('invoice');
     expect(options.format).toBe('csv');
+    expect(resolveCliOptions({ mode: 'template', preset: 'invoice' }, {}, '/workspace')).toMatchObject({
+      mode: 'template',
+      preset: 'invoice',
+    });
+  });
+
+  it('rejects a preset the named mode would silently discard', () => {
+    process.env.GEMINI_API_KEY = 'test-key';
+    // The preset would otherwise survive into resolved options while the runner
+    // only reads it in template mode, so the run quietly returns markdown.
+    expect(() => resolveCliOptions({ mode: 'simple', preset: 'invoice' }, {}, '/workspace'))
+      .toThrow('--preset is only available in template mode');
+    expect(() => resolveCliOptions({ mode: 'agentic', preset: 'invoice' }, {}, '/workspace'))
+      .toThrow('--preset is only available in template mode');
+    // A `mode` key in file configuration demotes the preset the same way.
+    expect(() => resolveCliOptions({ preset: 'invoice' }, { mode: 'simple' }, '/workspace'))
+      .toThrow('--preset is only available in template mode');
+    let thrown: unknown;
+    try {
+      resolveCliOptions({ mode: 'simple', preset: 'invoice' }, {}, '/workspace');
+    } catch (error) {
+      thrown = error;
+    }
+    expect(ocrErrorPayload(thrown, 2)).toMatchObject({
+      code: 'CONFIG_INVALID',
+      category: 'configuration',
+      retryable: false,
+    });
+  });
+
+  it('keeps the resume fingerprint stable now that an inert preset cannot resolve', () => {
+    process.env.GEMINI_API_KEY = 'test-key';
+    const simple = resolveCliOptions({ mode: 'simple' }, {}, '/workspace');
+    expect(simple.preset).toBeUndefined();
+    expect(modeFingerprint(simple)).toBe(modeFingerprint(resolveCliOptions({}, {}, '/workspace')));
+    // The rejected variant used to hash an ignored preset into the fingerprint,
+    // so it could never resume a manifest written by plain --mode simple.
+    expect(() => resolveCliOptions({ mode: 'simple', preset: 'invoice' }, {}, '/workspace')).toThrow();
+  });
+
+  it('classifies numeric flag failures as configuration errors, not runtime timeouts', () => {
+    process.env.GEMINI_API_KEY = 'test-key';
+    const numericFailures: Array<[ExtractCommandFlags, string]> = [
+      [{ timeout: '0' }, '--timeout must be an integer from 1 to 3600'],
+      [{ concurrency: '0' }, '--concurrency must be an integer from 1 to 16'],
+      [{ maxIterations: '99' }, '--max-iterations must be an integer from 1 to 20'],
+      [{ confidenceThreshold: '2' }, '--confidence-threshold must be between 0 and 1'],
+      [{ maxTotalMb: '0' }, '--max-total-mb must be between 1 and 1048576'],
+    ];
+    for (const [flags, message] of numericFailures) {
+      let thrown: unknown;
+      try {
+        resolveCliOptions(flags, {}, '/workspace');
+      } catch (error) {
+        thrown = error;
+      }
+      expect((thrown as Error).message).toBe(message);
+      // A retry harness must not loop on a permanent flag error; before this
+      // was typed, the word "timeout" in the flag name classified its own error.
+      expect(ocrErrorPayload(thrown, 2)).toMatchObject({
+        code: 'CONFIG_INVALID',
+        category: 'configuration',
+        retryable: false,
+      });
+    }
+  });
+
+  it('names an unreadable explicit configuration file without leaking an errno', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-config-missing-'));
+    try {
+      let thrown: unknown;
+      try {
+        await loadCliConfig(directory, 'nope.json');
+      } catch (error) {
+        thrown = error;
+      }
+      expect((thrown as Error).message).toBe('Configuration file not found: nope.json');
+      expect((thrown as Error).message).not.toContain('ENOENT');
+      expect((thrown as Error).message).not.toContain(directory);
+      expect(ocrErrorPayload(thrown, 2)).toMatchObject({
+        code: 'CONFIG_INVALID',
+        category: 'configuration',
+      });
+
+      let directoryThrown: unknown;
+      try {
+        await loadCliConfig(directory, '.');
+      } catch (error) {
+        directoryThrown = error;
+      }
+      expect((directoryThrown as Error).message).toBe('Configuration path is not a file: .');
+      expect((directoryThrown as Error).message).not.toContain('EISDIR');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the options a resolved mode will not read', () => {
+    expect(suppliedModeScopedFlags({})).toEqual([]);
+    // Commander defaults --instruction to [], so an untyped flag must not warn.
+    expect(suppliedModeScopedFlags({ instruction: [], exclude: [] })).toEqual([]);
+    expect(suppliedModeScopedFlags({
+      detectMath: true,
+      maxIterations: '9',
+      confidenceThreshold: '0.5',
+      instruction: ['read the table'],
+    })).toEqual(['detectMath', 'instructions', 'maxIterations', 'confidenceThreshold']);
+
+    expect(ignoredModeScopedOptions(['detectMath', 'maxIterations'], 'simple')).toEqual(['maxIterations']);
+    expect(ignoredModeScopedOptions(['detectMath', 'maxIterations'], 'agentic')).toEqual(['detectMath']);
+    // --max-tokens reaches simple and agentic extraction but never the preset path.
+    expect(ignoredModeScopedOptions(['maxTokens'], 'template')).toEqual(['maxTokens']);
+    expect(ignoredModeScopedOptions(['maxTokens'], 'simple')).toEqual([]);
+    expect(ignoredModeScopedOptions(['progress'], 'simple')).toEqual(['progress']);
+
+    expect(ignoredModeScopedOptionWarning([], 'simple', 'flag')).toBeUndefined();
+    expect(ignoredModeScopedOptionWarning(['maxIterations', 'progress'], 'simple', 'flag')).toBe(
+      'ignoring option(s) that simple mode does not use: --max-iterations, --progress',
+    );
+    expect(ignoredModeScopedOptionWarning(['detectMath'], 'template', 'field')).toBe(
+      'ignoring option(s) that template mode does not use: extraction.detectMath',
+    );
   });
 
   it('preserves an explicit minimal effort for agentic Flash runs', () => {
@@ -360,11 +506,53 @@ describe('CLI configuration', () => {
   it('allows credential-free dry runs but rejects live runs without a key', () => {
     delete process.env.GEMINI_API_KEY;
     expect(resolveCliOptions({ dryRun: true }, {}, '/workspace').apiKey).toBe('');
-    expect(() => resolveCliOptions({}, {}, '/workspace')).toThrow('Gemini API key is missing');
-    expect(() => resolveCliOptions({}, {}, '/workspace')).toThrow('PowerShell');
+    expect(() => assertCredentialsAvailable(resolveCliOptions({ dryRun: true }, {}, '/workspace'))).not.toThrow();
+    const live = (): void => assertCredentialsAvailable(resolveCliOptions({}, {}, '/workspace'));
+    expect(live).toThrow('Gemini API key is missing');
+    expect(live).toThrow('PowerShell');
     expect(credentialSetupGuidance('CUSTOM_GEMINI_KEY', '/workspace')).toContain(
       'CUSTOM_GEMINI_KEY=your-key',
     );
+  });
+
+  it('resolves options without a credential so flag and input errors report first', () => {
+    delete process.env.GEMINI_API_KEY;
+    expect(resolveCliOptions({}, {}, '/workspace').apiKey).toBe('');
+    // The numeric flag is still validated during resolution, so the reported
+    // failure is the bad flag rather than the missing credential.
+    expect(() => resolveCliOptions({ timeout: '0' }, {}, '/workspace'))
+      .toThrow('--timeout must be an integer from 1 to 3600');
+  });
+
+  it('reports a missing gateway token only for a live Cloudflare BYOK route', () => {
+    delete process.env.CLOUDFLARE_AI_GATEWAY_TOKEN;
+    const byok: ExtractCommandFlags = {
+      provider: 'gemini',
+      gateway: 'cloudflare',
+      cloudflareAccountId: 'account',
+      cloudflareGatewayId: 'gateway',
+      cloudflareByok: true,
+    };
+    expect(() => assertCredentialsAvailable(resolveCliOptions(byok, {}, '/workspace')))
+      .toThrow('Cloudflare BYOK requires CLOUDFLARE_AI_GATEWAY_TOKEN for gateway authentication');
+    expect(() => assertCredentialsAvailable(
+      resolveCliOptions({ ...byok, dryRun: true }, {}, '/workspace'),
+    )).not.toThrow();
+  });
+
+  it('types credential failures as AUTH_MISSING rather than a generic config error', () => {
+    delete process.env.GEMINI_API_KEY;
+    let thrown: unknown;
+    try {
+      assertCredentialsAvailable(resolveCliOptions({}, {}, '/workspace'));
+    } catch (error) {
+      thrown = error;
+    }
+    expect(ocrErrorPayload(thrown, 2)).toMatchObject({
+      code: 'AUTH_MISSING',
+      category: 'authentication',
+      retryable: false,
+    });
   });
 
   it('validates modes, formats, numeric bounds, and presets', () => {

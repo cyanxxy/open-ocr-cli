@@ -304,13 +304,38 @@ async function runCompatibleWebExtraction(
   return { comparisonAnalysis: response.text.trim() };
 }
 
+function urlListError(message: string, cause: unknown): CliExitError {
+  return new CliExitError(message, 2, {
+    cause,
+    code: 'INPUT_NOT_FOUND',
+    category: 'input',
+    retryable: false,
+    hint: 'Check the --file path and working directory.',
+  });
+}
+
+/** Read the `--file` URL list, reporting the path the caller passed on failure. */
+async function readUrlListFile(filePath: string, cwd: string): Promise<string[]> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(path.resolve(cwd, filePath), 'utf8');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') throw urlListError(`URL list file not found: ${filePath}`, error);
+    if (code === 'EISDIR') throw urlListError(`URL list path is not a file: ${filePath}`, error);
+    if (code === 'EACCES' || code === 'EPERM') {
+      throw urlListError(`URL list file is not readable: ${filePath}`, error);
+    }
+    throw error;
+  }
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+}
+
 export async function resolveWebUrls(rawUrls: string[], filePath: string | undefined, cwd: string): Promise<string[]> {
-  const fromFile = filePath
-    ? (await fs.readFile(path.resolve(cwd, filePath), 'utf8'))
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line && !line.startsWith('#'))
-    : [];
+  const fromFile = filePath ? await readUrlListFile(filePath, cwd) : [];
   const requested = [...rawUrls, ...fromFile].map((url) => url.trim()).filter(Boolean);
   if (requested.length === 0) throw new Error('Provide at least one URL or use --file');
   const unsupported = getUnsupportedUrls(requested);

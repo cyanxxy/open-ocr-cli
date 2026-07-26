@@ -51,6 +51,8 @@ export interface CliConfigFile {
   failFast?: boolean;
   hidden?: boolean;
   exclude?: string[];
+  /** Prune node_modules, dist, build, vendor, and target from directory scans. */
+  defaultExcludes?: boolean;
   instructions?: string[];
   detectImages?: boolean;
   detectMath?: boolean;
@@ -94,6 +96,7 @@ export interface ExtractCommandFlags {
   exclude?: string[];
   instruction?: string[];
   hidden?: boolean;
+  defaultExcludes?: boolean;
   resume?: boolean;
   overwrite?: boolean;
   forceUnlock?: boolean;
@@ -147,6 +150,8 @@ export interface ResolvedCliOptions {
   excludes: string[];
   instructions: string[];
   hidden: boolean;
+  /** Whether directory scans prune well-known dependency and build-output trees. */
+  defaultExcludes: boolean;
   resume: boolean;
   overwrite: boolean;
   forceUnlock: boolean;

@@ -505,3 +505,126 @@ describe('agent protocols', () => {
     })).toThrow('Invalid OCR event');
   });
 });
+
+describe('protocol validation messages', () => {
+  function rejection(request: unknown): { message: string; clauses: string[] } {
+    try {
+      parseOcrJobRequest(request);
+    } catch (error) {
+      const message = ocrErrorPayload(error).message;
+      return { message, clauses: message.split('; ') };
+    }
+    throw new Error('Expected the OCR request to be rejected');
+  }
+
+  it('collapses a failed input union into one clause naming the wrong key and the fix', () => {
+    const { message, clauses } = rejection({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ kind: 'path', path: 'invoice.jpg' }],
+    });
+    expect(message).toBe(
+      'Invalid OCR request v2: '
+      + "inputs[0]: unknown field 'kind' — did you mean 'type'? (type must be one of: path, stdin, url)",
+    );
+    // Every oneOf branch fails at once; only one of them is worth reporting.
+    expect(clauses).toHaveLength(1);
+    expect(message).not.toContain('oneOf');
+    expect(message).not.toContain('must NOT have additional properties');
+  });
+
+  it('reports only the branch the discriminator selects when a field is missing', () => {
+    const { message, clauses } = rejection({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path' }],
+    });
+    expect(message).toBe("Invalid OCR request v2: inputs[0]: missing required field 'path'");
+    expect(clauses).toHaveLength(1);
+    // The stdin and url branches also failed, and neither is relevant here.
+    expect(message).not.toContain('url');
+  });
+
+  it('lists the discriminator values a schema declares rather than a copy of them', () => {
+    expect(rejection({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'file', path: 'invoice.jpg' }],
+    }).message).toBe('Invalid OCR request v2: inputs[0]: type must be one of: path, stdin, url');
+    expect(rejection({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ path: 'invoice.jpg' }],
+    }).message).toBe(
+      "Invalid OCR request v2: inputs[0]: missing required field 'type' — must be one of: path, stdin, url",
+    );
+    const declared = OCR_PROTOCOL_SCHEMAS.request.properties.inputs.items.oneOf
+      .map((branch) => branch.properties.type.const);
+    expect(declared).toEqual(['path', 'stdin', 'url']);
+  });
+
+  it('names the allowed values for a bad enum and the offending key for an unknown field', () => {
+    expect(rejection({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+      extraction: { mode: 'turbo' },
+    }).message).toBe(
+      'Invalid OCR request v2: extraction.mode: must be one of: simple, template, agentic',
+    );
+    const unknownField = rejection({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+      unknown: true,
+    });
+    expect(unknownField.clauses).toHaveLength(1);
+    expect(unknownField.message).toContain("unknown field 'unknown' — allowed fields: protocolVersion");
+  });
+
+  it('keeps nested and non-union failures readable', () => {
+    expect(rejection({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+      discovery: { exclude: ['build', 3] },
+    }).message).toBe('Invalid OCR request v2: discovery.exclude[1]: must be string');
+    expect(rejection({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+      execution: { timeoutSeconds: 99_999 },
+    }).message).toBe('Invalid OCR request v2: execution.timeoutSeconds: must be <= 3600');
+    expect(rejection({
+      protocolVersion: 2,
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+    }).message).toBe("Invalid OCR request v2: missing required field 'operation'");
+  });
+
+  it('stays single-line and short while preserving the request error contract', () => {
+    const payload = (() => {
+      try {
+        parseOcrJobRequest({
+          protocolVersion: 1,
+          operation: 'extract',
+          inputs: [{ type: 'stdin', name: 'scan.png', mimeType: 'image/png' }],
+          noConfig: true,
+        });
+      } catch (error) {
+        return ocrErrorPayload(error);
+      }
+      throw new Error('Expected the OCR request to be rejected');
+    })();
+    expect(payload.code).toBe('CONFIG_INVALID');
+    expect(payload.category).toBe('configuration');
+    expect(payload.retryable).toBe(false);
+    expect(payload.hint).toBe(
+      'Compare the request with a supported schema using open-ocr-cli schema request-v1 or request-v2.',
+    );
+    expect(payload.message).not.toMatch(/[\n\r]/u);
+    expect(payload.message.length).toBeLessThan(400);
+    expect(payload.message.split('; ').length).toBeLessThanOrEqual(5);
+    expect(payload.message).toContain("unknown field 'noConfig'");
+    expect(payload.message).toContain("inputs[0]: unknown fields 'name', 'mimeType'");
+  });
+});

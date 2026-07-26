@@ -1,11 +1,12 @@
 import { Buffer } from 'node:buffer';
-import { readFile, stat } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import path from 'node:path';
 
 import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
 import type { JsonValue } from '../../../src/lib/gemini/types';
+import { CliExitError } from './errors';
 
 const MAX_SCHEMA_BYTES = 1024 * 1024;
 // Mirrors @google/genai's documented responseJsonSchema subset. `$schema` is
@@ -97,19 +98,57 @@ export function validateCustomSchema(value: unknown): Record<string, unknown> {
   return schema;
 }
 
+function schemaFileError(message: string, cause: unknown): CliExitError {
+  return new CliExitError(message, 2, {
+    cause,
+    code: 'SCHEMA_INVALID',
+    category: 'schema',
+    retryable: false,
+    hint: 'Point --schema at a readable JSON Schema file.',
+  });
+}
+
+/**
+ * Map an unreadable schema path to a typed error naming the path the caller
+ * passed. Left unguarded, the ErrnoException reaches the generic classifier and
+ * reports a raw `ENOENT ... stat '<absolute path>'` instead.
+ */
+function unreadableSchemaError(error: unknown, schemaPath: string): CliExitError | undefined {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === 'ENOENT') return schemaFileError(`Schema file not found: ${schemaPath}`, error);
+  if (code === 'EISDIR') return schemaFileError(`Schema path is not a file: ${schemaPath}`, error);
+  if (code === 'EACCES' || code === 'EPERM') {
+    return schemaFileError(`Schema file is not readable: ${schemaPath}`, error);
+  }
+  return undefined;
+}
+
 export async function loadCustomSchema(schemaPath: string, cwd: string): Promise<Record<string, unknown>> {
   const absolutePath = path.resolve(cwd, schemaPath);
-  const metadata = await stat(absolutePath);
-  if (!metadata.isFile()) throw new Error(`Schema path is not a file: ${schemaPath}`);
-  if (metadata.size > MAX_SCHEMA_BYTES) throw new Error('Schema exceeds the 1 MB safety limit');
-  let parsed: unknown;
+  // Inspect and read through a single handle. Stat-then-read re-resolves the
+  // path and lets the file change between the size check and the read; every
+  // check here applies to the exact bytes we go on to parse.
+  let handle;
   try {
-    parsed = JSON.parse(await readFile(absolutePath, 'utf8')) as unknown;
+    handle = await open(absolutePath, 'r');
   } catch (error) {
-    if (error instanceof SyntaxError) throw new Error(`Invalid JSON in schema ${schemaPath}: ${error.message}`);
-    throw error;
+    throw unreadableSchemaError(error, schemaPath) ?? error;
   }
-  return validateCustomSchema(parsed);
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) throw new Error(`Schema path is not a file: ${schemaPath}`);
+    if (metadata.size > MAX_SCHEMA_BYTES) throw new Error('Schema exceeds the 1 MB safety limit');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await handle.readFile('utf8')) as unknown;
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new Error(`Invalid JSON in schema ${schemaPath}: ${error.message}`);
+      throw unreadableSchemaError(error, schemaPath) ?? error;
+    }
+    return validateCustomSchema(parsed);
+  } finally {
+    await handle.close();
+  }
 }
 
 export function assertCustomSchemaOutput(

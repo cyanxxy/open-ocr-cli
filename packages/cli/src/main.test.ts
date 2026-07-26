@@ -44,7 +44,7 @@ vi.mock('./runner', () => ({
   runBatch: mocks.runBatch,
 }));
 
-import { CliExitError, cliExitCode } from './errors';
+import { CliExitError, cliExitCode, ocrErrorPayload } from './errors';
 import { cliBinaryName, cliVersion, createProgram, main } from './main';
 
 const originalApiKey = process.env.GEMINI_API_KEY;
@@ -166,7 +166,7 @@ describe('CLI command exit contracts', () => {
     expect(mocks.runBatch).not.toHaveBeenCalled();
   });
 
-  it('does not mix protocol events into the established extract --jsonl stream', async () => {
+  it('ends a failed extract --jsonl stream with exactly one typed run.failed record', async () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     let thrown: unknown;
     let output = '';
@@ -181,7 +181,124 @@ describe('CLI command exit contracts', () => {
       output = stdout.mock.calls.flat().join('');
       stdout.mockRestore();
     }
+
     expect(thrown).toMatchObject({ code: 'INPUT_NOT_FOUND' });
+    const records = output.trim().split('\n').map((line) => JSON.parse(line) as { type: string });
+    // Pre-flight rejection: discovery fails before runBatch is ever entered, so
+    // this record can only come from the command's own terminal emitter.
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      type: 'run.failed',
+      error: { code: 'INPUT_NOT_FOUND', category: 'input', retryable: false },
+    });
+    // Only the terminal failure crosses over; the rest of the protocol lifecycle
+    // still stays out of the established document/summary stream.
+    expect(records.map((record) => record.type)).not.toContain('run.started');
+    expect(records.map((record) => record.type)).not.toContain('run.completed');
+  });
+
+  it('reports a mid-run fatal on the --jsonl stream without duplicating it', async () => {
+    const input = path.join(directory, 'document.jpg');
+    await writeFile(input, new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]));
+    mocks.runBatch.mockRejectedValueOnce(new CliExitError('Output already exists: report.md', 2, {
+      code: 'OUTPUT_CONFLICT',
+      category: 'output',
+      retryable: false,
+      hint: 'Choose a new output path or resume a matching job.',
+    }));
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let thrown: unknown;
+    let output = '';
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'extract', input, '--jsonl', '--quiet',
+      ]);
+    } catch (error) {
+      thrown = error;
+    } finally {
+      output = stdout.mock.calls.flat().join('');
+      stdout.mockRestore();
+    }
+
+    expect(cliExitCode(thrown)).toBe(2);
+    const records = output.trim().split('\n');
+    expect(records).toHaveLength(1);
+    expect(JSON.parse(records[0]) as unknown).toMatchObject({
+      type: 'run.failed',
+      error: { code: 'OUTPUT_CONFLICT', category: 'output' },
+    });
+  });
+
+  it('adds no second terminal record when a cancelled batch already ended the --jsonl stream', async () => {
+    const input = path.join(directory, 'document.jpg');
+    await writeFile(input, new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]));
+    // The service turns cancellation into skipped results and returns normally,
+    // so the summary is written before anything downstream can fail.
+    mocks.runBatch.mockImplementationOnce((
+      _inputs: unknown,
+      _options: unknown,
+      runtime: { onTerminalRecord?: () => void },
+    ) => {
+      process.emit('SIGINT');
+      runtime.onTerminalRecord?.();
+      return Promise.reject(new Error('Interrupted by SIGINT'));
+    });
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let output = '';
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'extract', input, '--jsonl', '--quiet',
+      ]);
+    } finally {
+      output = stdout.mock.calls.flat().join('');
+      stdout.mockRestore();
+    }
+
+    expect(output).toBe('');
+    expect(process.exitCode).toBe(130);
+  });
+
+  it('ends a cancelled --jsonl run that died before its summary with one run.failed', async () => {
+    const input = path.join(directory, 'document.jpg');
+    await writeFile(input, new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]));
+    mocks.runBatch.mockImplementationOnce(() => {
+      process.emit('SIGINT');
+      return Promise.reject(new Error('Interrupted by SIGINT'));
+    });
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let output = '';
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'extract', input, '--jsonl', '--quiet',
+      ]);
+    } finally {
+      output = stdout.mock.calls.flat().join('');
+      stdout.mockRestore();
+    }
+
+    // No summary exists, so the interrupt owes the stream its terminal record.
+    const records = output.trim().split('\n').map((line) => JSON.parse(line) as { type: string });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      type: 'run.failed',
+      error: { code: 'CANCELLED', category: 'cancelled' },
+    });
+    expect(process.exitCode).toBe(130);
+  });
+
+  it('leaves stdout untouched on failure when --jsonl was not requested', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let output = '';
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'extract', path.join(directory, 'missing.png'), '--quiet',
+      ]);
+    } catch {
+      // The typed error is asserted elsewhere; this covers stream discipline.
+    } finally {
+      output = stdout.mock.calls.flat().join('');
+      stdout.mockRestore();
+    }
     expect(output).toBe('');
   });
 
@@ -201,6 +318,175 @@ describe('CLI command exit contracts', () => {
       code: 'CONFIG_INVALID',
       message: '--config and --no-config are mutually exclusive',
     });
+  });
+
+  it('reports a missing input before a missing credential', async () => {
+    delete process.env.GEMINI_API_KEY;
+
+    let thrown: unknown;
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'extract', path.join(directory, 'missing.png'), '--quiet',
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    // capabilities advertises credential-free-dry-run, so a live run and a dry
+    // run must agree on the first error for identical input.
+    expect(thrown).toMatchObject({ code: 'INPUT_NOT_FOUND' });
+    expect((thrown as Error).message).not.toContain('API key is missing');
+    expect(mocks.runBatch).not.toHaveBeenCalled();
+  });
+
+  it('reports an out-of-range numeric flag as a configuration error, not a retryable timeout', async () => {
+    delete process.env.GEMINI_API_KEY;
+    const input = path.join(directory, 'document.png');
+    await writeFile(input, 'binary');
+
+    let thrown: unknown;
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'extract', input, '--timeout', '0', '--quiet',
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      code: 'CONFIG_INVALID',
+      category: 'configuration',
+      retryable: false,
+    });
+    expect((thrown as Error).message).toBe('--timeout must be an integer from 1 to 3600');
+    expect(cliExitCode(thrown)).toBe(2);
+    expect(mocks.runBatch).not.toHaveBeenCalled();
+  });
+
+  it('still requires a credential once flags and inputs resolve', async () => {
+    delete process.env.GEMINI_API_KEY;
+    const input = path.join(directory, 'document.png');
+    await writeFile(input, 'binary');
+
+    let thrown: unknown;
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'extract', input, '--quiet',
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ code: 'AUTH_MISSING', category: 'authentication' });
+    expect((thrown as Error).message).toContain('Gemini API key is missing');
+    expect((thrown as Error).message).toContain('PowerShell');
+    expect(mocks.runBatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps --dry-run credential-free for a resolvable input', async () => {
+    delete process.env.GEMINI_API_KEY;
+    const input = path.join(directory, 'document.png');
+    await writeFile(input, 'binary');
+    mocks.runBatch.mockResolvedValueOnce({
+      succeeded: 0, partial: 0, failed: 0, skipped: 1, costLimitReached: false,
+      usage: { totalTokens: 0, requests: 0, estimatedCostUsd: 0 },
+    });
+
+    await createProgram().parseAsync([
+      'node', 'open-ocr-cli', 'extract', input, '--dry-run', '--quiet',
+    ]);
+
+    expect(mocks.runBatch).toHaveBeenCalledTimes(1);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('rejects a preset the named mode would silently discard', async () => {
+    const input = path.join(directory, 'invoice.png');
+    await writeFile(input, 'binary');
+
+    let thrown: unknown;
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'extract', input, '--mode', 'simple', '--preset', 'invoice', '--quiet',
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ code: 'CONFIG_INVALID' });
+    expect((thrown as Error).message).toBe('--preset is only available in template mode');
+    expect(cliExitCode(thrown)).toBe(2);
+    expect(mocks.runBatch).not.toHaveBeenCalled();
+  });
+
+  it('warns on stderr about flags the resolved mode will ignore', async () => {
+    const input = path.join(directory, 'document.png');
+    await writeFile(input, 'binary');
+    mocks.runBatch.mockResolvedValueOnce({
+      succeeded: 1, partial: 0, failed: 0, skipped: 0, costLimitReached: false,
+      usage: { totalTokens: 10, requests: 1, estimatedCostUsd: 0 },
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let output = '';
+
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'extract', input,
+        '--max-iterations', '9', '--confidence-threshold', '0.5', '--detect-math', '--quiet',
+      ]);
+    } finally {
+      output = stderr.mock.calls.flat().join('');
+      stderr.mockRestore();
+    }
+
+    expect(output).toContain(
+      'ignoring option(s) that simple mode does not use: --max-iterations, --confidence-threshold\n',
+    );
+    expect(mocks.runBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not warn about mode-scoped flags the user never passed', async () => {
+    const input = path.join(directory, 'document.png');
+    await writeFile(input, 'binary');
+    mocks.runBatch.mockResolvedValueOnce({
+      succeeded: 1, partial: 0, failed: 0, skipped: 0, costLimitReached: false,
+      usage: { totalTokens: 10, requests: 1, estimatedCostUsd: 0 },
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let output = '';
+
+    try {
+      // --mode agentic leaves --detect-images/--detect-math unused, but neither
+      // was typed, and --exclude/--instruction carry Commander [] defaults.
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'extract', input, '--mode', 'agentic', '--quiet',
+      ]);
+    } finally {
+      output = stderr.mock.calls.flat().join('');
+      stderr.mockRestore();
+    }
+
+    expect(output).not.toContain('ignoring option(s)');
+  });
+
+  it('reports an unreadable web URL list before a missing credential', async () => {
+    delete process.env.GEMINI_API_KEY;
+
+    let thrown: unknown;
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'web', '--file', path.join(directory, 'urls.txt'), '--quiet',
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ code: 'INPUT_NOT_FOUND', category: 'input' });
+    expect((thrown as Error).message).toBe(
+      `URL list file not found: ${path.join(directory, 'urls.txt')}`,
+    );
+    expect((thrown as Error).message).not.toContain('ENOENT');
+    expect(mocks.runWebJob).not.toHaveBeenCalled();
   });
 
   it('classifies Web OCR runtime failures as exit code 1', async () => {
@@ -250,6 +536,30 @@ describe('CLI command exit contracts', () => {
     expect(mocks.runWebJob).not.toHaveBeenCalled();
   });
 
+  it('reports an existing Web output before a missing credential', async () => {
+    delete process.env.GEMINI_API_KEY;
+    const output = path.join(directory, 'result.md');
+    await writeFile(output, 'existing');
+
+    let thrown: unknown;
+    try {
+      await createProgram().parseAsync([
+        'node', 'open-ocr-cli', 'web', 'https://example.com/report', '--output', output, '--quiet',
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    // capabilities advertises credential-free-dry-run, so the credential-free
+    // dry run above and this live run have to name the same first problem.
+    expect(ocrErrorPayload(thrown, 2)).toMatchObject({
+      code: 'OUTPUT_CONFLICT',
+      category: 'output',
+    });
+    expect((thrown as Error).message).not.toContain('API key is missing');
+    expect(mocks.runWebJob).not.toHaveBeenCalled();
+  });
+
   it('reports an explicit skipped credential probe without making a request', async () => {
     delete process.env.GEMINI_API_KEY;
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -267,6 +577,49 @@ describe('CLI command exit contracts', () => {
       expect(process.exitCode).toBe(1);
     } finally {
       stdout.mockRestore();
+    }
+  });
+
+  it('marks whether the reported project config paths exist', async () => {
+    const projectConfig = path.join(directory, '.open-ocr-cli.json');
+    const legacyProjectConfig = path.join(directory, '.gemini-ocr.json');
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(directory);
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const read = (): string => stdout.mock.calls.flat().join('');
+    try {
+      await createProgram().parseAsync(['node', 'open-ocr-cli', 'doctor', '--no-config', '--json']);
+      expect(JSON.parse(read()) as Record<string, unknown>).toMatchObject({
+        projectConfig,
+        projectConfigExists: false,
+        legacyProjectConfig,
+        legacyProjectConfigExists: false,
+      });
+
+      stdout.mockClear();
+      await createProgram().parseAsync(['node', 'open-ocr-cli', 'doctor', '--no-config']);
+      expect(read()).toContain(`Project config: ${projectConfig} (not found)`);
+      expect(read()).not.toContain('Legacy project config:');
+
+      await writeFile(projectConfig, '{}', 'utf8');
+      await writeFile(legacyProjectConfig, '{}', 'utf8');
+
+      stdout.mockClear();
+      await createProgram().parseAsync(['node', 'open-ocr-cli', 'doctor', '--no-config', '--json']);
+      expect(JSON.parse(read()) as Record<string, unknown>).toMatchObject({
+        projectConfig,
+        projectConfigExists: true,
+        legacyProjectConfig,
+        legacyProjectConfigExists: true,
+      });
+
+      stdout.mockClear();
+      await createProgram().parseAsync(['node', 'open-ocr-cli', 'doctor', '--no-config']);
+      expect(read()).toContain(`Project config: ${projectConfig}\n`);
+      expect(read()).not.toContain('(not found)');
+      expect(read()).toContain(`Legacy project config: ${legacyProjectConfig}\n`);
+    } finally {
+      stdout.mockRestore();
+      cwd.mockRestore();
     }
   });
 });

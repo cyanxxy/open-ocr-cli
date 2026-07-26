@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -258,6 +258,58 @@ describe('OcrJobService', () => {
     expect(extractDocument).not.toHaveBeenCalled();
     expect(execution.result.ok).toBe(false);
     expect(execution.result.documents[0]?.error?.code).toBe('INPUT_INVALID');
+  });
+
+  it('does not let a dry run approve an output path the live run would reject', async () => {
+    const documentPath = path.join(directory, 'invoice.jpg');
+    const outputDirectory = path.join(directory, 'artifacts');
+    await writeFile(documentPath, JPEG_BYTES);
+    await mkdir(outputDirectory, { recursive: true });
+    await writeFile(path.join(outputDirectory, 'invoice.md'), 'already extracted');
+    const options = resolveCliOptions({ dryRun: true, output: outputDirectory }, {}, directory);
+    const inputs = await discoverInputs([documentPath], options);
+    const extractDocument = vi.fn<OcrDocumentExtractor>();
+
+    // An occupied destination needs neither a credential nor a provider call to
+    // detect, so a dry run must name it rather than validate a job that cannot run.
+    await expect(new OcrJobService({ extractDocument }).run(inputs, options, {
+      runId: 'dry-run-output-conflict',
+      abortController: new AbortController(),
+    })).rejects.toMatchObject({ code: 'OUTPUT_CONFLICT', category: 'output' });
+    expect(extractDocument).not.toHaveBeenCalled();
+  });
+
+  it('lets a dry run plan a document the live run would resume past its existing output', async () => {
+    const documentPath = path.join(directory, 'invoice.jpg');
+    const outputDirectory = path.join(directory, 'resumable');
+    await writeFile(documentPath, JPEG_BYTES);
+    const liveOptions = {
+      ...resolveCliOptions({ output: outputDirectory }, {}, directory),
+      apiKey: 'test-key',
+      quiet: true,
+    };
+    const inputs = await discoverInputs([documentPath], liveOptions);
+    const extractDocument = vi.fn<OcrDocumentExtractor>(() => Promise.resolve({
+      artifacts: { markdown: '# Extracted' },
+      attempts: 1,
+    }));
+    await new OcrJobService({ extractDocument }).run(inputs, liveOptions, {
+      runId: 'resume-seed-run',
+      abortController: new AbortController(),
+      enableSingleInputResume: true,
+    });
+
+    // The artifact now exists, but resume owns it. Reporting it as a conflict
+    // would make the dry run fail where the live run succeeds.
+    const dryRunOptions = { ...liveOptions, dryRun: true };
+    const execution = await new OcrJobService({ extractDocument }).run(inputs, dryRunOptions, {
+      runId: 'resume-dry-run',
+      abortController: new AbortController(),
+      enableSingleInputResume: true,
+    });
+
+    expect(execution.result.status).toBe('validated');
+    expect(extractDocument).toHaveBeenCalledOnce();
   });
 
   it('does not let dry runs approve an explicitly unsupported provider/input pair', async () => {

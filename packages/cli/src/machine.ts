@@ -1,11 +1,19 @@
 import { Buffer } from 'node:buffer';
-import { readFile, stat } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 
-import { loadCliConfig, loadLocalEnv, resolveCliOptions } from './config';
+import {
+  assertCredentialsAvailable,
+  ignoredModeScopedOptionWarning,
+  ignoredModeScopedOptions,
+  loadCliConfig,
+  loadLocalEnv,
+  resolveCliOptions,
+  type ModeScopedOptionKey,
+} from './config';
 import { CliExitError } from './errors';
-import { discoverInputs } from './inputs';
+import { describeDiscoverySkips, discoverInputSet } from './inputs';
 import { createOcrJobService } from './runner';
 import type { OcrJobServiceResult } from './ocrJobService';
 import { loadCustomSchema, validateCustomSchema } from './schema';
@@ -44,6 +52,32 @@ function requestTooLarge(): CliExitError {
 
 function abortReason(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new Error('Operation aborted');
+}
+
+function requestNotReadable(message: string, cause: unknown): CliExitError {
+  return new CliExitError(message, 2, {
+    cause,
+    code: 'INPUT_NOT_FOUND',
+    category: 'input',
+    retryable: false,
+    hint: 'Check the request path and working directory.',
+  });
+}
+
+/**
+ * Map an unreadable request path to a typed protocol error.
+ *
+ * A raw ErrnoException would fall through every classifier into a generic
+ * failure carrying the resolved absolute path, which redaction does not strip.
+ */
+function requestPathError(error: unknown, requestPath: string): CliExitError | undefined {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === 'ENOENT') return requestNotReadable(`OCR request file not found: ${requestPath}`, error);
+  if (code === 'EISDIR') return requestNotReadable(`OCR request path is not a file: ${requestPath}`, error);
+  if (code === 'EACCES' || code === 'EPERM') {
+    return requestNotReadable(`OCR request file is not readable: ${requestPath}`, error);
+  }
+  return undefined;
 }
 
 export async function readStandardInput(
@@ -87,8 +121,24 @@ export async function readOcrJobRequestRaw(requestPath: string, cwd: string, sig
     raw = await readStandardInput(signal);
   } else {
     const absolutePath = path.resolve(cwd, requestPath);
-    if ((await stat(absolutePath)).size > MAX_REQUEST_BYTES) throw requestTooLarge();
-    raw = await readFile(absolutePath, 'utf8');
+    // Size-check and read through one handle. Stat-then-read re-resolves the
+    // path, so the file could be swapped for a larger one between the guard and
+    // the read; the guard must describe the bytes actually loaded.
+    let handle;
+    try {
+      handle = await open(absolutePath, 'r');
+    } catch (error) {
+      throw requestPathError(error, requestPath) ?? error;
+    }
+    try {
+      if ((await handle.stat()).size > MAX_REQUEST_BYTES) throw requestTooLarge();
+      raw = await handle.readFile('utf8');
+    } catch (error) {
+      if (error instanceof CliExitError) throw error;
+      throw requestPathError(error, requestPath) ?? error;
+    } finally {
+      await handle.close();
+    }
     if (Buffer.byteLength(raw) > MAX_REQUEST_BYTES) throw requestTooLarge();
   }
   let parsed: unknown;
@@ -165,6 +215,27 @@ function requestFlags(request: OcrJobRequest, outputDirectory?: string): Extract
     verbose: false,
     dryRun: request.dryRun,
   };
+}
+
+/**
+ * Mode-scoped extraction fields the request actually set.
+ *
+ * Read from the request rather than from {@link requestFlags}, which fills in a
+ * default `progress` for every v2 request and would otherwise report a field
+ * the caller never sent.
+ */
+function suppliedModeScopedFields(request: OcrJobRequest): ModeScopedOptionKey[] {
+  const extraction = request.extraction;
+  if (!extraction) return [];
+  const supplied: ModeScopedOptionKey[] = [];
+  if (extraction.detectImages !== undefined) supplied.push('detectImages');
+  if (extraction.detectMath !== undefined) supplied.push('detectMath');
+  if (extraction.instructions !== undefined && extraction.instructions.length > 0) supplied.push('instructions');
+  if (extraction.maxTokens !== undefined) supplied.push('maxTokens');
+  if (extraction.maxIterations !== undefined) supplied.push('maxIterations');
+  if (extraction.confidenceThreshold !== undefined) supplied.push('confidenceThreshold');
+  if (extraction.progress !== undefined) supplied.push('progress');
+  return supplied;
 }
 
 function machineConfigurationError(request: OcrJobRequest, fileConfig: CliConfigFile): string | undefined {
@@ -262,8 +333,18 @@ export async function executeOcrJobRequest(
     ...(stdinInput?.name ? { stdinName: stdinInput.name } : {}),
     ...(stdinInput?.mimeType ? { stdinType: stdinInput.mimeType } : {}),
   };
+  // Ignored fields are reported on the warning channel: the v1/v2 result and
+  // event schemas are strict, so a new response field would break consumers
+  // that validate against the published contract.
+  const ignoredWarning = ignoredModeScopedOptionWarning(
+    ignoredModeScopedOptions(suppliedModeScopedFields(request), options.mode),
+    options.mode,
+    'field',
+  );
+  if (ignoredWarning) execution.onWarning?.(ignoredWarning);
   if (urlInputs.length > 0) {
     const urls = await resolveWebUrls(urlInputs.map((input) => input.url), undefined, execution.cwd);
+    assertCredentialsAvailable(options);
     return runWebJob(urls, request.web?.analysis ?? 'individual', options, {
       runId: execution.runId,
       abortController: execution.abortController,
@@ -277,10 +358,17 @@ export async function executeOcrJobRequest(
       enableSingleInputResume: deliveryMode === 'reference',
     });
   }
-  const inputs = await discoverInputs(request.inputs.map((input) => (
+  const discovery = await discoverInputSet(request.inputs.map((input) => (
     input.type === 'stdin' ? '-' : input.type === 'path' ? input.path : input.url
   )), options, execution.abortController.signal);
-  return createOcrJobService().run(inputs, options, {
+  // A directory scan that drops files hands back fewer documents than were
+  // requested, which the caller has to hear about. It rides the warning channel
+  // for the same reason ignored fields do — the v1/v2 result and event schemas
+  // are strict — and reuses the CLI's wording so both surfaces say one thing.
+  const skipSummary = describeDiscoverySkips(discovery.skipped);
+  if (skipSummary) execution.onWarning?.(`Discovery: ${skipSummary}`);
+  assertCredentialsAvailable(options);
+  return createOcrJobService().run(discovery.inputs, options, {
     runId: execution.runId,
     abortController: execution.abortController,
     eventSink: execution.eventSink,

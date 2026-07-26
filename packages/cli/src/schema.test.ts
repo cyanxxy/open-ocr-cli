@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { ocrErrorPayload } from './errors';
 import { assertCustomSchemaOutput, loadCustomSchema, validateCustomSchema } from './schema';
 
 let directory: string;
@@ -58,6 +59,33 @@ describe('custom JSON schemas', () => {
     const schemaPath = path.join(directory, 'external-ref.json');
     await writeFile(schemaPath, JSON.stringify({ $ref: 'https://example.com/schema.json' }));
     await expect(loadCustomSchema(schemaPath, directory)).rejects.toThrow('this schema document');
+  });
+
+  it('names an unreadable schema path instead of leaking a raw errno', async () => {
+    let thrown: unknown;
+    try {
+      await loadCustomSchema('nope.json', directory);
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as Error).message).toBe('Schema file not found: nope.json');
+    // The unguarded stat() previously surfaced `ENOENT ... stat '<absolute>'`,
+    // and redaction strips credentials but never filesystem paths.
+    expect((thrown as Error).message).not.toContain('ENOENT');
+    expect((thrown as Error).message).not.toContain(directory);
+    expect(ocrErrorPayload(thrown, 2)).toMatchObject({
+      code: 'SCHEMA_INVALID',
+      category: 'schema',
+      retryable: false,
+    });
+  });
+
+  it('keeps the adjacent directory and malformed-JSON schema errors typed', async () => {
+    await expect(loadCustomSchema('.', directory)).rejects.toThrow('Schema path is not a file: .');
+    const schemaPath = path.join(directory, 'broken.json');
+    await writeFile(schemaPath, '{ not valid JSON');
+    await expect(loadCustomSchema(schemaPath, directory))
+      .rejects.toThrow('Invalid JSON in schema');
   });
 
   it('validates and clones inline schemas for machine requests', () => {

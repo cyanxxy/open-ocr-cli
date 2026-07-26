@@ -23,6 +23,7 @@ import {
   type ProviderId,
 } from '../../../src/lib/providers';
 import { getExtractionPreset } from '../../../src/lib/templates';
+import { CliExitError } from './errors';
 import { asRecord } from './jsonValidation';
 import {
   CLI_FORMATS,
@@ -51,6 +52,7 @@ const DEFAULT_CONFIG: Required<Pick<
   | 'maxFiles'
   | 'maxTotalMb'
   | 'hidden'
+  | 'defaultExcludes'
   | 'resume'
   | 'overwrite'
   | 'failFast'
@@ -80,6 +82,7 @@ const DEFAULT_CONFIG: Required<Pick<
   maxFiles: 1000,
   maxTotalMb: 5120,
   hidden: false,
+  defaultExcludes: true,
   resume: true,
   overwrite: false,
   failFast: false,
@@ -96,6 +99,45 @@ const DEFAULT_CONFIG: Required<Pick<
   requestsPerMinute: 0,
 };
 
+/**
+ * A permanent request error: the flags, request fields, or configuration file
+ * are wrong and rerunning the identical command cannot succeed.
+ *
+ * These are typed at the throw site rather than left as bare `Error`s so
+ * `asCliExitError` short-circuits before the legacy message-substring
+ * classifier, which would otherwise read an option name such as `--timeout`
+ * as evidence of a retryable runtime timeout.
+ */
+function configurationError(message: string): CliExitError {
+  return new CliExitError(message, 2, {
+    code: 'CONFIG_INVALID',
+    category: 'configuration',
+    retryable: false,
+    hint: 'Check the request, command flags, and configuration.',
+  });
+}
+
+/** A missing provider or gateway credential, reported after local validation. */
+function credentialError(message: string): CliExitError {
+  return new CliExitError(message, 2, {
+    code: 'AUTH_MISSING',
+    category: 'authentication',
+    retryable: false,
+    hint: 'Configure the named credential environment variable; never pass a raw key as an argument.',
+  });
+}
+
+/** Map an unreadable configuration path to a typed error instead of a raw errno. */
+function configFileError(error: unknown, displayPath: string): CliExitError | undefined {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === 'ENOENT') return configurationError(`Configuration file not found: ${displayPath}`);
+  if (code === 'EISDIR') return configurationError(`Configuration path is not a file: ${displayPath}`);
+  if (code === 'EACCES' || code === 'EPERM') {
+    return configurationError(`Configuration file is not readable: ${displayPath}`);
+  }
+  return undefined;
+}
+
 function pickConfig(value: Record<string, unknown>, label: string): CliConfigFile {
   const stringKeys = [
     'provider', 'gateway', 'model', 'baseUrl', 'thinking', 'progress', 'mode', 'preset', 'format', 'output',
@@ -108,7 +150,7 @@ function pickConfig(value: Record<string, unknown>, label: string): CliConfigFil
     'inputPricePerMillionUsd', 'outputPricePerMillionUsd',
   ] as const;
   const booleanKeys = [
-    'includeThoughts', 'resume', 'overwrite', 'failFast', 'hidden', 'detectImages',
+    'includeThoughts', 'resume', 'overwrite', 'failFast', 'hidden', 'defaultExcludes', 'detectImages',
     'detectMath', 'cloudflareByok',
   ] as const;
   const arrayKeys = ['exclude', 'instructions'] as const;
@@ -146,15 +188,21 @@ function pickConfig(value: Record<string, unknown>, label: string): CliConfigFil
   return allowlisted as CliConfigFile;
 }
 
-async function readConfigFile(filePath: string, required: boolean): Promise<CliConfigFile> {
+async function readConfigFile(
+  filePath: string,
+  required: boolean,
+  displayPath = filePath,
+): Promise<CliConfigFile> {
   try {
     const raw = await readFile(filePath, 'utf8');
     return pickConfig(asRecord(JSON.parse(raw) as unknown, filePath), filePath);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (!required && code === 'ENOENT') return {};
-    if (error instanceof SyntaxError) throw new Error(`Invalid JSON in ${filePath}: ${error.message}`);
-    throw error;
+    if (error instanceof SyntaxError) throw configurationError(`Invalid JSON in ${filePath}: ${error.message}`);
+    // An explicitly requested config file that cannot be read is a request
+    // error; reporting the raw errno would leak the resolved absolute path.
+    throw configFileError(error, displayPath) ?? error;
   }
 }
 
@@ -195,7 +243,7 @@ export async function loadCliConfig(
   const hermetic = disabled || environmentDisablesConfig();
   if (hermetic && !explicitPath) return {};
   const explicit = explicitPath
-    ? await readConfigFile(path.resolve(cwd, explicitPath), true)
+    ? await readConfigFile(path.resolve(cwd, explicitPath), true, explicitPath)
     : {};
   // Hermetic mode may still load one explicit config file, but never ambient
   // user/project files that could reintroduce baseUrl or credential env names.
@@ -238,7 +286,7 @@ function integer(value: string | number | undefined, fallback: number, label: st
   if (value === undefined) return fallback;
   const parsed = typeof value === 'number' ? value : Number(value);
   if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw new Error(`${label} must be an integer from ${min} to ${max}`);
+    throw configurationError(`${label} must be an integer from ${min} to ${max}`);
   }
   return parsed;
 }
@@ -247,7 +295,7 @@ function numberInRange(value: string | number | undefined, fallback: number, lab
   if (value === undefined) return fallback;
   const parsed = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
-    throw new Error(`${label} must be between ${min} and ${max}`);
+    throw configurationError(`${label} must be between ${min} and ${max}`);
   }
   return parsed;
 }
@@ -264,7 +312,7 @@ function optionalNumberInRange(
 
 function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], label: string, fallback: T): T {
   if (value === undefined) return fallback;
-  if (!allowed.includes(value as T)) throw new Error(`${label} must be one of: ${allowed.join(', ')}`);
+  if (!allowed.includes(value as T)) throw configurationError(`${label} must be one of: ${allowed.join(', ')}`);
   return value as T;
 }
 
@@ -300,9 +348,9 @@ export function resolveCliOptions(
   const model = selectedModel
     ?? configuredModel
     ?? providerDefaultModel(provider);
-  if (!model) throw new Error('--model is required for the openai-compatible provider');
+  if (!model) throw configurationError('--model is required for the openai-compatible provider');
   if (provider === 'gemini' && !GEMINI_MODELS.includes(model as (typeof GEMINI_MODELS)[number])) {
-    throw new Error(`--model must be one of: ${SUPPORTED_MODELS.join(', ')}`);
+    throw configurationError(`--model must be one of: ${SUPPORTED_MODELS.join(', ')}`);
   }
   const modelContextMatches = providerContextMatches
     && (selectedModel === undefined || selectedModel === configuredModel);
@@ -342,35 +390,40 @@ export function resolveCliOptions(
   );
 
   if (!isKimiK3 && provider !== 'openrouter' && thinking === 'MAX') {
-    throw new Error('--thinking max is supported by Kimi K3 and model-dependent OpenRouter routes');
+    throw configurationError('--thinking max is supported by Kimi K3 and model-dependent OpenRouter routes');
   }
   if (provider !== 'openrouter' && provider !== 'muse' && thinking === 'XHIGH') {
-    throw new Error('--thinking xhigh is supported by Muse and model-dependent OpenRouter routes');
+    throw configurationError('--thinking xhigh is supported by Muse and model-dependent OpenRouter routes');
   }
   if (provider === 'gemini' && model === 'gemini-3.1-pro-preview' && thinking === 'MINIMAL') {
-    throw new Error('Gemini 3.1 Pro supports --thinking low, medium, or high; minimal is not supported');
+    throw configurationError('Gemini 3.1 Pro supports --thinking low, medium, or high; minimal is not supported');
   }
   if (isKimiK3 && thinking === 'MEDIUM') {
-    throw new Error('Kimi K3 supports --thinking low, high, or max; medium would be an ambiguous silent upgrade');
+    throw configurationError('Kimi K3 supports --thinking low, high, or max; medium would be an ambiguous silent upgrade');
   }
   if (isKimiK3 && thinking === 'XHIGH') {
-    throw new Error('Kimi K3 supports --thinking low, high, or max; xhigh is not a Kimi K3 effort');
+    throw configurationError('Kimi K3 supports --thinking low, high, or max; xhigh is not a Kimi K3 effort');
   }
   if (isKimiK3 && thinking === 'MINIMAL') {
     thinking = 'LOW';
   }
   if (provider === 'kimi' && /^kimi-k2\.7-code/u.test(model) && thinking !== 'HIGH') {
-    throw new Error('Kimi K2.7 Code always thinks and does not expose configurable reasoning effort; use --thinking high');
+    throw configurationError('Kimi K2.7 Code always thinks and does not expose configurable reasoning effort; use --thinking high');
   }
   if (provider === 'kimi' && model === 'kimi-k2.6' && thinking !== 'MINIMAL' && thinking !== 'HIGH') {
-    throw new Error('Direct Kimi K2.6 supports only instant mode (--thinking minimal) or thinking mode (--thinking high)');
+    throw configurationError('Direct Kimi K2.6 supports only instant mode (--thinking minimal) or thinking mode (--thinking high)');
   }
-  if (hasSchema && preset) throw new Error('--schema cannot be combined with --preset');
-  if (effectiveMode === 'template' && !preset) throw new Error('--preset is required when --mode template is selected');
+  if (hasSchema && preset) throw configurationError('--schema cannot be combined with --preset');
+  if (effectiveMode === 'template' && !preset) throw configurationError('--preset is required when --mode template is selected');
+  // A preset only implies template mode when no mode is named. Without this the
+  // converse rule, an explicit --mode (or a `mode` config key) would silently
+  // demote the preset to an inert option, exactly as `run` and `mcp` already
+  // refuse to do (see ocrExtractionSemanticError in protocol.ts).
+  if (preset && effectiveMode !== 'template') throw configurationError('--preset is only available in template mode');
   if (preset) getExtractionPreset(preset);
-  if (format === 'csv' && effectiveMode !== 'template') throw new Error('--format csv is only available in template mode');
-  if (hasSchema && effectiveMode !== 'simple') throw new Error('--schema is only available in simple mode');
-  if (hasSchema && format !== 'json') throw new Error('--schema requires --format json');
+  if (format === 'csv' && effectiveMode !== 'template') throw configurationError('--format csv is only available in template mode');
+  if (hasSchema && effectiveMode !== 'simple') throw configurationError('--schema is only available in simple mode');
+  if (hasSchema && format !== 'json') throw configurationError('--schema requires --format json');
   const defaultMaxTokens = isKimiK3
     // Agentic K3 can issue many continuations; keep a safer default budget
     // unless the operator opts into the full protocol ceiling.
@@ -389,7 +442,7 @@ export function resolveCliOptions(
     && model.includes('kimi-k2.6')
     && maxTokens < 16_000
   ) {
-    throw new Error('--max-tokens must be at least 16000 for Kimi K2.6 agentic tool use with thinking enabled');
+    throw configurationError('--max-tokens must be at least 16000 for Kimi K2.6 agentic tool use with thinking enabled');
   }
 
   const cloudflareAccountId = flags.cloudflareAccountId
@@ -419,23 +472,15 @@ export function resolveCliOptions(
   const cloudflareByokAlias = flags.cloudflareByokAlias
     ?? (providerContextMatches && gatewayContextMatches ? fileConfig.cloudflareByokAlias : undefined);
   if (cloudflareByok && gateway !== 'cloudflare') {
-    throw new Error('--cloudflare-byok requires --gateway cloudflare');
+    throw configurationError('--cloudflare-byok requires --gateway cloudflare');
   }
   if (cloudflareByokAlias && !cloudflareByok) {
-    throw new Error('--cloudflare-byok-alias requires --cloudflare-byok');
-  }
-  const permitsMissingKey = cloudflareByok || (provider === 'openai-compatible' && isLocalBaseUrl(baseUrl));
-  if (!apiKey && !permitsMissingKey && !flags.dryRun) {
-    const providerLabel = provider === 'gemini' ? 'Gemini' : provider === 'kimi' ? 'Kimi' : provider === 'muse' ? 'Muse' : provider;
-    throw new Error(`${providerLabel} API key is missing.\n${credentialSetupGuidance(apiKeyEnv, cwd, providerLabel)}`);
+    throw configurationError('--cloudflare-byok-alias requires --cloudflare-byok');
   }
   const gatewayTokenEnv = flags.cloudflareTokenEnv
     ?? fileConfig.cloudflareTokenEnv
     ?? 'CLOUDFLARE_AI_GATEWAY_TOKEN';
   const gatewayToken = gateway === 'cloudflare' ? process.env[gatewayTokenEnv]?.trim() : undefined;
-  if (gateway === 'cloudflare' && cloudflareByok && !gatewayToken && !flags.dryRun) {
-    throw new Error(`Cloudflare BYOK requires ${gatewayTokenEnv} for gateway authentication`);
-  }
   const hasFlagPrice = flags.inputPrice !== undefined || flags.outputPrice !== undefined;
   const inputPricePerMillionUsd = optionalNumberInRange(
     hasFlagPrice
@@ -454,7 +499,7 @@ export function resolveCliOptions(
     1_000_000,
   );
   if ((inputPricePerMillionUsd === undefined) !== (outputPricePerMillionUsd === undefined)) {
-    throw new Error('--input-price and --output-price must be supplied together');
+    throw configurationError('--input-price and --output-price must be supplied together');
   }
   const maxCostUsd = optionalNumberInRange(
     flags.maxCost ?? fileConfig.maxCostUsd,
@@ -469,7 +514,7 @@ export function resolveCliOptions(
     outputPricePerMillionUsd,
   }, 0) !== undefined;
   if (maxCostUsd !== undefined && !canAccountCost) {
-    throw new Error(
+    throw configurationError(
       `--max-cost for ${provider}/${model} requires both --input-price and --output-price because the API does not report a portable cost`,
     );
   }
@@ -508,6 +553,7 @@ export function resolveCliOptions(
     excludes: [...(fileConfig.exclude ?? []), ...(flags.exclude ?? [])],
     instructions: [...(fileConfig.instructions ?? []), ...(flags.instruction ?? [])],
     hidden: flags.hidden ?? fileConfig.hidden ?? DEFAULT_CONFIG.hidden,
+    defaultExcludes: flags.defaultExcludes ?? fileConfig.defaultExcludes ?? DEFAULT_CONFIG.defaultExcludes,
     resume: flags.resume ?? fileConfig.resume ?? DEFAULT_CONFIG.resume,
     overwrite: flags.overwrite ?? fileConfig.overwrite ?? DEFAULT_CONFIG.overwrite,
     forceUnlock: flags.forceUnlock ?? false,
@@ -540,4 +586,106 @@ export function resolveCliOptions(
     ),
     cwd,
   };
+}
+
+/**
+ * Require the credentials a live run needs.
+ *
+ * Deliberately separate from {@link resolveCliOptions} so every front end can
+ * finish local validation — flags, configuration, and input discovery — before
+ * asking for a key. `capabilities` advertises `credential-free-dry-run`, so a
+ * dry run must reach the same first error as a real run rather than stopping on
+ * a missing credential the plan never uses.
+ */
+export function assertCredentialsAvailable(options: ResolvedCliOptions): void {
+  if (options.dryRun) return;
+  const permitsMissingKey = options.cloudflareByok
+    || (options.provider === 'openai-compatible' && isLocalBaseUrl(options.baseUrl));
+  if (!options.apiKey && !permitsMissingKey) {
+    const providerLabel = options.provider === 'gemini'
+      ? 'Gemini'
+      : options.provider === 'kimi'
+        ? 'Kimi'
+        : options.provider === 'muse' ? 'Muse' : options.provider;
+    throw credentialError(
+      `${providerLabel} API key is missing.\n`
+      + credentialSetupGuidance(options.apiKeyEnv, options.cwd, providerLabel),
+    );
+  }
+  const gatewayTokenEnv = options.gatewayTokenEnv ?? 'CLOUDFLARE_AI_GATEWAY_TOKEN';
+  if (options.gateway === 'cloudflare' && options.cloudflareByok && !options.gatewayToken) {
+    throw credentialError(`Cloudflare BYOK requires ${gatewayTokenEnv} for gateway authentication`);
+  }
+}
+
+/** An option whose resolved value only reaches the provider in some OCR modes. */
+interface ModeScopedOption {
+  /** Flag name on the `extract` command. */
+  flag: string;
+  /** Field name in a machine-protocol request. */
+  field: string;
+  /** Modes that actually consume the option. */
+  modes: readonly CliMode[];
+}
+
+/**
+ * Options the runner reads in only some modes. Kept beside the resolver so a
+ * new mode-scoped option is warned about at the same time it is added, instead
+ * of being silently discarded like `--max-iterations` was in simple mode.
+ */
+const MODE_SCOPED_OPTIONS = {
+  detectImages: { flag: '--detect-images', field: 'extraction.detectImages', modes: ['simple'] },
+  detectMath: { flag: '--detect-math', field: 'extraction.detectMath', modes: ['simple'] },
+  instructions: { flag: '--instruction', field: 'extraction.instructions', modes: ['simple'] },
+  maxTokens: { flag: '--max-tokens', field: 'extraction.maxTokens', modes: ['simple', 'agentic'] },
+  maxIterations: { flag: '--max-iterations', field: 'extraction.maxIterations', modes: ['agentic'] },
+  confidenceThreshold: {
+    flag: '--confidence-threshold',
+    field: 'extraction.confidenceThreshold',
+    modes: ['agentic'],
+  },
+  progress: { flag: '--progress', field: 'extraction.progress', modes: ['agentic'] },
+} as const satisfies Record<string, ModeScopedOption>;
+
+export type ModeScopedOptionKey = keyof typeof MODE_SCOPED_OPTIONS;
+
+/** Options the caller supplied that the resolved mode will not read. */
+export function ignoredModeScopedOptions(
+  supplied: readonly ModeScopedOptionKey[],
+  mode: CliMode,
+): ModeScopedOptionKey[] {
+  return supplied.filter((key) => !MODE_SCOPED_OPTIONS[key].modes.some((allowed) => allowed === mode));
+}
+
+/**
+ * Phrase ignored options the way file configuration already reports ignored
+ * keys, so both surfaces read the same way in a terminal or an agent log.
+ */
+export function ignoredModeScopedOptionWarning(
+  ignored: readonly ModeScopedOptionKey[],
+  mode: CliMode,
+  surface: 'flag' | 'field',
+): string | undefined {
+  if (ignored.length === 0) return undefined;
+  const names = ignored.map((key) => MODE_SCOPED_OPTIONS[key][surface]);
+  return `ignoring option(s) that ${mode} mode does not use: ${names.join(', ')}`;
+}
+
+/**
+ * Mode-scoped flags the user actually typed.
+ *
+ * `--instruction` carries a Commander `[]` default, so presence is length-based
+ * rather than `undefined`-based; file configuration is excluded because it is
+ * ambient and would warn on every unrelated run.
+ */
+export function suppliedModeScopedFlags(flags: ExtractCommandFlags): ModeScopedOptionKey[] {
+  const supplied: ModeScopedOptionKey[] = [];
+  if (flags.detectImages !== undefined) supplied.push('detectImages');
+  if (flags.detectMath !== undefined) supplied.push('detectMath');
+  if (flags.instruction !== undefined && flags.instruction.length > 0) supplied.push('instructions');
+  if (flags.maxTokens !== undefined) supplied.push('maxTokens');
+  if (flags.maxIterations !== undefined) supplied.push('maxIterations');
+  if (flags.confidenceThreshold !== undefined) supplied.push('confidenceThreshold');
+  if (flags.progress !== undefined || flags.includeThoughts !== undefined) supplied.push('progress');
+  return supplied;
 }

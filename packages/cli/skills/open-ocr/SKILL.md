@@ -65,7 +65,11 @@ Create a short-lived request JSON file in the current workspace or another user-
 }
 ```
 
-If `delivery.outputDirectory` is omitted, the CLI creates `.open-ocr-results/<runId>`. Reusing a fixed output directory with `resume: true` safely resumes matching single-document and batch jobs.
+Each input object is keyed on `type`, not `kind`. The `capabilities` document lists the allowed values under `inputKinds`, but that is the name of the value list, not the name of the field; `kind` is the discriminator for artifacts and progress steps, and inputs are the one union that uses `type`. Sending `{ "kind": "path" }` is rejected.
+
+If `delivery.outputDirectory` is omitted, the CLI creates `.open-ocr-results/<runId>`. Reusing a fixed output directory with `resume: true` safely resumes matching single-document and batch jobs. Note the two entry points differ here: `run` and the MCP tools default to `.open-ocr-results/<runId>`, while `extract` defaults to `./gemini-ocr-output` for backwards compatibility.
+
+A `path` input naming a directory is scanned recursively, skipping hidden entries and the `node_modules`, `dist`, `build`, `vendor`, and `target` trees so a repository scan stays fast and keeps build artifacts out of the results. Everything a scan passes over — unsupported file types and excluded directories alike — is reported on stderr, so check stderr whenever the document count is lower than expected. To include those trees, either pass a glob input such as `{ "type": "path", "path": "dist/**/*.pdf" }`, name the directory itself, or set `"defaultExcludes": false` in a configuration file referenced by `configPath`.
 
 For a binary stdin document, store the request in a file and use one input such as `{ "type": "stdin", "name": "scan.png" }`, then pipe the bytes to `open-ocr-cli run --request request.json`. The CLI sniffs supported media when the name or MIME type is omitted. Do not use `--request -` at the same time because request JSON and document bytes cannot share stdin.
 

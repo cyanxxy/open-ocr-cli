@@ -1,20 +1,23 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { executeOcrJobRequest, readStandardInput } from './machine';
+import { ocrErrorPayload } from './errors';
+import { executeOcrJobRequest, readOcrJobRequestRaw, readStandardInput } from './machine';
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 const originalNoConfig = process.env.OPEN_OCR_NO_CONFIG;
 const originalProvider = process.env.OPEN_OCR_PROVIDER;
+const originalApiKey = process.env.GEMINI_API_KEY;
 let directory: string;
 
 beforeEach(async () => {
   directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-machine-'));
   delete process.env.OPEN_OCR_PROVIDER;
+  process.env.GEMINI_API_KEY = 'test-key';
 });
 
 afterEach(async () => {
@@ -22,6 +25,8 @@ afterEach(async () => {
   else process.env.OPEN_OCR_NO_CONFIG = originalNoConfig;
   if (originalProvider === undefined) delete process.env.OPEN_OCR_PROVIDER;
   else process.env.OPEN_OCR_PROVIDER = originalProvider;
+  if (originalApiKey === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = originalApiKey;
   await rm(directory, { recursive: true, force: true });
 });
 
@@ -126,5 +131,203 @@ describe('machine request execution', () => {
       failed: 0,
       documents: [{ status: 'skipped', skipReason: 'validated' }],
     });
+  });
+
+  it('names an unreadable request path instead of leaking an errno into the payload', async () => {
+    let thrown: unknown;
+    try {
+      await readOcrJobRequestRaw('request.json', directory);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect((thrown as Error).message).toBe('OCR request file not found: request.json');
+    expect((thrown as Error).message).not.toContain('ENOENT');
+    expect((thrown as Error).message).not.toContain(directory);
+    expect(ocrErrorPayload(thrown, 2)).toMatchObject({
+      code: 'INPUT_NOT_FOUND',
+      category: 'input',
+      retryable: false,
+    });
+  });
+
+  it('reports a missing document before a missing credential', async () => {
+    delete process.env.GEMINI_API_KEY;
+    let thrown: unknown;
+    try {
+      await executeOcrJobRequest({
+        protocolVersion: 2,
+        operation: 'extract',
+        inputs: [{ type: 'path', path: 'missing.jpg' }],
+        delivery: { mode: 'inline' },
+      }, {
+        cwd: directory,
+        runId: 'missing-input-run',
+        abortController: new AbortController(),
+        noConfig: true,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(ocrErrorPayload(thrown, 2)).toMatchObject({ code: 'INPUT_NOT_FOUND' });
+    expect((thrown as Error).message).not.toContain('API key is missing');
+  });
+
+  it('still requires a credential once the request and its inputs resolve', async () => {
+    delete process.env.GEMINI_API_KEY;
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    let thrown: unknown;
+    try {
+      await executeOcrJobRequest({
+        protocolVersion: 2,
+        operation: 'extract',
+        inputs: [{ type: 'path', path: 'invoice.jpg' }],
+        delivery: { mode: 'inline' },
+      }, {
+        cwd: directory,
+        runId: 'missing-credential-run',
+        abortController: new AbortController(),
+        noConfig: true,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(ocrErrorPayload(thrown, 2)).toMatchObject({
+      code: 'AUTH_MISSING',
+      category: 'authentication',
+    });
+  });
+
+  it('warns about extraction fields the resolved mode will not read', async () => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    const warnings: string[] = [];
+
+    const execution = await executeOcrJobRequest({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+      extraction: { mode: 'template', preset: 'invoice', detectMath: true, maxTokens: 4096 },
+      delivery: { mode: 'inline' },
+      dryRun: true,
+    }, {
+      cwd: directory,
+      runId: 'ignored-fields-run',
+      abortController: new AbortController(),
+      onWarning: (message) => warnings.push(message),
+      noConfig: true,
+    });
+
+    // The v2 result schema is strict, so the information rides the warning
+    // channel rather than a new response field.
+    expect(warnings).toEqual([
+      'ignoring option(s) that template mode does not use: extraction.detectMath, extraction.maxTokens',
+    ]);
+    expect(execution.result.status).toBe('validated');
+  });
+
+  it('reports the documents a directory scan passed over', async () => {
+    await mkdir(path.join(directory, 'docs'));
+    await writeFile(path.join(directory, 'docs', 'invoice.jpg'), JPEG_BYTES);
+    await writeFile(path.join(directory, 'docs', 'notes.md'), '# notes');
+    await writeFile(path.join(directory, 'docs', 'README.txt'), 'plain text');
+    const warnings: string[] = [];
+
+    const execution = await executeOcrJobRequest({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'docs' }],
+      delivery: { mode: 'inline' },
+      dryRun: true,
+    }, {
+      cwd: directory,
+      runId: 'discovery-skip-run',
+      abortController: new AbortController(),
+      onWarning: (message) => warnings.push(message),
+      noConfig: true,
+    });
+
+    // The run is one document short of what was requested. The v1/v2 result and
+    // event schemas are strict, so the shortfall rides the warning channel in
+    // the same wording the direct CLI prints.
+    expect(warnings).toEqual([
+      `Discovery: 2 unsupported file(s) skipped: ${path.join('docs', 'notes.md')}, ${path.join('docs', 'README.txt')}`,
+    ]);
+    expect(execution.summary.total).toBe(1);
+  });
+
+  it('reports the dependency trees a directory scan refused to walk', async () => {
+    await mkdir(path.join(directory, 'docs'));
+    await mkdir(path.join(directory, 'docs', 'node_modules', 'pkg'), { recursive: true });
+    await writeFile(path.join(directory, 'docs', 'invoice.jpg'), JPEG_BYTES);
+    await writeFile(path.join(directory, 'docs', 'node_modules', 'pkg', 'logo.jpg'), JPEG_BYTES);
+    const warnings: string[] = [];
+
+    const execution = await executeOcrJobRequest({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'docs' }],
+      delivery: { mode: 'inline' },
+      dryRun: true,
+    }, {
+      cwd: directory,
+      runId: 'default-exclude-run',
+      abortController: new AbortController(),
+      onWarning: (message) => warnings.push(message),
+      noConfig: true,
+    });
+
+    // An agent that pointed at a folder has to learn the scan declined part of
+    // it, or the document set shrinks with no way to notice.
+    expect(warnings).toEqual([
+      `Discovery: 1 director(y/ies) skipped by default excludes: ${path.join('docs', 'node_modules')}`
+      + ' (use --no-default-excludes to scan them)',
+    ]);
+    expect(execution.summary.total).toBe(1);
+  });
+
+  it('says nothing about discovery when a scan passed over nothing', async () => {
+    await mkdir(path.join(directory, 'docs'));
+    await writeFile(path.join(directory, 'docs', 'invoice.jpg'), JPEG_BYTES);
+    const warnings: string[] = [];
+
+    await executeOcrJobRequest({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'docs' }],
+      delivery: { mode: 'inline' },
+      dryRun: true,
+    }, {
+      cwd: directory,
+      runId: 'discovery-clean-run',
+      abortController: new AbortController(),
+      onWarning: (message) => warnings.push(message),
+      noConfig: true,
+    });
+
+    expect(warnings).toEqual([]);
+  });
+
+  it('does not warn when every supplied extraction field is used', async () => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    const warnings: string[] = [];
+
+    await executeOcrJobRequest({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+      extraction: { mode: 'agentic', maxIterations: 3, confidenceThreshold: 0.9, maxTokens: 4096 },
+      delivery: { mode: 'inline' },
+      dryRun: true,
+    }, {
+      cwd: directory,
+      runId: 'used-fields-run',
+      abortController: new AbortController(),
+      onWarning: (message) => warnings.push(message),
+      noConfig: true,
+    });
+
+    expect(warnings).toEqual([]);
   });
 });
