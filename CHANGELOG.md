@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.7.0 - 2026-07-29
+
+### Added
+
+- MCP now serves both the 2025-11-25 and 2026-07-28 protocol revisions from
+  one stdio entry, including modern discovery and cache hints.
+- OCR tools advertise the v2 result schema and expose written artifacts as
+  native `resource_link` content blocks.
+- `OPEN_OCR_MCP_CONFIRM=1` requires an elicited confirmation before provider
+  work while leaving local dry runs ungated.
+
+### Fixed
+
+- MCP confirmations are signed, bound to the exact request, expire, and can be
+  used only once, preventing forged, changed, or replayed approvals.
+- Clients that support URL elicitation but not forms now receive the typed
+  configuration error instead of a protocol-level capability failure.
+- MCP shutdown preserves the documented `130` and `143` exit statuses for
+  SIGINT and SIGTERM.
+
+### Changed
+
+- Updated the split MCP client and server packages from the v2 beta to the
+  stable 2.0.0 release.
+
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v2.6.0...v2.7.0)
+
 ## 2.6.0 - 2026-07-26
 
 ### Breaking

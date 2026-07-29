@@ -481,6 +481,15 @@ The stdio server never uses stdout for logs or extracted document prose. Tools
 default to reference delivery and reject document stdin because stdin belongs
 to the MCP transport.
 
+Tools advertise an `outputSchema` (`result-v2.schema.json`) and return written
+artifacts as `resource_link` blocks beside the JSON envelope. The server serves
+both the 2025-11-25 and 2026-07-28 revisions; the client's opening exchange
+selects which.
+
+Set `OPEN_OCR_MCP_CONFIRM=1` to require confirmation before any run that reaches
+a provider. Dry runs are never gated, and the switch is environment-only so the
+calling model cannot turn it off.
+
 ## Web and agentic behavior
 
 Gemini Web OCR uses URL Context and verifies retrieval metadata. Other providers

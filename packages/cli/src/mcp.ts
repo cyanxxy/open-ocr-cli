@@ -1,12 +1,27 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import path from 'node:path';
 import process from 'node:process';
+import { pathToFileURL } from 'node:url';
 
-import { McpServer } from '@modelcontextprotocol/server';
-import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  McpServer,
+  createRequestStateCodec,
+  fromJsonSchema,
+  inputRequired,
+  inputResponse,
+  type CacheHint,
+  type ClientCapabilities,
+  type InputRequiredResult,
+  type RequestStateCodec,
+} from '@modelcontextprotocol/server';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod/v4';
 
 import { GATEWAY_IDS, PROVIDER_IDS } from '../../../src/lib/providers';
-import { CliExitError, cliExitCode, ocrErrorPayload } from './errors';
+import errorV2Schema from '../schemas/error-v2.schema.json';
+import resultV2Schema from '../schemas/result-v2.schema.json';
+import { CliExitError, cliExitCode, cliSignalExitCode, ocrErrorPayload } from './errors';
 import { executeOcrJobRequest } from './machine';
 import {
   createOcrCapabilities,
@@ -20,6 +35,67 @@ import {
 const thinkingLevels = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const contentFormats = ['markdown', 'json', 'csv', 'all'] as const;
 const progressLevels = ['off', 'standard', 'detailed'] as const;
+
+const EXTERNAL_ERROR_REF = 'error-v2.schema.json';
+const INLINED_ERROR_REF = '#/$defs/errorPayload';
+
+function rewriteExternalErrorRef(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(rewriteExternalErrorRef);
+  if (node === null || typeof node !== 'object') return node;
+  return Object.fromEntries(Object.entries(node).map(([key, value]) => [
+    key,
+    key === '$ref' && value === EXTERNAL_ERROR_REF ? INLINED_ERROR_REF : rewriteExternalErrorRef(value),
+  ]));
+}
+
+/**
+ * The advertised output schema has to stand alone: the protocol's own Ajv
+ * instance registers every schema file so `result-v2` can reference
+ * `error-v2` across files, but the SDK compiles whatever it is handed in
+ * isolation. So the error definition is inlined and the single cross-file
+ * `$ref` repointed at it.
+ *
+ * `type: 'object'` is stamped at the root deliberately. The root is a `oneOf`
+ * over two `$ref` branches, and the SDK does not follow `$ref` when deciding
+ * whether an advertised `outputSchema` has an object root — a non-object root
+ * makes the 2025-era wire codec wrap `structuredContent` in `{ result: … }`,
+ * silently changing the envelope every existing client already reads. Both
+ * branches are `type: 'object'`, so the stamp is accurate and the wire shape
+ * stays byte-identical.
+ */
+function selfContainedResultSchema(): Record<string, unknown> {
+  const { $id: _errorId, $schema: _errorSchema, ...errorPayload } = errorV2Schema as Record<string, unknown>;
+  const rewritten = rewriteExternalErrorRef(resultV2Schema) as Record<string, unknown>;
+  return {
+    ...rewritten,
+    type: 'object',
+    $defs: { ...(rewritten.$defs as Record<string, unknown>), errorPayload },
+  };
+}
+
+const ocrResultOutputSchema = fromJsonSchema<OcrMachineResult>(selfContainedResultSchema());
+
+// `server/discover`, `tools/list` and the capabilities document are pure
+// functions of the CLI version, so shared caches may hold them. Cache fields are
+// only emitted on 2026-07-28 requests; 2025-era responses are never affected.
+const STATIC_CACHE_HINT: CacheHint = { ttlMs: 3_600_000, cacheScope: 'public' };
+
+// Elicited confirmation before a billed run. Opt-in through the environment
+// rather than a tool argument: a safety gate the model can switch off by
+// omitting a field is not a safety gate.
+const CONFIRM_ENV = 'OPEN_OCR_MCP_CONFIRM';
+const CONFIRM_KEY = 'proceed';
+const CONFIRM_TTL_MS = 600_000;
+
+interface ConfirmationState {
+  nonce: string;
+  requestHash: string;
+}
+
+interface ConfirmationGuard {
+  codec: RequestStateCodec<ConfirmationState>;
+  consumed: Map<string, number>;
+}
 
 const sharedFields = {
   configPath: z.string().min(1).optional(),
@@ -200,6 +276,21 @@ interface McpRequestContext {
   mcpReq: {
     signal: AbortSignal;
     _meta?: { progressToken?: string | number };
+    /**
+     * The per-request `io.modelcontextprotocol/*` envelope. Present only on a
+     * 2026-07-28 request — that era has no handshake, so this is the only place
+     * the client's capabilities appear.
+     */
+    envelope?: Readonly<Record<string, unknown>>;
+    /** Populated only on a request the client retried with elicited answers. */
+    inputResponses?: Record<string, unknown>;
+    /**
+     * Keys the SDK discarded because the client sent something that was not a
+     * bare response object. The answer is gone, so re-asking for the same key
+     * would loop until the round limit.
+     */
+    droppedInputResponseKeys?: string[];
+    requestState: <T = unknown>() => T | undefined;
     notify: (notification: {
       method: 'notifications/progress';
       params: {
@@ -211,19 +302,194 @@ interface McpRequestContext {
   };
 }
 
+function ocrFailure(message: string, code: 'CONFIG_INVALID' | 'CANCELLED', hint: string): ReturnType<typeof mcpResult> {
+  const error = new CliExitError(message, 2, {
+    code,
+    category: code === 'CANCELLED' ? 'cancelled' : 'configuration',
+    retryable: false,
+    hint,
+  });
+  return mcpResult(toOcrRunFailure(randomUUID(), ocrErrorPayload(error), 2));
+}
+
+function confirmationMessage(request: OcrJobRequest): string {
+  const documents = request.inputs.length;
+  const noun = documents === 1 ? 'document' : 'documents';
+  const target = request.provider?.model ?? request.provider?.id ?? 'the configured provider';
+  const ceiling = request.execution?.maxCostUsd === undefined
+    ? 'no cost ceiling'
+    : `a $${request.execution.maxCostUsd} ceiling`;
+  // Deliberately not "this calls a paid API": free tiers, local
+  // OpenAI-compatible endpoints and preflight failures all exist, and a prompt
+  // that overstates what it knows trains people to click through it.
+  return `Run OCR on ${documents} ${noun} with ${target} (${ceiling})? This sends them to the provider and may incur charges.`;
+}
+
+/**
+ * The two eras keep client capabilities in different places, and reading only
+ * one of them silently disables the gate on the other. 2026-07-28 has no
+ * handshake, so capabilities ride the per-request envelope and the session
+ * accessor stays `undefined`; the 2025 era is the reverse. Verified on a live
+ * stdio connection in both directions.
+ */
+function resolveClientCapabilities(
+  context: McpRequestContext,
+  sessionCapabilities: () => ClientCapabilities | undefined,
+): ClientCapabilities | undefined {
+  const fromEnvelope = context.mcpReq.envelope?.[CLIENT_CAPABILITIES_META_KEY];
+  if (fromEnvelope !== undefined) return fromEnvelope as ClientCapabilities;
+  return sessionCapabilities();
+}
+
+function supportsFormElicitation(capabilities: ClientCapabilities): boolean {
+  const elicitation = capabilities.elicitation;
+  if (elicitation === undefined) return false;
+  return elicitation.form !== undefined || elicitation.url === undefined;
+}
+
+function confirmationRequestHash(request: OcrJobRequest): string {
+  return createHash('sha256').update(JSON.stringify(request)).digest('base64url');
+}
+
+/**
+ * Billed, effectively irreversible work behind an operator-controlled prompt.
+ * Returns `undefined` to proceed, an `InputRequiredResult` to ask, or a typed
+ * failure when the answer was no.
+ */
+async function confirmationGate(
+  request: OcrJobRequest,
+  context: McpRequestContext,
+  clientCapabilities: ClientCapabilities | undefined,
+  guard: ConfirmationGuard,
+): Promise<InputRequiredResult | ReturnType<typeof mcpResult> | undefined> {
+  // A dry run neither bills nor writes, so there is nothing to confirm.
+  if (request.dryRun) return undefined;
+  if (process.env[CONFIRM_ENV] !== '1') return undefined;
+
+  // The client answered but the SDK could not read the answer. Asking again
+  // would produce the same unreadable reply every round until the shim gives
+  // up, so this refuses once instead of looping.
+  if (context.mcpReq.droppedInputResponseKeys?.includes(CONFIRM_KEY)) {
+    return ocrFailure(
+      'The confirmation answer could not be read.',
+      'CANCELLED',
+      'The client returned a malformed elicitation result; re-run and confirm again.',
+    );
+  }
+
+  const answer = inputResponse(context.mcpReq.inputResponses, CONFIRM_KEY);
+  if (answer.kind === 'missing') {
+    // Undefined capabilities means the SDK could not tell us — the 2026-07-28
+    // era carries them per request rather than on a handshake. Ask anyway and
+    // let the client refuse; silently skipping a confirmation the operator
+    // switched on is the worse failure.
+    if (clientCapabilities !== undefined && !supportsFormElicitation(clientCapabilities)) {
+      return ocrFailure(
+        `${CONFIRM_ENV} is set but this MCP client cannot prompt for confirmation.`,
+        'CONFIG_INVALID',
+        `Unset ${CONFIRM_ENV}, or connect a client that supports elicitation.`,
+      );
+    }
+    return inputRequired({
+      inputRequests: {
+        [CONFIRM_KEY]: inputRequired.elicit({
+          message: confirmationMessage(request),
+          requestedSchema: {
+            type: 'object',
+            properties: {
+              [CONFIRM_KEY]: {
+                type: 'boolean',
+                title: 'Run the OCR job',
+                description: 'Confirm the paid extraction run.',
+              },
+            },
+            required: [CONFIRM_KEY],
+          },
+        }),
+      },
+      requestState: await guard.codec.mint({
+        nonce: randomUUID(),
+        requestHash: confirmationRequestHash(request),
+      }),
+    });
+  }
+
+  const state = context.mcpReq.requestState<ConfirmationState>();
+  const now = Date.now();
+  for (const [nonce, expiresAt] of guard.consumed) {
+    if (expiresAt <= now) guard.consumed.delete(nonce);
+  }
+  if (
+    state === undefined
+    || state.requestHash !== confirmationRequestHash(request)
+    || guard.consumed.has(state.nonce)
+  ) {
+    return ocrFailure(
+      'The confirmation could not be verified.',
+      'CANCELLED',
+      'Re-run the tool and confirm this exact OCR request again.',
+    );
+  }
+  guard.consumed.set(state.nonce, now + CONFIRM_TTL_MS);
+
+  const accepted = answer.kind === 'elicit'
+    && answer.action === 'accept'
+    && answer.content?.[CONFIRM_KEY] === true;
+  if (accepted) return undefined;
+  return ocrFailure(
+    'The OCR run was not confirmed.',
+    'CANCELLED',
+    'Re-run the tool and accept the confirmation prompt to proceed.',
+  );
+}
+
 function progressMessage(event: OcrJobEvent): string {
   if (event.message) return event.message;
   if (event.source) return `${event.type}: ${event.source}`;
   return event.type;
 }
 
+interface McpTextBlock {
+  type: 'text';
+  text: string;
+}
+
+interface McpResourceLinkBlock {
+  type: 'resource_link';
+  uri: string;
+  name: string;
+  mimeType: string;
+  description: string;
+}
+
+/**
+ * Reference-first artifacts are already `{ path, mediaType, kind }`, which is
+ * exactly what an MCP resource link carries. Emitting them as `resource_link`
+ * blocks lets a client resolve them natively instead of parsing absolute paths
+ * out of the JSON body. Only artifacts that were actually written are linked:
+ * `plannedArtifacts` from a dry run name files that do not exist yet.
+ */
+function artifactResourceLinks(result: OcrMachineResult): McpResourceLinkBlock[] {
+  if (!('documents' in result)) return [];
+  return result.documents.flatMap((document) => document.artifacts.map((artifact) => ({
+    type: 'resource_link' as const,
+    uri: pathToFileURL(artifact.path).href,
+    name: path.basename(artifact.path),
+    mimeType: artifact.mediaType,
+    description: `${artifact.kind} output for ${document.source}`,
+  })));
+}
+
 export function mcpResult(result: OcrMachineResult): {
-  content: Array<{ type: 'text'; text: string }>;
+  content: Array<McpTextBlock | McpResourceLinkBlock>;
   structuredContent: Record<string, unknown>;
   isError?: boolean;
 } {
   return {
-    content: [{ type: 'text', text: JSON.stringify(result) }],
+    content: [
+      { type: 'text', text: JSON.stringify(result) },
+      ...artifactResourceLinks(result),
+    ],
     structuredContent: result as unknown as Record<string, unknown>,
     // Track `ok` rather than the `failed` status alone. `partial`, `cancelled`
     // and `cost_limited` all hand the caller less than it asked for — a
@@ -293,9 +559,19 @@ async function executeMcpTool(
   buildRequest: () => OcrJobRequest,
   context: McpRequestContext,
   cwd: string,
-): Promise<ReturnType<typeof mcpResult>> {
+  sessionCapabilities: () => ClientCapabilities | undefined,
+  confirmationGuard: ConfirmationGuard,
+): Promise<ReturnType<typeof mcpResult> | InputRequiredResult> {
   try {
-    return await executeMcpRequest(buildRequest(), context, cwd);
+    const request = buildRequest();
+    const gate = await confirmationGate(
+      request,
+      context,
+      resolveClientCapabilities(context, sessionCapabilities),
+      confirmationGuard,
+    );
+    if (gate) return gate;
+    return await executeMcpRequest(request, context, cwd);
   } catch (error) {
     const runId = randomUUID();
     const payload = ocrErrorPayload(error, cliExitCode(error));
@@ -304,12 +580,27 @@ async function executeMcpTool(
 }
 
 export function createOcrMcpServer(version: string, cwd = process.cwd()): McpServer {
+  const confirmationGuard: ConfirmationGuard = {
+    codec: createRequestStateCodec<ConfirmationState>({
+      key: randomBytes(32),
+      ttlSeconds: CONFIRM_TTL_MS / 1000,
+    }),
+    consumed: new Map<string, number>(),
+  };
   const server = new McpServer(
     { name: 'open-ocr-cli', version },
     {
       instructions: 'Use dryRun for local validation, prefer reference delivery, and never place credentials in tool arguments.',
+      cacheHints: {
+        'server/discover': STATIC_CACHE_HINT,
+        'tools/list': STATIC_CACHE_HINT,
+      },
+      requestState: { verify: confirmationGuard.codec.verify },
     },
   );
+
+  // Legacy-era only; the modern era carries capabilities per request.
+  const sessionCapabilities = (): ClientCapabilities | undefined => server.server.getClientCapabilities();
 
   server.registerResource(
     'open-ocr-capabilities',
@@ -318,6 +609,7 @@ export function createOcrMcpServer(version: string, cwd = process.cwd()): McpSer
       title: 'Open OCR capabilities',
       description: 'Versioned providers, modes, formats, limits, schemas, and error codes.',
       mimeType: 'application/json',
+      cacheHint: STATIC_CACHE_HINT,
     },
     (uri) => ({
       contents: [{
@@ -341,9 +633,16 @@ export function createOcrMcpServer(version: string, cwd = process.cwd()): McpSer
       title: 'Extract documents',
       description: 'Extract local images or PDFs in simple or template mode. Defaults to reference delivery.',
       inputSchema: extractInputSchema,
+      outputSchema: ocrResultOutputSchema,
       annotations,
     },
-    async (input, context) => executeMcpTool(() => buildExtractMcpRequest(input), context, cwd),
+    async (input, context) => executeMcpTool(
+      () => buildExtractMcpRequest(input),
+      context,
+      cwd,
+      sessionCapabilities,
+      confirmationGuard,
+    ),
   );
 
   server.registerTool(
@@ -352,9 +651,16 @@ export function createOcrMcpServer(version: string, cwd = process.cwd()): McpSer
       title: 'Run agentic OCR',
       description: 'Run iterative agentic OCR for difficult local images or PDFs.',
       inputSchema: agenticInputSchema,
+      outputSchema: ocrResultOutputSchema,
       annotations,
     },
-    async (input, context) => executeMcpTool(() => buildAgenticMcpRequest(input), context, cwd),
+    async (input, context) => executeMcpTool(
+      () => buildAgenticMcpRequest(input),
+      context,
+      cwd,
+      sessionCapabilities,
+      confirmationGuard,
+    ),
   );
 
   server.registerTool(
@@ -363,15 +669,63 @@ export function createOcrMcpServer(version: string, cwd = process.cwd()): McpSer
       title: 'Extract public URLs',
       description: 'Extract, combine, or compare up to 20 public HTTP(S) URLs through the shared OCR job service.',
       inputSchema: webInputSchema,
+      outputSchema: ocrResultOutputSchema,
       annotations,
     },
-    async (input, context) => executeMcpTool(() => buildWebMcpRequest(input), context, cwd),
+    async (input, context) => executeMcpTool(
+      () => buildWebMcpRequest(input),
+      context,
+      cwd,
+      sessionCapabilities,
+      confirmationGuard,
+    ),
   );
 
   return server;
 }
 
+/**
+ * `serveStdio` owns the era decision for the connection: the opening exchange
+ * selects it, one instance from the factory is pinned for the connection, and
+ * the same registrations serve both. A hand-wired `server.connect(transport)`
+ * is pinned to the 2025 era and answers `server/discover` with -32601, so a
+ * 2026-07-28 client can never negotiate. `legacy: 'serve'` (the default) keeps
+ * today's clients on the exact path they use now.
+ */
 export async function runMcpServer(version: string): Promise<void> {
-  const server = createOcrMcpServer(version);
-  await server.connect(new StdioServerTransport());
+  const handle = serveStdio(() => createOcrMcpServer(version), {
+    // stdout is the JSON-RPC channel; out-of-band errors belong on stderr.
+    onerror: (error) => process.stderr.write(`${error.message}\n`),
+  });
+
+  // `serveStdio` returns as soon as the transport is listening, so without this
+  // the command action would fall through and the process would survive only
+  // because stdin happens to be open — with the handle dropped and no way to
+  // close the pinned instance. Owning the wait keeps shutdown explicit: a
+  // signal, or the host closing the pipe, tears the connection down.
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const cleanup = (): void => {
+      process.removeListener('SIGINT', onSigint);
+      process.removeListener('SIGTERM', onSigterm);
+      process.stdin.removeListener('end', onStdinClose);
+      process.stdin.removeListener('close', onStdinClose);
+    };
+    const shutdown = (signal?: 'SIGINT' | 'SIGTERM'): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (signal) process.exitCode = cliSignalExitCode(signal);
+      void handle.close().catch((error: unknown) => {
+        process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      }).finally(resolve);
+    };
+    const onSigint = (): void => shutdown('SIGINT');
+    const onSigterm = (): void => shutdown('SIGTERM');
+    const onStdinClose = (): void => shutdown();
+    process.once('SIGINT', onSigint);
+    process.once('SIGTERM', onSigterm);
+    process.stdin.once('end', onStdinClose);
+    process.stdin.once('close', onStdinClose);
+  });
 }
