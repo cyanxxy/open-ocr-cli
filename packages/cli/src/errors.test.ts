@@ -101,7 +101,7 @@ describe('CLI exit errors', () => {
   });
 
   it('lets a typed configuration error outrank an option name that reads like a runtime failure', () => {
-    // A bare Error here would match the legacy "timeout" substring rule and be
+    // A bare Error here would match the untyped "timeout" substring rule and be
     // reported as a retryable TIMEOUT, looping any retry harness forever.
     expect(ocrErrorPayload(new CliExitError('--timeout must be an integer from 1 to 3600', 2, {
       code: 'CONFIG_INVALID',
@@ -222,7 +222,7 @@ describe('CLI exit errors', () => {
     });
   });
 
-  it('preserves exit code 1 for every incomplete v1 execution', () => {
+  it('returns exit code 1 for every incomplete execution', () => {
     expect(cliBatchExitCode({
       total: 2, succeeded: 0, partial: 0, failed: 2, skipped: 0, costLimitReached: false,
     })).toBe(1);

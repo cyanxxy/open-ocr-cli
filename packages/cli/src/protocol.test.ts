@@ -59,25 +59,12 @@ function summaryFor(result: OcrJobResult): BatchSummary {
 }
 
 describe('agent protocols', () => {
-  it('keeps v1 immutable and exposes modern agent controls only in v2', () => {
-    expect(parseOcrJobRequest({
-      protocolVersion: 1,
-      operation: 'extract',
-      inputs: [{ type: 'path', path: 'invoice.jpg' }],
-      delivery: { mode: 'reference' },
-    }).inputs[0]).toMatchObject({ type: 'path', path: 'invoice.jpg' });
-    expect(() => parseOcrJobRequest({
-      protocolVersion: 1,
-      operation: 'extract',
-      inputs: [{ type: 'stdin', name: 'scan.png', mimeType: 'image/png' }],
-      noConfig: true,
-    })).toThrow('Invalid OCR request v1');
+  it('accepts only protocol v2 and exposes its agent controls', () => {
     expect(() => parseOcrJobRequest({
       protocolVersion: 1,
       operation: 'extract',
       inputs: [{ type: 'path', path: 'invoice.jpg' }],
-      extraction: { mode: 'agentic', includeThoughts: true },
-    })).toThrow('Invalid OCR request v1');
+    })).toThrow('Unsupported OCR protocol version: 1');
     const modern = parseOcrJobRequest({
       protocolVersion: 2,
       operation: 'extract',
@@ -106,11 +93,6 @@ describe('agent protocols', () => {
       extraction: { mode: 'simple', contentFormat: 'json' },
       delivery: { mode: 'inline' },
     }).inputs[0]).toEqual({ type: 'url', url: 'https://example.com/report.pdf' });
-    expect(() => parseOcrJobRequest({
-      protocolVersion: 1,
-      operation: 'extract',
-      inputs: [{ type: 'url', url: 'https://example.com' }],
-    })).toThrow('Invalid OCR request v1');
     expect(() => parseOcrJobRequest({
       protocolVersion: 2,
       operation: 'extract',
@@ -170,7 +152,7 @@ describe('agent protocols', () => {
   });
 
   it('refuses csv for a record-shaped preset before a provider call is billed', () => {
-    const capabilities = createOcrCapabilities('2.6.0');
+    const capabilities = createOcrCapabilities('3.0.0');
     const recordPreset = capabilities.presets.find((preset) => preset.outputShape === 'record');
     const tablePreset = capabilities.presets.find((preset) => preset.outputShape === 'table');
     if (!recordPreset || !tablePreset) throw new Error('Expected both preset shapes to be published');
@@ -257,7 +239,7 @@ describe('agent protocols', () => {
   });
 
   it('resolves the schema identifiers capabilities publishes', () => {
-    const capabilities = createOcrCapabilities('2.6.0');
+    const capabilities = createOcrCapabilities('3.0.0');
     // capabilities hands agents `$id` URLs next to networkFetch: false, so the
     // local schema command has to accept exactly those identifiers.
     for (const identifier of Object.values(capabilities.schemas)) {
@@ -277,11 +259,9 @@ describe('agent protocols', () => {
     expect(capabilities.schemaAccess.networkFetch).toBe(false);
   });
 
-  it('publishes every v2 runtime request constraint without mutating v1', () => {
+  it('publishes every runtime request constraint', () => {
     const validateV2 = new Ajv2020({ strict: true, strictRequired: false })
       .compile(OCR_PROTOCOL_SCHEMAS.request);
-    const validateV1 = new Ajv2020({ strict: true, strictRequired: false })
-      .compile(OCR_PROTOCOL_SCHEMAS['request-v1']);
     expect(validateV2({
       protocolVersion: 2,
       operation: 'extract',
@@ -331,11 +311,6 @@ describe('agent protocols', () => {
       inputs: [{ type: 'url', url: 'https://example.com' }],
       extraction: { mode: 'agentic' },
     })).toBe(false);
-    expect(validateV1({
-      protocolVersion: 1,
-      operation: 'extract',
-      inputs: [{ type: 'stdin' }],
-    })).toBe(false);
   });
 
   it('returns artifact references without embedding extracted document bodies', () => {
@@ -353,19 +328,20 @@ describe('agent protocols', () => {
       attempts: 1,
       artifacts: { markdown: 'PRIVATE OCR BODY' },
       outputFiles: ['/workspace/output/invoice.md'],
+      outputArtifacts: [{ path: '/workspace/output/invoice.md', extension: 'md' }],
     });
-    const v1 = toOcrRunResult('run-1', summary, 1, 'reference');
-    assertOcrMachineResult(v1);
-    expect(v1.documents[0]?.artifacts).toEqual([{
+    const reference = toOcrRunResult('run-1', summary, 'reference');
+    assertOcrMachineResult(reference);
+    expect(reference.documents[0]?.artifacts).toEqual([{
       path: '/workspace/output/invoice.md',
       mediaType: 'text/markdown',
       kind: 'markdown',
     }]);
-    expect(JSON.stringify(v1)).not.toContain('PRIVATE OCR BODY');
+    expect(JSON.stringify(reference)).not.toContain('PRIVATE OCR BODY');
 
-    const v2 = toOcrRunResult('run-2', summary, 2, 'inline', 'markdown');
-    assertOcrMachineResult(v2);
-    expect(v2.documents[0]?.content).toEqual({ markdown: 'PRIVATE OCR BODY' });
+    const inline = toOcrRunResult('run-2', summary, 'inline', 'markdown');
+    assertOcrMachineResult(inline);
+    expect(inline.documents[0]?.content).toEqual({ markdown: 'PRIVATE OCR BODY' });
 
     const tracedSummary = summaryFor({
       ...summary.results[0],
@@ -386,12 +362,12 @@ describe('agent protocols', () => {
         ],
       },
     });
-    const standard = toOcrRunResult('run-3', tracedSummary, 2, 'inline', 'all', 'standard');
+    const standard = toOcrRunResult('run-3', tracedSummary, 'inline', 'all', 'standard');
     expect(standard.documents[0]?.content?.agentSteps).toEqual([
       expect.objectContaining({ kind: 'tool_call', callId: 'call-1', name: 'inspect' }),
     ]);
     expect(standard.documents[0]?.content?.agentSteps?.[0]).not.toHaveProperty('arguments');
-    const detailed = toOcrRunResult('run-4', tracedSummary, 2, 'inline', 'all', 'detailed');
+    const detailed = toOcrRunResult('run-4', tracedSummary, 'inline', 'all', 'detailed');
     expect(detailed.documents[0]?.content?.agentSteps).toEqual([
       expect.objectContaining({ kind: 'reasoning', text: 'raw reasoning' }),
       expect.objectContaining({
@@ -503,11 +479,9 @@ describe('agent protocols', () => {
       functionCall: { id: 'call-1', arguments: {} },
       functionResult: { success: true },
     } as unknown as Parameters<typeof agentProtocolStep>[0], 'standard')).toThrow(/call ID and function name/u);
-    const v1Failure = toOcrRunFailure('legacy-run', failure.error, 1);
-    expect(v1Failure.error.code).toBe('AUTH_MISSING');
     const capabilities = createOcrCapabilities('2.1.0');
     expect(capabilities.protocolVersion).toBe(2);
-    expect(capabilities.supportedProtocolVersions).toEqual([1, 2]);
+    expect(capabilities.supportedProtocolVersions).toEqual([2]);
     expect(capabilities.inputKinds).toEqual(['path', 'stdin', 'url']);
     expect(capabilities.exitCodes).toMatchObject({ incomplete: 1, invalid: 2 });
     expect(capabilities.deliveryModes).toEqual(['inline', 'reference']);
@@ -516,21 +490,33 @@ describe('agent protocols', () => {
     expect(capabilities.features).toContain('mcp-stdio');
     expect(capabilities.progressStepKinds).toContain('tool_result');
     expect(capabilities.schemas.request).toContain('request-v2.schema.json');
-    expect(capabilities.providers).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: 'gemini',
-        inputImageMimeTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif'],
-      }),
-      expect.objectContaining({
-        id: 'kimi',
-        inputImageMimeTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
-      }),
-      expect.objectContaining({
-        id: 'muse',
-        inputImageMimeTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
-        capabilities: expect.objectContaining({ pdfs: true }),
-      }),
-    ]));
+    const geminiProvider = capabilities.providers.find((provider) => provider.id === 'gemini');
+    const kimiProvider = capabilities.providers.find((provider) => provider.id === 'kimi');
+    const museProvider = capabilities.providers.find((provider) => provider.id === 'muse');
+    const openAiCompatibleProvider = capabilities.providers.find(
+      (provider) => provider.id === 'openai-compatible',
+    );
+    expect(geminiProvider?.inputImageMimeTypes)
+      .toEqual(['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif']);
+    expect(geminiProvider?.reasoning?.fallbackLevels)
+      .toEqual(['MINIMAL', 'LOW', 'MEDIUM', 'HIGH']);
+    expect(geminiProvider?.reasoning?.byModel).toHaveProperty('gemini-3.5-flash');
+    expect(kimiProvider?.inputImageMimeTypes)
+      .toEqual(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+    expect(museProvider?.inputImageMimeTypes)
+      .toEqual(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+    expect(museProvider?.capabilities.pdfs).toBe(true);
+    expect(openAiCompatibleProvider).not.toHaveProperty('reasoning');
+    const misleadingReasoning = structuredClone(capabilities);
+    const genericProvider = misleadingReasoning.providers.find(
+      (provider) => provider.id === 'openai-compatible',
+    );
+    if (!genericProvider) throw new Error('Expected the generic provider capability');
+    genericProvider.reasoning = {
+      byModel: {},
+      fallbackLevels: ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'],
+    };
+    expect(() => assertOcrCapabilities(misleadingReasoning)).toThrow(/Invalid OCR capabilities/u);
     expect(capabilities.schemaAccess).toEqual({
       command: 'open-ocr-cli schema <name>',
       packageDirectory: 'schemas',
@@ -593,11 +579,11 @@ describe('agent protocols', () => {
       durationMs: 5,
       attempts: 1,
       outputFiles: ['/workspace/output/invoice.md'],
-    }), 1, 'reference');
+    }), 'reference');
     expect(partial.ok).toBe(false);
     expect(() => assertOcrMachineResult({ ...partial, ok: true })).toThrow('Invalid OCR result');
     expect(() => assertOcrJobEvent({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: 'document.partial',
       runId: 'partial-run',
       sequence: 0,
@@ -605,7 +591,7 @@ describe('agent protocols', () => {
       document: partial.documents[0],
     })).not.toThrow();
     expect(() => assertOcrJobEvent({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: 'document.completed',
       runId: 'partial-run',
       sequence: 1,
@@ -633,7 +619,7 @@ describe('protocol validation messages', () => {
       inputs: [{ kind: 'path', path: 'invoice.jpg' }],
     });
     expect(message).toBe(
-      'Invalid OCR request v2: '
+      'Invalid OCR request: '
       + "inputs[0]: unknown field 'kind' — did you mean 'type'? (type must be one of: path, stdin, url)",
     );
     // Every oneOf branch fails at once; only one of them is worth reporting.
@@ -648,7 +634,7 @@ describe('protocol validation messages', () => {
       operation: 'extract',
       inputs: [{ type: 'path' }],
     });
-    expect(message).toBe("Invalid OCR request v2: inputs[0]: missing required field 'path'");
+    expect(message).toBe("Invalid OCR request: inputs[0]: missing required field 'path'");
     expect(clauses).toHaveLength(1);
     // The stdin and url branches also failed, and neither is relevant here.
     expect(message).not.toContain('url');
@@ -659,13 +645,13 @@ describe('protocol validation messages', () => {
       protocolVersion: 2,
       operation: 'extract',
       inputs: [{ type: 'file', path: 'invoice.jpg' }],
-    }).message).toBe('Invalid OCR request v2: inputs[0]: type must be one of: path, stdin, url');
+    }).message).toBe('Invalid OCR request: inputs[0]: type must be one of: path, stdin, url');
     expect(rejection({
       protocolVersion: 2,
       operation: 'extract',
       inputs: [{ path: 'invoice.jpg' }],
     }).message).toBe(
-      "Invalid OCR request v2: inputs[0]: missing required field 'type' — must be one of: path, stdin, url",
+      "Invalid OCR request: inputs[0]: missing required field 'type' — must be one of: path, stdin, url",
     );
     const declared = OCR_PROTOCOL_SCHEMAS.request.properties.inputs.items.oneOf
       .map((branch) => branch.properties.type.const);
@@ -679,7 +665,7 @@ describe('protocol validation messages', () => {
       inputs: [{ type: 'path', path: 'invoice.jpg' }],
       extraction: { mode: 'turbo' },
     }).message).toBe(
-      'Invalid OCR request v2: extraction.mode: must be one of: simple, template, agentic',
+      'Invalid OCR request: extraction.mode: must be one of: simple, template, agentic',
     );
     const unknownField = rejection({
       protocolVersion: 2,
@@ -697,27 +683,28 @@ describe('protocol validation messages', () => {
       operation: 'extract',
       inputs: [{ type: 'path', path: 'invoice.jpg' }],
       discovery: { exclude: ['build', 3] },
-    }).message).toBe('Invalid OCR request v2: discovery.exclude[1]: must be string');
+    }).message).toBe('Invalid OCR request: discovery.exclude[1]: must be string');
     expect(rejection({
       protocolVersion: 2,
       operation: 'extract',
       inputs: [{ type: 'path', path: 'invoice.jpg' }],
       execution: { timeoutSeconds: 99_999 },
-    }).message).toBe('Invalid OCR request v2: execution.timeoutSeconds: must be <= 3600');
+    }).message).toBe('Invalid OCR request: execution.timeoutSeconds: must be <= 3600');
     expect(rejection({
       protocolVersion: 2,
       inputs: [{ type: 'path', path: 'invoice.jpg' }],
-    }).message).toBe("Invalid OCR request v2: missing required field 'operation'");
+    }).message).toBe("Invalid OCR request: missing required field 'operation'");
   });
 
   it('stays single-line and short while preserving the request error contract', () => {
     const payload = (() => {
       try {
         parseOcrJobRequest({
-          protocolVersion: 1,
+          protocolVersion: 2,
           operation: 'extract',
-          inputs: [{ type: 'stdin', name: 'scan.png', mimeType: 'image/png' }],
+          inputs: [{ type: 'stdin', unexpected: true }],
           noConfig: true,
+          unknown: true,
         });
       } catch (error) {
         return ocrErrorPayload(error);
@@ -728,12 +715,12 @@ describe('protocol validation messages', () => {
     expect(payload.category).toBe('configuration');
     expect(payload.retryable).toBe(false);
     expect(payload.hint).toBe(
-      'Compare the request with a supported schema using open-ocr-cli schema request-v1 or request-v2.',
+      'Compare the payload with the bundled schema: open-ocr-cli schema request.',
     );
     expect(payload.message).not.toMatch(/[\n\r]/u);
     expect(payload.message.length).toBeLessThan(400);
     expect(payload.message.split('; ').length).toBeLessThanOrEqual(5);
-    expect(payload.message).toContain("unknown field 'noConfig'");
-    expect(payload.message).toContain("inputs[0]: unknown fields 'name', 'mimeType'");
+    expect(payload.message).toContain("unknown field 'unknown'");
+    expect(payload.message).toContain("inputs[0]: unknown field 'unexpected'");
   });
 });

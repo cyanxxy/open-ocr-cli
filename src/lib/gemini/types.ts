@@ -256,11 +256,14 @@ export interface GeminiClientConfig {
  * carrying user-supplied text — a schema path, a filename — must not be able to
  * trip a substring heuristic meant for something else.
  */
+/**
+ * Only the members something actually throws. A member no producer constructs
+ * is a classification branch that can never fire, and it invites consumers to
+ * write handling for a case the engine cannot reach — network and rate-limit
+ * failures arrive as provider errors carrying a status, and are typed from that.
+ */
 export enum OcrErrorType {
   API_KEY_MISSING = 'API_KEY_MISSING',
-  NETWORK_ERROR = 'NETWORK_ERROR',
-  RATE_LIMIT = 'RATE_LIMIT',
-  INVALID_RESPONSE = 'INVALID_RESPONSE',
   /** The caller's response schema is why the provider refused the request. */
   SCHEMA_INVALID = 'SCHEMA_INVALID'
 }

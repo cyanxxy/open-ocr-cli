@@ -53,7 +53,7 @@ let directory: string;
 let options: ResolvedCliOptions;
 
 beforeEach(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-inputs-'));
+  directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-inputs-'));
   process.env.GEMINI_API_KEY = 'test-key';
   options = resolveCliOptions({ dryRun: true }, {}, directory);
 });

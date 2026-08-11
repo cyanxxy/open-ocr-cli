@@ -15,7 +15,9 @@ Prepare these from the tagged release so every claim is reproducible:
   quality, p50 latency, and billed or estimated cost with the exact suite/date;
 - three copy-paste recipes: local batch OCR, GitHub Action invoice extraction,
   and Cloudflare AI Gateway routing;
-- one architecture image based on the provider-adapter diagram in the README;
+- one architecture image drawn for the launch — the README has no diagram to
+  base it on; use its "Repository layout" table and the shared job service
+  (`extract` / `run` / `mcp` over one `OcrJobService`) as the source;
 - an honest limitations card covering model-dependent schemas/tools, provider
   preview status, and the fact that live extraction sends documents upstream.
 
@@ -23,7 +25,7 @@ Prepare these from the tagged release so every claim is reproducible:
 
 ### Week 1 — credible release
 
-- Publish v2 to npm, GitHub Releases, GHCR, Homebrew formula, and the GitHub
+- Publish v3 to npm, GitHub Releases, GHCR, Homebrew formula, and the GitHub
   Marketplace Action from the same tagged commit.
 - Pin a concise demo issue or Discussion with the terminal recording and exact
   reproduction command.

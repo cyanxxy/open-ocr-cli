@@ -8,7 +8,6 @@ const mocks = vi.hoisted(() => ({
   executeOcrJobRequest: vi.fn(),
   promptInteractiveArguments: vi.fn(),
   readOcrJobRequest: vi.fn(),
-  readOcrJobRequestRaw: vi.fn(),
   runBatch: vi.fn(),
   runWebJob: vi.fn(),
 }));
@@ -20,7 +19,6 @@ vi.mock('./interactive', () => ({
 vi.mock('./machine', () => ({
   executeOcrJobRequest: mocks.executeOcrJobRequest,
   readOcrJobRequest: mocks.readOcrJobRequest,
-  readOcrJobRequestRaw: mocks.readOcrJobRequestRaw,
 }));
 
 vi.mock('./config', async (importOriginal) => {
@@ -45,13 +43,13 @@ vi.mock('./runner', () => ({
 }));
 
 import { CliExitError, cliExitCode, ocrErrorPayload } from './errors';
-import { cliBinaryName, cliVersion, createProgram, main, requestedExtractJsonlStream } from './main';
+import { cliVersion, createProgram, machineFailureChannel, main } from './main';
 
 const originalApiKey = process.env.GEMINI_API_KEY;
 let directory: string;
 
 beforeEach(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-main-'));
+  directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-main-'));
   process.env.GEMINI_API_KEY = 'test-key';
   process.exitCode = undefined;
   mocks.runWebJob.mockReset();
@@ -59,17 +57,6 @@ beforeEach(async () => {
   mocks.promptInteractiveArguments.mockReset();
   mocks.executeOcrJobRequest.mockReset();
   mocks.readOcrJobRequest.mockReset();
-  mocks.readOcrJobRequestRaw.mockReset();
-  mocks.readOcrJobRequestRaw.mockImplementation(async (...args: unknown[]) => {
-    const request = await mocks.readOcrJobRequest(...args);
-    return {
-      raw: JSON.stringify(request),
-      parsed: request,
-      declaredProtocolVersion: request?.protocolVersion === 1 || request?.protocolVersion === 2
-        ? request.protocolVersion
-        : undefined,
-    };
-  });
 });
 
 afterEach(async () => {
@@ -80,14 +67,10 @@ afterEach(async () => {
 });
 
 describe('CLI identity', () => {
-  it('uses Open OCR CLI as the primary name and preserves the Gemini alias', () => {
+  it('uses Open OCR CLI as its only executable name', () => {
     const help = createProgram().helpInformation();
     expect(help).toContain('Usage: open-ocr-cli');
-    expect(help).toContain('interactive|i');
-    expect(createProgram('gemini-ocr').helpInformation()).toContain('Usage: gemini-ocr');
-    expect(cliBinaryName(['node', '/usr/local/bin/open-ocr-cli'])).toBe('open-ocr-cli');
-    expect(cliBinaryName(['node', '/usr/local/bin/gemini-ocr'])).toBe('gemini-ocr');
-    expect(cliBinaryName(['node', '/workspace/packages/cli/src/index.ts'])).toBe('open-ocr-cli');
+    expect(help).toContain('interactive');
     expect(cliVersion()).toMatch(/^\d+\.\d+\.\d+/);
     expect(cliVersion()).not.toBe('0.0.0');
   });
@@ -122,7 +105,7 @@ describe('CLI command exit contracts', () => {
     try {
       await createProgram().parseAsync([
         'node',
-        'gemini-ocr',
+        'open-ocr-cli',
         'extract',
         input,
         '--quiet',
@@ -401,17 +384,54 @@ describe('CLI command exit contracts', () => {
     expect(process.exitCode).toBe(2);
   });
 
-  it('recognises an extract --jsonl request from unparsed argv', () => {
-    const asks = (...args: string[]): boolean => requestedExtractJsonlStream(['node', 'open-ocr-cli', ...args]);
-    expect(asks('extract', 'a.png', '--jsonl', '--bogus')).toBe(true);
-    expect(asks('extract', '--jsonl', '-')).toBe(true);
-    expect(asks('extract', 'a.png')).toBe(false);
-    // Another command's failure must not borrow the extract stream.
-    expect(asks('run', '--request', 'r.json', '--jsonl')).toBe(false);
-    expect(asks('bogus-command', '--jsonl')).toBe(false);
+  it('classifies the machine channel a failed parse still owes a record to', () => {
+    const channel = (...args: string[]) => machineFailureChannel(['node', 'open-ocr-cli', ...args]);
+    expect(channel('extract', 'a.png', '--jsonl', '--bogus')).toEqual({ command: 'extract' });
+    expect(channel('extract', '--jsonl', '-')).toEqual({ command: 'extract' });
+    expect(channel('extract', 'a.png')).toBeUndefined();
+    expect(channel('bogus-command', '--jsonl')).toBeUndefined();
     // After `--` every token is an operand, so a file literally named --jsonl
     // is an input, not a request for the stream.
-    expect(asks('extract', '--', '--jsonl')).toBe(false);
+    expect(channel('extract', '--', '--jsonl')).toBeUndefined();
+
+    // `run` always promises a machine payload; only the dialect varies. It must
+    // never borrow the extract record family — `--jsonl` there is not a flag.
+    expect(channel('run', '--request', 'r.json')).toEqual({ command: 'run', responseFormat: 'json' });
+    expect(channel('run', '--request', 'r.json', '--jsonl')).toEqual({ command: 'run', responseFormat: 'json' });
+    expect(channel('run', '--request', 'r.json', '--response-format', 'jsonl'))
+      .toEqual({ command: 'run', responseFormat: 'jsonl' });
+    expect(channel('run', '--request', 'r.json', '--response-format=jsonl'))
+      .toEqual({ command: 'run', responseFormat: 'jsonl' });
+    // An unparseable value falls back to the command's own default rather than
+    // guessing a dialect `run` would never have emitted.
+    expect(channel('run', '--response-format', 'bogus')).toEqual({ command: 'run', responseFormat: 'json' });
+  });
+
+  it('ends a failed run parse with one protocol record on stdout', async () => {
+    for (const [args, assertRecord] of [
+      [['run', '--bogus'], (value: Record<string, unknown>) => {
+        expect(value).toMatchObject({ protocolVersion: 2, type: 'run.result', ok: false, status: 'failed' });
+      }],
+      [['run', '--response-format', 'jsonl', '--bogus'], (value: Record<string, unknown>) => {
+        expect(value).toMatchObject({ protocolVersion: 2, type: 'run.failed', sequence: 0 });
+      }],
+    ] as const) {
+      process.exitCode = undefined;
+      const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      let output = '';
+      try {
+        await main(['node', 'open-ocr-cli', ...args]);
+      } finally {
+        output = stdout.mock.calls.flat().join('');
+        stdout.mockRestore();
+      }
+      const lines = output.split('\n').filter(Boolean);
+      expect(lines).toHaveLength(1);
+      const record = JSON.parse(lines[0]) as Record<string, unknown>;
+      assertRecord(record);
+      expect(record.error).toMatchObject({ code: 'CONFIG_INVALID', retryable: false });
+      expect(process.exitCode).toBe(2);
+    }
   });
 
   it('leaves stdout untouched when the parser exits successfully', async () => {
@@ -626,7 +646,7 @@ describe('CLI command exit contracts', () => {
     try {
       await createProgram().parseAsync([
         'node',
-        'gemini-ocr',
+        'open-ocr-cli',
         'web',
         'https://example.com/report',
         '--quiet',
@@ -648,7 +668,7 @@ describe('CLI command exit contracts', () => {
     try {
       await createProgram().parseAsync([
         'node',
-        'gemini-ocr',
+        'open-ocr-cli',
         'web',
         'https://example.com/report',
         '--output',
@@ -710,9 +730,8 @@ describe('CLI command exit contracts', () => {
     }
   });
 
-  it('marks whether the reported project config paths exist', async () => {
+  it('marks whether the reported project config path exists', async () => {
     const projectConfig = path.join(directory, '.open-ocr-cli.json');
-    const legacyProjectConfig = path.join(directory, '.gemini-ocr.json');
     const cwd = vi.spyOn(process, 'cwd').mockReturnValue(directory);
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const read = (): string => stdout.mock.calls.flat().join('');
@@ -721,32 +740,25 @@ describe('CLI command exit contracts', () => {
       expect(JSON.parse(read()) as Record<string, unknown>).toMatchObject({
         projectConfig,
         projectConfigExists: false,
-        legacyProjectConfig,
-        legacyProjectConfigExists: false,
       });
 
       stdout.mockClear();
       await createProgram().parseAsync(['node', 'open-ocr-cli', 'doctor', '--no-config']);
       expect(read()).toContain(`Project config: ${projectConfig} (not found)`);
-      expect(read()).not.toContain('Legacy project config:');
 
       await writeFile(projectConfig, '{}', 'utf8');
-      await writeFile(legacyProjectConfig, '{}', 'utf8');
 
       stdout.mockClear();
       await createProgram().parseAsync(['node', 'open-ocr-cli', 'doctor', '--no-config', '--json']);
       expect(JSON.parse(read()) as Record<string, unknown>).toMatchObject({
         projectConfig,
         projectConfigExists: true,
-        legacyProjectConfig,
-        legacyProjectConfigExists: true,
       });
 
       stdout.mockClear();
       await createProgram().parseAsync(['node', 'open-ocr-cli', 'doctor', '--no-config']);
       expect(read()).toContain(`Project config: ${projectConfig}\n`);
       expect(read()).not.toContain('(not found)');
-      expect(read()).toContain(`Legacy project config: ${legacyProjectConfig}\n`);
     } finally {
       stdout.mockRestore();
       cwd.mockRestore();
@@ -765,7 +777,7 @@ describe('agent machine commands', () => {
       };
       expect(capabilities).toMatchObject({
         protocolVersion: 2,
-        supportedProtocolVersions: [1, 2],
+        supportedProtocolVersions: [2],
         schemaAccess: { networkFetch: false },
       });
 
@@ -774,10 +786,6 @@ describe('agent machine commands', () => {
       const schema = JSON.parse(stdout.mock.calls.flat().join('')) as { $id: string };
       expect(schema.$id).toContain('request-v2.schema.json');
 
-      stdout.mockClear();
-      await createProgram().parseAsync(['node', 'open-ocr-cli', 'schema', 'request-v1']);
-      const legacySchema = JSON.parse(stdout.mock.calls.flat().join('')) as { $id: string };
-      expect(legacySchema.$id).toContain('request-v1.schema.json');
     } finally {
       stdout.mockRestore();
     }
@@ -785,13 +793,13 @@ describe('agent machine commands', () => {
 
   it('serializes a successful run result and preserves exit status zero', async () => {
     mocks.readOcrJobRequest.mockResolvedValueOnce({
-      protocolVersion: 1,
+      protocolVersion: 2,
       operation: 'extract',
       inputs: [{ type: 'path', path: 'invoice.jpg' }],
     });
     mocks.executeOcrJobRequest.mockResolvedValueOnce({
       result: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         type: 'run.result',
         ok: true,
         runId: 'run-1',
@@ -815,8 +823,41 @@ describe('agent machine commands', () => {
     }
   });
 
+  it('refuses to read the request and the document from the same stdin', async () => {
+    // Both spellings resolve to a stdin document, and both collide with
+    // `--request -`: one stream cannot carry the request JSON and the document
+    // bytes. Caught before any provider work, with a typed error.
+    for (const input of [
+      { type: 'stdin' as const, name: 'scan.png' },
+      { type: 'path' as const, path: '-' },
+    ]) {
+      process.exitCode = undefined;
+      mocks.readOcrJobRequest.mockResolvedValueOnce({
+        protocolVersion: 2,
+        operation: 'extract',
+        inputs: [input],
+      });
+      const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      let output = '';
+      try {
+        await createProgram().parseAsync([
+          'node', 'open-ocr-cli', 'run', '--request', '-', '--response-format', 'json',
+        ]);
+      } finally {
+        output = stdout.mock.calls.flat().join('');
+        stdout.mockRestore();
+      }
+      const record = JSON.parse(output.trim()) as { error: Record<string, unknown> };
+      expect(record.error).toMatchObject({ code: 'CONFIG_INVALID', retryable: false });
+      expect(record.error.message).toContain('cannot both be read from stdin');
+      expect(record.error.hint).toContain('--request <file>');
+      expect(process.exitCode).toBe(2);
+      expect(mocks.executeOcrJobRequest).not.toHaveBeenCalled();
+    }
+  });
+
   it('aborts a pending request stdin read on SIGINT and exits 130', async () => {
-    mocks.readOcrJobRequestRaw.mockImplementationOnce(async (
+    mocks.readOcrJobRequest.mockImplementationOnce(async (
       _requestPath: string,
       _cwd: string,
       signal: AbortSignal,
@@ -831,7 +872,7 @@ describe('agent machine commands', () => {
       await createProgram().parseAsync([
         'node', 'open-ocr-cli', 'run', '--request', '-', '--response-format', 'json',
       ]);
-      expect(mocks.readOcrJobRequestRaw).toHaveBeenCalledWith(
+      expect(mocks.readOcrJobRequest).toHaveBeenCalledWith(
         '-',
         process.cwd(),
         expect.any(AbortSignal),
@@ -875,13 +916,13 @@ describe('agent machine commands', () => {
 
   it('preserves exit code 1 for a partial machine result', async () => {
     mocks.readOcrJobRequest.mockResolvedValueOnce({
-      protocolVersion: 1,
+      protocolVersion: 2,
       operation: 'extract',
       inputs: [{ type: 'path', path: 'invoice.jpg' }],
     });
     mocks.executeOcrJobRequest.mockResolvedValueOnce({
       result: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         type: 'run.result',
         ok: false,
         runId: 'partial-run',
@@ -925,7 +966,7 @@ describe('agent machine commands', () => {
 
   it('does not duplicate a JSONL run.failed event already emitted by the service', async () => {
     mocks.readOcrJobRequest.mockResolvedValueOnce({
-      protocolVersion: 1,
+      protocolVersion: 2,
       operation: 'extract',
       inputs: [{ type: 'path', path: 'invoice.jpg' }],
     });
@@ -937,7 +978,7 @@ describe('agent machine commands', () => {
       execution: { eventSink?: (event: Record<string, unknown>) => void | Promise<void> },
     ) => {
       void execution.eventSink?.({
-        protocolVersion: 1,
+        protocolVersion: 2,
         type: 'run.failed',
         runId: 'run-1',
         sequence: 0,

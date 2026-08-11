@@ -19,13 +19,12 @@ import type { OcrJobServiceResult } from './ocrJobService';
 import { customSchemaCompatibilityWarning, loadCustomSchema, validateCustomSchema } from './schema';
 import {
   defaultAgentOutputDirectory,
+  isStdinRequestInput,
   ocrExtractionSemanticError,
   ocrUrlExtractionSemanticError,
   parseOcrJobRequest,
-  peekOcrProtocolVersion,
   type OcrJobEventSink,
   type OcrJobRequest,
-  type OcrProtocolVersion,
 } from './protocol';
 import type { CliConfigFile, ExtractCommandFlags } from './types';
 import { resolveWebUrls, runWebJob } from './web';
@@ -108,14 +107,17 @@ export async function readStandardInput(
 }
 
 /**
- * Read request JSON and peek its declared protocol version before full
- * validation (so invalid v1 bodies still fail as protocol v1).
+ * Read and validate a protocol request from a file or stdin.
+ *
+ * Returns the parsed request rather than the raw text: the raw body existed only
+ * to let a caller peek at `protocolVersion` before choosing a validator, and
+ * there is one version.
  */
-export async function readOcrJobRequestRaw(requestPath: string, cwd: string, signal?: AbortSignal): Promise<{
-  raw: string;
-  parsed: unknown;
-  declaredProtocolVersion?: OcrProtocolVersion;
-}> {
+export async function readOcrJobRequest(
+  requestPath: string,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<OcrJobRequest> {
   let raw: string;
   if (requestPath === '-') {
     raw = await readStandardInput(signal);
@@ -157,26 +159,10 @@ export async function readOcrJobRequestRaw(requestPath: string, cwd: string, sig
       },
     );
   }
-  return {
-    raw,
-    parsed,
-    declaredProtocolVersion: peekOcrProtocolVersion(parsed),
-  };
-}
-
-export async function readOcrJobRequest(
-  requestPath: string,
-  cwd: string,
-  signal?: AbortSignal,
-): Promise<OcrJobRequest> {
-  const { parsed } = await readOcrJobRequestRaw(requestPath, cwd, signal);
   return parseOcrJobRequest(parsed);
 }
 
 function requestFlags(request: OcrJobRequest, outputDirectory?: string): ExtractCommandFlags {
-  const progress = request.protocolVersion === 2
-    ? request.extraction?.progress ?? 'standard'
-    : 'standard';
   return {
     config: request.configPath,
     provider: request.provider?.id,
@@ -191,7 +177,12 @@ function requestFlags(request: OcrJobRequest, outputDirectory?: string): Extract
     customSchema: request.extraction?.schema !== undefined,
     instruction: request.extraction?.instructions,
     thinking: request.extraction?.thinking,
-    progress,
+    // Left undefined when the request omits it so file configuration — and then
+    // the built-in default — still applies. Defaulting to 'standard' here made
+    // the config file's `progress` key dead on the `run` and MCP surfaces, and
+    // reported `extraction.progress` as an option the caller supplied when it
+    // had not.
+    progress: request.extraction?.progress,
     detectImages: request.extraction?.detectImages,
     detectMath: request.extraction?.detectMath,
     maxTokens: request.extraction?.maxTokens?.toString(),
@@ -208,6 +199,11 @@ function requestFlags(request: OcrJobRequest, outputDirectory?: string): Extract
     hidden: request.discovery?.hidden,
     exclude: request.discovery?.exclude,
     output: outputDirectory,
+    // `delivery.outputDirectory` is a directory by contract, so the "does this
+    // path look like a file?" extension heuristic must not apply to it. Without
+    // this, a perfectly ordinary directory name containing a dot —
+    // `.open-ocr-results/run.2026` — was written as a single artifact file.
+    outputPathKind: outputDirectory === undefined ? 'auto' : 'directory',
     resume: request.delivery?.resume ?? true,
     overwrite: false,
     jsonl: false,
@@ -225,9 +221,10 @@ function requestFlags(request: OcrJobRequest, outputDirectory?: string): Extract
  * the caller never sent.
  */
 function suppliedModeScopedFields(request: OcrJobRequest): ModeScopedOptionKey[] {
-  const extraction = request.extraction;
-  if (!extraction) return [];
   const supplied: ModeScopedOptionKey[] = [];
+  if (request.execution?.retries !== undefined) supplied.push('retries');
+  const extraction = request.extraction;
+  if (!extraction) return supplied;
   if (extraction.detectImages !== undefined) supplied.push('detectImages');
   if (extraction.detectMath !== undefined) supplied.push('detectMath');
   if (extraction.instructions !== undefined && extraction.instructions.length > 0) supplied.push('instructions');
@@ -278,9 +275,7 @@ export async function executeOcrJobRequest(
   request: OcrJobRequest,
   execution: ExecuteOcrJobOptions,
 ): Promise<OcrJobServiceResult> {
-  const stdinInputs = request.inputs.filter((input) => (
-    input.type === 'stdin' || (input.type === 'path' && input.path === '-')
-  ));
+  const stdinInputs = request.inputs.filter(isStdinRequestInput);
   if (stdinInputs.length > 0 && request.inputs.length !== 1) {
     throw configurationError(
       'An OCR stdin document must be the request\'s only input.',
@@ -325,9 +320,7 @@ export async function executeOcrJobRequest(
     );
     if (schemaWarning) execution.onWarning?.(schemaWarning);
   }
-  const deliveryMode = request.protocolVersion === 1
-    ? 'reference'
-    : request.delivery?.mode ?? 'reference';
+  const deliveryMode = request.delivery?.mode ?? 'reference';
   const outputDirectory = deliveryMode === 'reference'
     ? request.delivery?.outputDirectory
       ? path.resolve(execution.cwd, request.delivery.outputDirectory)
@@ -337,7 +330,7 @@ export async function executeOcrJobRequest(
   // an earlier run and the caller silently pays for the same documents again.
   // `resume` defaults to true, so only an explicit request states an intent the
   // default directory cannot honor; warning on every run would be pure noise.
-  // The v1/v2 result and event schemas are strict, so this rides the warning
+  // The result and event schemas are strict, so this rides the warning
   // channel rather than a new response field.
   if (
     deliveryMode === 'reference'
@@ -360,7 +353,7 @@ export async function executeOcrJobRequest(
     ...(stdinInput?.name ? { stdinName: stdinInput.name } : {}),
     ...(stdinInput?.mimeType ? { stdinType: stdinInput.mimeType } : {}),
   };
-  // Ignored fields are reported on the warning channel: the v1/v2 result and
+  // Ignored fields are reported on the warning channel: the result and
   // event schemas are strict, so a new response field would break consumers
   // that validate against the published contract.
   const ignoredWarning = ignoredModeScopedOptionWarning(
@@ -377,11 +370,8 @@ export async function executeOcrJobRequest(
       abortController: execution.abortController,
       eventSink: execution.eventSink,
       onWarning: execution.onWarning,
-      protocolVersion: request.protocolVersion,
       deliveryMode,
-      progress: request.protocolVersion === 2
-        ? request.extraction?.progress ?? 'standard'
-        : 'standard',
+      progress: options.progress,
       enableSingleInputResume: deliveryMode === 'reference',
     });
   }
@@ -390,7 +380,7 @@ export async function executeOcrJobRequest(
   )), options, execution.abortController.signal);
   // A directory scan that drops files hands back fewer documents than were
   // requested, which the caller has to hear about. It rides the warning channel
-  // for the same reason ignored fields do — the v1/v2 result and event schemas
+  // for the same reason ignored fields do — the result and event schemas
   // are strict — and reuses the CLI's wording so both surfaces say one thing.
   const skipSummary = describeDiscoverySkips(discovery.skipped);
   if (skipSummary) execution.onWarning?.(`Discovery: ${skipSummary}`);
@@ -400,11 +390,8 @@ export async function executeOcrJobRequest(
     abortController: execution.abortController,
     eventSink: execution.eventSink,
     onWarning: execution.onWarning,
-    protocolVersion: request.protocolVersion,
     deliveryMode,
-    progress: request.protocolVersion === 2
-      ? request.extraction?.progress ?? 'standard'
-      : 'standard',
+    progress: options.progress,
     enableSingleInputResume: deliveryMode === 'reference',
   });
 }

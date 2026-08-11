@@ -25,10 +25,10 @@ describe('eval utilities', () => {
     expect(evalCase.presetId).toBe('invoice');
   });
 
-  it('normalizes legacy ocr mode and validates agentic config', () => {
+  it('validates simple and agentic config', () => {
     const simpleCase = validateEvalCase({
       id: 'simple-resume',
-      mode: 'ocr',
+      mode: 'simple',
       inputPath: 'evals/corpus/resume.pdf',
       expectedAssertions: [
         { type: 'contains', target: 'markdown', value: 'Jordan Lee' },
@@ -53,6 +53,15 @@ describe('eval utilities', () => {
     expect(simpleCase.mode).toBe('simple');
     expect(agenticCase.mode).toBe('agentic');
     expect(agenticCase.agentConfig?.maxIterations).toBe(4);
+  });
+
+  it('rejects unknown eval modes', () => {
+    expect(() => validateEvalCase({
+      id: 'unknown-mode',
+      mode: 'ocr',
+      inputPath: 'evals/corpus/resume.pdf',
+      expectedAssertions: [],
+    })).toThrow('must use mode "simple", "template", or "agentic"');
   });
 
   it('rejects invalid eval cases', () => {

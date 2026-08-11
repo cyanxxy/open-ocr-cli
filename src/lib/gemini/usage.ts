@@ -10,9 +10,6 @@ import {
 } from '../providers/runtime';
 import type { GeminiModel } from './types';
 
-/** Backward-compatible name for the CLI's provider-neutral usage snapshot. */
-export type GeminiUsageSnapshot = ProviderUsageSnapshot;
-
 export function recordGeminiUsage(
   response: unknown,
   model?: GeminiModel,
@@ -53,6 +50,6 @@ export function resetGeminiUsage(): void {
   resetProviderUsage();
 }
 
-export function getGeminiUsage(): GeminiUsageSnapshot {
+export function getGeminiUsage(): ProviderUsageSnapshot {
   return getProviderUsage();
 }

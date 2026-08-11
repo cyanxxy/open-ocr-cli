@@ -41,7 +41,7 @@ const artifacts: OcrArtifacts = {
 };
 
 beforeEach(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-output-'));
+  directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-output-'));
   process.env.GEMINI_API_KEY = 'test-key';
   options = resolveCliOptions({ output: directory, format: 'all' }, {}, '/workspace');
 });
@@ -60,9 +60,14 @@ describe('CLI output', () => {
   });
 
   it('writes all artifacts while preserving input directories', async () => {
-    const files = await writeArtifacts(input, artifacts, options, 2);
-    expect(files).toHaveLength(3);
-    expect(files).toContain(path.join(directory, 'nested', 'invoice.md'));
+    const written = await writeArtifacts(input, artifacts, options, 2);
+    expect(written).toHaveLength(3);
+    // Each destination carries the artifact key that produced it, which is what
+    // the protocol reports as `kind`/`mediaType`.
+    expect(written).toContainEqual({
+      path: path.join(directory, 'nested', 'invoice.md'),
+      extension: 'md',
+    });
     expect(await readFile(path.join(directory, 'nested', 'invoice.json'), 'utf8')).toContain('"Invoice"');
   });
 
@@ -75,7 +80,9 @@ describe('CLI output', () => {
       1,
     );
 
-    expect(files).toEqual([target]);
+    // A `.json` filename that happens to match the format is still described by
+    // the format, not by the name.
+    expect(files).toEqual([{ path: target, extension: 'json' }]);
     await expect(readFile(target, 'utf8')).resolves.toBe('null\n');
   });
 
@@ -135,8 +142,8 @@ describe('CLI output', () => {
       mimeType: 'image/png',
     };
     await expect(plannedArtifactTargets(first, options, 2)).resolves.toEqual([
-      path.join(directory, 'invoice.md'),
-      path.join(directory, 'invoice.json'),
+      { path: path.join(directory, 'invoice.md'), extension: 'md' },
+      { path: path.join(directory, 'invoice.json'), extension: 'json' },
     ]);
     await expect(assertNoOutputCollisions([first, second], options)).rejects.toThrow(
       'Output path collision detected before extraction',
@@ -182,10 +189,10 @@ describe('CLI output', () => {
   it('can reserve job metadata for a reference-first single-document run', async () => {
     const metadataCollision = {
       ...input,
-      absolutePath: '/workspace/.gemini-ocr-manifest.jpg',
-      relativePath: '.gemini-ocr-manifest.jpg',
-      displayPath: '.gemini-ocr-manifest.jpg',
-      name: '.gemini-ocr-manifest.jpg',
+      absolutePath: '/workspace/.open-ocr-manifest.jpg',
+      relativePath: '.open-ocr-manifest.jpg',
+      displayPath: '.open-ocr-manifest.jpg',
+      name: '.open-ocr-manifest.jpg',
     };
     await expect(assertNoOutputCollisions(
       [metadataCollision],
@@ -206,13 +213,13 @@ describe('CLI output', () => {
       '/workspace',
     );
     await expect(plannedArtifactTargets(input, templateOptions, 2)).resolves.toEqual([
-      path.join(directory, 'nested', 'invoice.md'),
-      path.join(directory, 'nested', 'invoice.json'),
+      { path: path.join(directory, 'nested', 'invoice.md'), extension: 'md' },
+      { path: path.join(directory, 'nested', 'invoice.json'), extension: 'json' },
     ]);
     await expect(plannedArtifactTargets(input, agenticOptions, 2)).resolves.toEqual([
-      path.join(directory, 'nested', 'invoice.md'),
-      path.join(directory, 'nested', 'invoice.json'),
-      path.join(directory, 'nested', 'invoice.steps.json'),
+      { path: path.join(directory, 'nested', 'invoice.md'), extension: 'md' },
+      { path: path.join(directory, 'nested', 'invoice.json'), extension: 'json' },
+      { path: path.join(directory, 'nested', 'invoice.steps.json'), extension: 'steps.json' },
     ]);
   });
 
@@ -277,7 +284,7 @@ describe('CLI output', () => {
       { ...options, format: 'all' },
       2,
       new Set([markdownTarget]),
-    )).resolves.toContain(markdownTarget);
+    )).resolves.toContainEqual({ path: markdownTarget, extension: 'md' });
     await expect(readFile(markdownTarget, 'utf8')).resolves.toBe('# Fresh\n');
   });
 
@@ -366,12 +373,11 @@ describe('CLI output', () => {
     });
     const reloaded = new ManifestStore(directory);
     await reloaded.load();
-    await expect(reloaded.completed('/workspace/invoice.pdf', 'abc')).resolves.toBe(true);
     await expect(reloaded.completedEntry('/workspace/invoice.pdf', 'abc')).resolves.toMatchObject({
       outputFiles: [outputFile],
       status: 'succeeded',
     });
-    await expect(reloaded.completed('/workspace/invoice.pdf', 'different')).resolves.toBe(false);
+    await expect(reloaded.completedEntry('/workspace/invoice.pdf', 'different')).resolves.toBeUndefined();
 
     await manifest.update('/workspace/invoice.pdf', {
       fingerprint: 'partial',
@@ -381,7 +387,9 @@ describe('CLI output', () => {
     });
     const partial = new ManifestStore(directory);
     await partial.load();
-    await expect(partial.completed('/workspace/invoice.pdf', 'partial')).resolves.toBe(true);
+    // A partial document produced less than the extraction asked for, so resume
+    // must re-extract it rather than report the shortfall as a clean skip.
+    await expect(partial.completedEntry('/workspace/invoice.pdf', 'partial')).resolves.toBeUndefined();
   });
 
   it('surfaces artifact permission errors instead of treating them as a resume miss', async () => {
@@ -397,7 +405,7 @@ describe('CLI output', () => {
       { code: 'EACCES' },
     ));
     try {
-      await expect(manifest.completed('/workspace/invoice.pdf', 'abc')).rejects.toMatchObject({
+      await expect(manifest.completedEntry('/workspace/invoice.pdf', 'abc')).rejects.toMatchObject({
         code: 'EACCES',
       });
     } finally {
@@ -406,7 +414,7 @@ describe('CLI output', () => {
   });
 
   it('rejects malformed resume manifests instead of trusting unsafe entry shapes', async () => {
-    const manifestPath = path.join(directory, '.gemini-ocr-manifest.json');
+    const manifestPath = path.join(directory, '.open-ocr-manifest.json');
     await writeFile(manifestPath, JSON.stringify({
       version: 1,
       entries: {
@@ -452,7 +460,7 @@ describe('CLI output', () => {
   });
 
   it('force-unlocks a valid same-host lock only after its owner is proven dead', async () => {
-    const lockPath = path.join(directory, '.gemini-ocr.lock');
+    const lockPath = path.join(directory, '.open-ocr.lock');
     await writeFile(lockPath, `${JSON.stringify({
       version: 1,
       token: 'stale-token',
@@ -566,7 +574,7 @@ describe('extract --jsonl stream dialect', () => {
 
   it('versions every record on one scheme', () => {
     // A stream whose records version independently cannot be evolved as a unit:
-    // a consumer would have to track three compatibility stories to read one
+    // a consumer would have to track three result shapes to read one
     // file. `summary` inherits its version from BatchSummary, so this also pins
     // that field to the stream version rather than letting the two drift.
     expect(stream().map((record) => record.type)).toEqual(['document', 'summary', 'error']);

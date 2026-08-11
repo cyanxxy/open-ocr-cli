@@ -91,7 +91,7 @@ try {
     OPEN_OCR_ACTION_PRESET: '',
     OPEN_OCR_ACTION_FORMAT: 'markdown',
     OPEN_OCR_ACTION_OUTPUT: outputDirectory,
-    OPEN_OCR_ACTION_VERSION: '2.0.0',
+    OPEN_OCR_ACTION_VERSION: '3.0.0',
     OPEN_OCR_ACTION_DRY_RUN: 'true',
     OPEN_OCR_ACTION_PACKAGE: path.join(packageDirectory, tarballName),
   });

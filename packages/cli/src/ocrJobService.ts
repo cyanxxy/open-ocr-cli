@@ -1,7 +1,6 @@
 import type { AgentStep } from '../../../src/lib/agentTypes';
 import {
   createProviderExecutionContext,
-  isProviderCostLimitError,
   type ProviderExecutionContext,
 } from '../../../src/lib/providers';
 import {
@@ -18,18 +17,19 @@ import {
   assertArtifactFormatAvailable,
   assertArtifactTargetsAvailable,
   assertNoOutputCollisions,
+  artifactTargetFromPath,
   BatchOutputLock,
   defaultOutputDirectory,
   ManifestStore,
   plannedArtifactTargets,
   resolvesToSingleArtifactFile,
+  STDIN_MANIFEST_KEY,
   writeArtifacts,
   writeBatchSummary,
 } from './output';
 import {
   agentProtocolStep,
   assertOcrJobEvent,
-  errorPayloadForProtocol,
   OCR_PROTOCOL_VERSION,
   ocrDocumentId,
   toOcrRunResult,
@@ -38,7 +38,6 @@ import {
   type OcrJobEventSink,
   type OcrDeliveryMode,
   type OcrProgressLevel,
-  type OcrProtocolVersion,
   type OcrRunResult,
 } from './protocol';
 import type {
@@ -80,9 +79,7 @@ export interface OcrJobServiceRuntime {
   onWarning?: (message: string) => void;
   /** Persist a manifest for a reference-first, single-document output directory. */
   enableSingleInputResume?: boolean;
-  /** Machine protocol negotiated by the request. Direct CLI calls omit it. */
-  protocolVersion?: OcrProtocolVersion;
-  /** Explicit machine delivery; omitted for the direct CLI's historical behavior. */
+  /** Explicit machine delivery; the direct CLI derives delivery from its output options. */
   deliveryMode?: OcrDeliveryMode;
   /** Structured agent event detail. */
   progress?: OcrProgressLevel;
@@ -104,6 +101,15 @@ interface OutputPlan {
   needsManifest: boolean;
 }
 
+/** Remove document bodies and extraction payloads from the auditable summary. */
+function persistedJobResult(result: OcrJobResult): OcrJobResult {
+  return {
+    ...result,
+    input: { ...result.input, stdinBytes: undefined },
+    artifacts: undefined,
+  };
+}
+
 type EventPayload = Omit<OcrJobEvent, 'protocolVersion' | 'runId' | 'sequence' | 'timestamp'>;
 
 class EventDispatcher {
@@ -113,24 +119,19 @@ class EventDispatcher {
 
   constructor(
     private readonly runId: string,
-    private readonly protocolVersion: OcrProtocolVersion,
     private readonly sink?: OcrJobEventSink,
   ) {}
 
   emit(payload: EventPayload): Promise<void> {
     if (!this.sink) return Promise.resolve();
-    const { step, phase, message, error, ...common } = payload;
+    const { error, ...common } = payload;
     const event: OcrJobEvent = {
-      protocolVersion: this.protocolVersion,
+      protocolVersion: OCR_PROTOCOL_VERSION,
       runId: this.runId,
       sequence: this.sequence,
       timestamp: new Date().toISOString(),
       ...common,
-      ...(this.protocolVersion === 1 && payload.type === 'document.progress'
-        ? { phase: phase ?? step?.kind ?? 'runtime', message: message ?? step?.text ?? 'Agent progress updated.' }
-        : {}),
-      ...(this.protocolVersion === 2 && payload.type === 'document.progress' && step ? { step } : {}),
-      ...(error ? { error: errorPayloadForProtocol(error, this.protocolVersion) } : {}),
+      ...(error ? { error } : {}),
     };
     // Validate before allocating the sequence number so a bad event does not
     // leave a permanent gap or throw after side effects.
@@ -248,12 +249,7 @@ function isSafeProgressCharacter(character: string): boolean {
   return !disallowedControl && !bidirectionalOverride;
 }
 
-/**
- * Produce the bounded compatibility message used by human stderr and protocol
- * v1. Protocol v2 additionally carries the lossless typed AgentProtocolStep;
- * modern agent consumers should use that structured field for model output,
- * reasoning summaries, tool calls, and stable streaming step IDs.
- */
+/** Produce a bounded, terminal-safe direct-CLI progress message. */
 export function normalizeAgentProgressText(content: string): string | undefined {
   const withoutAnsi = content.replace(ANSI_CONTROL_SEQUENCE, '');
   const normalized = Array.from(withoutAnsi)
@@ -316,8 +312,7 @@ export class OcrJobService {
         inputs.length > 1 || Boolean(options.output) || options.format === 'all'
       ));
     // Job metadata needs a directory of its own; `--output report.md` leaves it
-    // nowhere to go. This is what the historical single-input opt-in was really
-    // protecting, so gate on the output layout rather than the document count.
+    // nowhere to go, so gate on the output layout rather than the document count.
     const singleArtifactFile = await resolvesToSingleArtifactFile(options, inputs.length);
     // One document resumes exactly like several, provided it has a stable
     // manifest key. stdin and URL documents all key on '<stdin>', so they stay
@@ -334,9 +329,8 @@ export class OcrJobService {
     options: ResolvedCliOptions,
     runtime: OcrJobServiceRuntime,
   ): Promise<OcrJobServiceResult> {
-    const protocolVersion = runtime.protocolVersion ?? OCR_PROTOCOL_VERSION;
     const deliveryMode = runtime.deliveryMode ?? 'reference';
-    const events = new EventDispatcher(runtime.runId, protocolVersion, runtime.eventSink);
+    const events = new EventDispatcher(runtime.runId, runtime.eventSink);
     const providerRuntime = createProviderExecutionContext({
       requestsPerMinute: options.requestsPerMinute,
       maxCostUsd: options.maxCostUsd,
@@ -391,12 +385,13 @@ export class OcrJobService {
         ? failure
         // Redact here as well as at every renderer: this error is thrown, and a
         // caller that logs `error.message` directly bypasses `ocrErrorPayload`.
+        // No `hint`: the constructor falls back to DEFAULT_ERROR_HINTS for the
+        // code, so a copy here could only drift from the taxonomy it belongs to.
         : new CliExitError(redactSensitiveErrorText(errorMessage(failure)), 1, {
             cause: failure,
             code: 'INTERNAL',
             category: 'internal',
             retryable: false,
-            hint: 'Retry once, then report the failure with non-secret diagnostics if it persists.',
           });
       await events.emit({ type: 'run.failed', error: ocrErrorPayload(typedFailure) });
       await events.flush();
@@ -407,7 +402,6 @@ export class OcrJobService {
     const result = toOcrRunResult(
       runtime.runId,
       summary,
-      protocolVersion,
       deliveryMode,
       options.format,
       runtime.progress ?? options.progress,
@@ -458,7 +452,7 @@ export class OcrJobService {
     if (!options.overwrite) {
       try {
         await Promise.all(inputs.map(async (input, index) => {
-          const key = input.absolutePath ?? '<stdin>';
+          const key = input.absolutePath ?? STDIN_MANIFEST_KEY;
           const fingerprint = inputFingerprint(input, fingerprintMode);
           const completedEntry = resumeActive
             ? await manifest?.completedEntry(key, fingerprint)
@@ -500,7 +494,6 @@ export class OcrJobService {
         type: terminalEventType(result),
         document: toProtocolDocument(
           result,
-          runtime.protocolVersion ?? OCR_PROTOCOL_VERSION,
           runtime.deliveryMode ?? 'reference',
           options.format,
           runtime.progress ?? options.progress,
@@ -524,7 +517,7 @@ export class OcrJobService {
         const input = inputs[index];
         const jobStart = performance.now();
         const jobStartedAt = new Date().toISOString();
-        const key = input.absolutePath ?? '<stdin>';
+        const key = input.absolutePath ?? STDIN_MANIFEST_KEY;
         const fingerprint = inputFingerprint(input, fingerprintMode);
         await events.emit({
           type: 'document.started',
@@ -540,14 +533,16 @@ export class OcrJobService {
           try {
             this.assertInputSupported(input, options);
             await this.validateInput(input, options);
-            const plannedOutputFiles = shouldWriteFiles
+            const plannedOutputArtifacts = shouldWriteFiles
               ? await plannedArtifactTargets(input, options, inputs.length)
               : [];
             result = {
               status: 'skipped', input, provider: options.provider, gateway: options.gateway,
               mode: options.mode, model: options.model, startedAt: jobStartedAt,
               completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart,
-              attempts: 0, plannedOutputFiles, skipReason: 'validated',
+              attempts: 0, plannedOutputArtifacts,
+              plannedOutputFiles: plannedOutputArtifacts.map((target) => target.path),
+              skipReason: 'validated',
             };
           } catch (error) {
             result = {
@@ -559,11 +554,12 @@ export class OcrJobService {
             if (options.failFast) failFastTriggered = true;
           }
         } else if (completedEntry) {
+          const outputArtifacts = completedEntry.outputFiles.map(artifactTargetFromPath);
           result = {
             status: 'skipped', input, provider: options.provider, gateway: options.gateway,
             mode: options.mode, model: options.model, startedAt: jobStartedAt,
             completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart,
-            attempts: 0, outputFiles: completedEntry.outputFiles, skipReason: 'resumed',
+            attempts: 0, outputFiles: completedEntry.outputFiles, outputArtifacts, skipReason: 'resumed',
           };
         } else {
           const timeoutController = new AbortController();
@@ -592,8 +588,6 @@ export class OcrJobService {
                     index,
                     total: inputs.length,
                     source: input.displayPath,
-                    phase: step.type,
-                    message: agentProgressMessage(step),
                     step: protocolStep,
                   }).catch((error: unknown) => {
                     progressFailure ??= error;
@@ -624,9 +618,10 @@ export class OcrJobService {
             if (explicitDelivery === 'inline') {
               assertArtifactFormatAvailable(artifacts, options.format);
             }
-            const outputFiles = shouldWriteFiles
+            const outputArtifacts = shouldWriteFiles
               ? await writeArtifacts(input, artifacts, options, inputs.length, staleArtifacts.get(index))
               : undefined;
+            const outputFiles = outputArtifacts?.map((target) => target.path);
             const agentMemory = options.mode === 'agentic' && artifacts.json && typeof artifacts.json === 'object'
               ? artifacts.json as { stopReason?: string }
               : undefined;
@@ -638,7 +633,7 @@ export class OcrJobService {
               status: jobStatus, input, provider: options.provider, gateway: options.gateway,
               mode: options.mode, model: options.model, startedAt: jobStartedAt,
               completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart,
-              artifacts, outputFiles, attempts,
+              artifacts, outputFiles, outputArtifacts, attempts,
             };
             await manifest?.update(key, {
               fingerprint,
@@ -660,7 +655,12 @@ export class OcrJobService {
                 ? new CliExitError(errorMessage(runtime.abortController.signal.reason ?? error), 130, { cause: error })
                 : error;
             const failure = documentFailure(typedError, 1);
-            if (isProviderCostLimitError(error)) costLimitReached = true;
+            // Read the classified code, not the raw error: by this point the
+            // provider's cost-limit rejection is wrapped by the retry layer, so
+            // an instance check against the original class never matched and a
+            // cost-stopped batch reported its remaining documents as a
+            // retryable NOT_RUN. `documentFailure` walks the cause chain.
+            if (failure.errorDetails.code === 'COST_LIMIT') costLimitReached = true;
             result = {
               status: cancelled ? 'skipped' : 'failed', input, provider: options.provider, gateway: options.gateway,
               mode: options.mode, model: options.model, startedAt: jobStartedAt,
@@ -752,9 +752,15 @@ export class OcrJobService {
       costLimitReached: costLimitReached || providerRuntime.wasCostLimitDenied(),
       results: finishedResults,
     };
-    if (shouldWriteFiles && inputs.length > 1 && !options.dryRun) {
+    // Gated on the manifest, not the document count: `needsManifest` is exactly
+    // the condition under which this run owns an output directory and has
+    // already reserved `batch-summary.json` in it. Keying on `inputs.length > 1`
+    // meant a single-document reference run reserved the path, created the
+    // manifest and lock, and then wrote no summary — leaving `status` with
+    // nothing to report for a run the docs say is auditable.
+    if (needsManifest && !options.dryRun) {
       await writeBatchSummary(
-        { ...summary, results: summary.results.map((result) => ({ ...result, artifacts: undefined })) },
+        { ...summary, results: summary.results.map(persistedJobResult) },
         defaultOutputDirectory(options),
       );
     }

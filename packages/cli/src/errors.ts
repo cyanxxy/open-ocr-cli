@@ -86,7 +86,9 @@ const DEFAULT_ERROR_HINTS: Record<OcrErrorCode, string> = {
   CANCELLED: 'Resume or rerun the interrupted job when ready.',
   NOT_RUN: 'Rerun the skipped documents after addressing the failure that stopped the batch.',
   PROVIDER_FAILURE: 'Review the reported provider message and adjust the request before retrying.',
-  INTERNAL: 'Retry once, then report the failure with non-secret diagnostics if it persists.',
+  // Kept consistent with `retryable: false`: advising a retry under a flag that
+  // says not to retry is the one thing an agent cannot act on.
+  INTERNAL: 'Report the failure with non-secret diagnostics; rerunning the identical command is unlikely to help.',
 };
 
 function defaultErrorDetails(exitCode: CliExitCode): OcrErrorDetails {
@@ -109,7 +111,7 @@ function defaultErrorDetails(exitCode: CliExitCode): OcrErrorDetails {
 const PAGE_LIMIT_PATTERN = /\bhas \d+ pages?; the maximum is \d+/u;
 
 /**
- * Legacy inference for untyped third-party or filesystem errors only.
+ * Inference for untyped third-party or filesystem errors only.
  *
  * Every rule here is a substring match against a message that may embed text
  * the caller supplied — a schema path, a filename, a property name — so each one
@@ -443,6 +445,27 @@ export class CliExitError extends Error {
   }
 }
 
+/**
+ * A batch output directory whose own metadata cannot be read.
+ *
+ * Typed at the throw site because the untyped classifier reports these as
+ * `CONFIG_INVALID` with "Check the request, command flags, and configuration" —
+ * advice that cannot resolve a corrupt or superseded file on disk. The
+ * distinction matters to `status` and to `--resume`, which are the two surfaces
+ * that read this metadata back: the caller's command is fine, the directory is
+ * not, and the recovery is to point elsewhere or re-run rather than to edit
+ * flags.
+ */
+export function batchMetadataError(message: string): CliExitError {
+  return new CliExitError(message, 2, {
+    code: 'INPUT_INVALID',
+    category: 'input',
+    retryable: false,
+    hint: 'This directory\'s batch metadata is missing fields this release requires, or was written by a different tool. '
+      + 'Re-run the extraction into a fresh output directory.',
+  });
+}
+
 export function asCliExitError(error: unknown, exitCode: CliExitCode): CliExitError {
   if (error instanceof CliExitError) {
     const redacted = redactSensitiveErrorText(error.message);
@@ -483,7 +506,7 @@ export interface CliBatchOutcome {
   costLimitReached: boolean;
 }
 
-/** Preserve the public v1 contract: every incomplete execution exits with 1. */
+/** Every incomplete execution exits with 1. */
 export function cliBatchExitCode(outcome: CliBatchOutcome): 0 | 1 {
   if (outcome.costLimitReached || outcome.partial > 0 || outcome.failed > 0) return 1;
   return 0;

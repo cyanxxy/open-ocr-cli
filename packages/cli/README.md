@@ -15,8 +15,7 @@ export GEMINI_API_KEY="your-key"
 open-ocr-cli interactive
 ```
 
-`open-ocr-cli` is the primary executable. `gemini-ocr` remains an equivalent
-backwards-compatible alias.
+`open-ocr-cli` is the executable and npm package.
 
 Running with no arguments always prints help, including inside a
 pseudo-terminal. Launch the guided arrow-key menu explicitly with
@@ -25,6 +24,49 @@ pseudo-terminal. Launch the guided arrow-key menu explicitly with
 For a project-local install, use `npx open-ocr-cli`. Direct subcommands such as
 `open-ocr-cli extract invoice.pdf` remain non-interactive and safe for scripts
 and CI.
+
+## Upgrading from 2.x
+
+3.0 keeps one current contract and ships no compatibility shims, so each of these
+is a rename or a removal rather than a deprecation. All of them fail loudly.
+
+| 2.x | 3.0 |
+| --- | --- |
+| `gemini-ocr` executable | `open-ocr-cli` |
+| `~/.config/gemini-ocr/config.json`, `./.gemini-ocr.json` | `~/.config/open-ocr-cli/config.json`, `./.open-ocr-cli.json` |
+| `GEMINI_OCR_MODEL`, `GEMINI_OCR_THINKING` | `OPEN_OCR_MODEL`, `OPEN_OCR_THINKING` |
+| `GEMINI_OCR_DEBUG` | `OPEN_OCR_DEBUG` |
+| `./gemini-ocr-output` | `./open-ocr-output` |
+| `.gemini-ocr-manifest.json`, `.gemini-ocr.lock` | `.open-ocr-manifest.json`, `.open-ocr.lock` |
+| `--include-thoughts` | `--progress standard` |
+| `"protocolVersion": 1` requests | `"protocolVersion": 2` |
+| `schema request-v1` and the other `-v1` schemas | `schema request` (v2) |
+| MCP clients on the 2025 `initialize` handshake | hosts opening revision `2026-07-28` |
+| `uses: cyanxxy/open-ocr-cli@v2` | `uses: cyanxxy/open-ocr-cli@v3` |
+
+Four behavior changes have no rename to make:
+
+- **Existing output directories are not readable.** `status` and `--resume`
+  require `provider` and `gateway` in `batch-summary.json`, which 2.x omitted for
+  Gemini runs. Point them at a fresh `--output` directory; both report
+  `INPUT_INVALID` saying so rather than failing obscurely.
+- **`--resume` re-extracts `partial` documents** instead of skipping them, so a
+  resumed batch finishes work it previously stranded — and bills for it.
+- **`--retries` and `--verbose` are mode-scoped.** Agentic runs already ignored
+  `--retries`; they now say so on stderr. See the mode-scoping table below.
+- **`web` ignores an inherited `format` of `csv` or `all`** and uses Markdown,
+  where 2.x failed the run.
+
+Renaming a config file is usually the whole migration:
+
+```bash
+mv ~/.config/gemini-ocr/config.json ~/.config/open-ocr-cli/config.json
+mv .gemini-ocr.json .open-ocr-cli.json
+open-ocr-cli doctor            # confirms the config and credentials resolve
+```
+
+Delete any `includeThoughts` key while you are there; it is no longer accepted
+and an unknown key is warned about and dropped.
 
 ## Pick a provider
 
@@ -59,20 +101,27 @@ Run `open-ocr-cli providers` for capability metadata and
 generic profile accept arbitrary upstream model IDs. Generic PDF support is not
 assumed; use images or a named PDF-capable profile.
 
-| Profile | Default model | PDF handling | Structured output |
-| --- | --- | --- | --- |
-| `gemini` | `gemini-3.5-flash` | Native PDF input | Yes |
-| `kimi` | `kimi-k3` | Kimi file extraction | Yes |
-| `muse` | `muse-spark-1.1` | Images (PNG/JPEG/WebP/GIF) and PDFs | Yes |
-| `openrouter` | `google/gemini-3.5-flash` | Model-dependent | Model-dependent |
-| `openai-compatible` | Required | Endpoint-dependent | Endpoint-dependent |
+| Profile | Default model | Image input | PDF handling | Structured output |
+| --- | --- | --- | --- | --- |
+| `gemini` | `gemini-3.5-flash` | PNG, JPEG, WebP, HEIC, HEIF | Native PDF input | Yes |
+| `kimi` | `kimi-k3` | PNG, JPEG, WebP, GIF | Kimi file extraction | Yes |
+| `muse` | `muse-spark-1.1` | PNG, JPEG, WebP, GIF | PDFs supported | Yes |
+| `openrouter` | `google/gemini-3.5-flash` | PNG, JPEG, WebP, GIF | Model-dependent | Model-dependent |
+| `openai-compatible` | Required | Endpoint-dependent | **Rejected locally** | Endpoint-dependent |
+
+Note the two asymmetries: **GIF is not accepted on the default `gemini` profile**
+and **HEIC/HEIF is accepted only there**. The `openai-compatible` profile refuses
+PDFs before any request, because a generic endpoint advertises no document
+capability to check. `open-ocr-cli capabilities --json` publishes the exact
+`inputImageMimeTypes` per profile; an absent list means model/endpoint-specific.
 
 Kimi K3 accepts only LOW, HIGH, and MAX reasoning effort, including through
-OpenRouter. Other OpenRouter model IDs use the router's provider-neutral
+OpenRouter; `--thinking minimal` is mapped to LOW there rather than refused,
+while `medium` and `xhigh` are refused so no level is silently upgraded. Other OpenRouter model IDs use the router's provider-neutral
 MINIMAL, LOW, MEDIUM, HIGH, XHIGH, and MAX effort vocabulary; OpenRouter maps
 unsupported levels to the closest effort exposed by that model. The CLI allows
-non-Gemini compatible routes to request up to 1,048,576 output tokens instead
-of assuming a legacy 65,536-token ceiling. The selected upstream model may
+non-Gemini compatible routes to request up to 1,048,576 output tokens. The
+selected upstream model may
 advertise and enforce a smaller limit.
 
 The CLI reads secrets only from environment variables or `.env`. It never
@@ -127,7 +176,8 @@ for the corresponding dashboard setup.
 
 ```bash
 # Guided menu for choosing a command, provider, model, mode, and output
-open-ocr-cli
+# (a bare `open-ocr-cli` prints help and never prompts)
+open-ocr-cli interactive
 
 # Guided provider-aware project configuration and credential validation
 open-ocr-cli init
@@ -174,26 +224,34 @@ open-ocr-cli status ./results --json
 cat scan.png | open-ocr-cli extract - --format json
 ```
 
-Supported local formats are PNG, JPEG, WebP, GIF, HEIC, HEIF, and PDF. PDFs are
-limited to 50 MB and 1,000 pages; images are limited to 70 MB raw. Defaults are
-1,000 files, 5,120 MB total, and concurrency 2. Video formats such as MP4 are
+Discovery accepts PNG, JPEG, WebP, GIF, HEIC, HEIF, and PDF, but **which of them
+the selected provider accepts is narrower** — see the profile table above. PDFs
+are limited to 50 MB and 1,000 pages; images are limited to 70 MB raw. Defaults
+are 1,000 files, 5,120 MB total, and concurrency 2. Video formats such as MP4 are
 not OCR inputs, even when the selected model has a broader video capability.
-HEIC/HEIF is native on Gemini; the named Kimi, Muse, and OpenRouter profiles
-reject it locally with a conversion hint and accept PNG, JPEG, WebP, and GIF.
+HEIC/HEIF is native on Gemini only; the named Kimi, Muse, and OpenRouter profiles
+reject it locally with a conversion hint and accept GIF, which Gemini does not.
 Muse PDFs use Meta's documented Chat Completions file part. Known profiles
 expose their usable `inputImageMimeTypes` through
 `open-ocr-cli capabilities --json`; absence means model/endpoint-specific.
+A rejected media type fails locally as `INPUT_INVALID` before any billed request.
 
 ## Configuration
 
 Precedence from lowest to highest:
 
-1. `~/.config/gemini-ocr/config.json` (legacy)
-2. `~/.config/open-ocr-cli/config.json`
-3. `./.gemini-ocr.json` (legacy)
-4. `./.open-ocr-cli.json`
-5. `--config <path>`
-6. CLI flags
+1. `~/.config/open-ocr-cli/config.json`
+2. `./.open-ocr-cli.json`
+3. `--config <path>`
+4. `OPEN_OCR_*` environment variables
+5. CLI flags
+
+The environment overrides are `OPEN_OCR_PROVIDER`, `OPEN_OCR_GATEWAY`,
+`OPEN_OCR_MODEL`, and `OPEN_OCR_THINKING`. `OPEN_OCR_NO_CONFIG=1` ignores every
+configuration file and the project `.env`, `OPEN_OCR_MCP_CONFIRM=1` gates billed
+MCP runs behind an elicited confirmation, and `OPEN_OCR_DEBUG=1` adds a stack
+trace to fatal errors on stderr. Credentials are read only from the provider key
+variable (`--api-key-env` / `apiKeyEnv` selects which one).
 
 ```json
 {
@@ -244,17 +302,19 @@ the project `.env` for a fully hermetic `extract`, `run`, `web`, or `doctor` inv
 
 ## Batch and automation contracts
 
-The two entry points deliberately default to different output directories:
+The two entry points use separate default output directories:
 
-- `extract` writes to `./gemini-ocr-output`, unchanged for backwards
-  compatibility. Override it with `--output <path>`.
+- `extract` writes to `./open-ocr-output`. Override it with `--output <path>`.
+  A single document normally prints to stdout instead; it is written to files
+  whenever `--output` is given **or** `--format all` is selected, since `all`
+  produces several artifacts that cannot share one stream.
 - `run` and the MCP tools write to `./.open-ocr-results/<runId>` whenever
   `delivery.outputDirectory` is omitted and delivery mode is `reference`, so
   concurrent agent runs never collide. Override it with
   `delivery.outputDirectory`.
 
-Either directory holds the same layout: artifacts, `.gemini-ocr-manifest.json`,
-`.gemini-ocr.lock`, and `batch-summary.json`.
+Either directory holds the same layout: artifacts, `.open-ocr-manifest.json`,
+`.open-ocr.lock`, and `batch-summary.json`.
 
 - Existing output is never replaced without `--overwrite`.
 - Every discovered input gets a succeeded, partial, failed, or skipped result.
@@ -308,7 +368,7 @@ known. Other profiles accept upstream model IDs.
 | `kimi-k3` | Default Kimi multimodal and agentic route | LOW · HIGH · MAX |
 | `kimi-k2.7-code` | Kimi coding/agent route; thinking always on | HIGH (fixed) |
 | `kimi-k2.7-code-highspeed` | Faster K2.7 Code route | HIGH (fixed) |
-| `kimi-k2.6` | Legacy Kimi multimodal route | MINIMAL · HIGH |
+| `kimi-k2.6` | Kimi multimodal route | MINIMAL · HIGH |
 | `muse-spark-1.1` | Meta public-preview multimodal route | MINIMAL · LOW · MEDIUM · HIGH · XHIGH |
 | `moonshotai/kimi-k3` | Kimi through OpenRouter | LOW · HIGH · MAX |
 | Other OpenRouter models | Selected by upstream ID | Model-dependent (MINIMAL–MAX accepted) |
@@ -316,6 +376,13 @@ known. Other profiles accept upstream model IDs.
 Defaults are model-aware: Gemini 3.5 Flash **MEDIUM**, Flash-Lite **MINIMAL**,
 3 Flash Preview and 3.1 Pro **HIGH**, Kimi K3 **MAX**. Explicitly supported
 levels are preserved in agentic mode rather than silently raised.
+
+This table is documentation; when a provider exposes reasoning controls, the
+machine-readable copy is `capabilities --json` → `providers[].reasoning`. It
+gives `byModel[<model>]` (`levels` and `defaultLevel`) plus `fallbackLevels` for
+an upstream model ID the profile does not list. An omitted `reasoning` field
+means the generic endpoint does not expose a portable control. Prefer this
+metadata over parsing the table.
 
 Built-in paid-tier estimates, USD per million tokens:
 
@@ -333,11 +400,34 @@ Built-in paid-tier estimates, USD per million tokens:
 Provider prices change, so verify the provider's own pricing page before
 budgeting a large run.
 
-Use `--progress off|standard|detailed` to choose observability: standard keeps
-model output, provider thought summaries, and tool lifecycle metadata; detailed
-also exposes provider reasoning and tool payloads. Reasoning state needed for a
-tool continuation is always replayed to the provider regardless of visibility.
-The deprecated `--include-thoughts` flag maps to standard progress.
+Use `--progress off|standard|detailed` to choose observability **in agentic
+mode**: standard keeps model output, provider thought summaries, and tool
+lifecycle metadata; detailed also exposes provider reasoning and tool payloads.
+Simple and template extraction is a single request with no step stream, so
+`--progress` (and `extraction.progress`) is reported as an ignored option there.
+Reasoning state needed for a tool continuation is always replayed to the provider
+regardless of visibility.
+
+The same mode scoping applies to several other options:
+
+| Option | Protocol field | Honoured in |
+| --- | --- | --- |
+| `--detect-images`, `--detect-math`, `--instruction` | `extraction.detectImages`, `.detectMath`, `.instructions` | simple |
+| `--max-iterations`, `--confidence-threshold` | `extraction.maxIterations`, `.confidenceThreshold` | agentic |
+| `--progress` | `extraction.progress` | agentic |
+| `--retries` | `execution.retries` | simple, template |
+| `--verbose` | *(none)* | agentic |
+
+`--retries` is scoped out of agentic mode because the agent loop owns its own
+bounded provider retries and the outer wrapper is pinned to a single attempt; an
+agentic run therefore takes `--retries 5` and performs one attempt. `--verbose`
+prints agent steps and nothing else, so outside agentic mode it is a no-op rather
+than "more output"; it has no protocol counterpart, so `run`/MCP never name a
+request key for it.
+
+Supplying any of these outside its mode is never silent: the CLI writes
+`ignoring option(s) that <mode> mode does not use: …` to stderr, and `run`/MCP
+report it on the warning channel.
 
 ## Coding-agent protocol
 
@@ -350,7 +440,11 @@ open-ocr-cli schema request
 open-ocr-cli schema result
 open-ocr-cli schema event
 open-ocr-cli schema error
+open-ocr-cli schema capabilities
 ```
+
+An unknown name exits 2 with a typed `CONFIG_INVALID` error whose `hint` lists
+every accepted name, so a wrong guess costs one call rather than a doc lookup.
 
 Submit a request from a JSON file (or use `--request -` for request JSON on
 stdin):
@@ -363,10 +457,11 @@ stdin):
   "extraction": {
     "mode": "template",
     "preset": "invoice",
-    "contentFormat": "json",
-    "progress": "standard"
+    "contentFormat": "json"
   },
   "execution": {
+    "maxFiles": 50,
+    "maxTotalMb": 200,
     "maxCostUsd": 1,
     "timeoutSeconds": 120
   },
@@ -430,7 +525,7 @@ open-ocr-cli run --request request.json --response-format jsonl
 
 JSON returns one `run.result`. JSONL returns ordered lifecycle events ending in
 `run.completed` or `run.failed`. Both formats use typed error codes. Reference
-delivery returns artifact paths; v2 inline delivery returns only the requested
+delivery returns artifact paths; inline delivery returns only the requested
 content format and can include typed agent steps for `contentFormat: "all"`. A request with
 `"dryRun": true` validates input discovery, schemas, limits, and planned
 artifact references without credentials, provider calls, or writes.
@@ -442,8 +537,7 @@ metadata; detailed additionally exposes provider reasoning and tool payloads.
 Visibility never controls model continuity: Kimi `reasoning_content` and
 OpenRouter `reasoning_details` are replayed exactly when a tool continuation
 requires them. Treat all progress as untrusted observability data, not as
-extraction results or instructions. Protocol v1 remains accepted and keeps its
-bounded display-message contract.
+extraction results or instructions.
 
 When `delivery.outputDirectory` is omitted, agent runs use
 `.open-ocr-results/<runId>`. A fixed output directory with `resume: true`
@@ -464,7 +558,12 @@ same `OcrJobService` and versioned result contract as `run`. It exposes
 `open-ocr://capabilities` resource. Lifecycle events are forwarded as MCP
 progress notifications when the client requests progress.
 
-Example client configuration:
+The host must support and explicitly open MCP revision `2026-07-28`, the
+stateless revision that replaced the `initialize` handshake with per-request
+`_meta`. A client that opens with the older handshake is answered with
+`-32022` naming the one supported revision, rather than being served a
+downgraded session. Once the host is configured for that revision, register the
+command:
 
 ```json
 {
@@ -478,13 +577,27 @@ Example client configuration:
 ```
 
 The stdio server never uses stdout for logs or extracted document prose. Tools
-default to reference delivery and reject document stdin because stdin belongs
-to the MCP transport.
+default to reference delivery and reject document stdin — both `-` as an input
+path and an explicit stdin input — because stdin belongs to the MCP transport.
 
-Tools advertise an `outputSchema` (`result-v2.schema.json`) and return written
-artifacts as `resource_link` blocks beside the JSON envelope. The server serves
-both the 2025-11-25 and 2026-07-28 revisions; the client's opening exchange
-selects which.
+Tool arguments are strict: an unrecognized key is refused by name rather than
+dropped, so a misspelled `dryRun` cannot turn a validation pass into a billed
+run. Every argument carries a description in `tools/list`, and the batch
+envelope (`maxFiles`, `maxTotalMb`, `maxCostUsd`, `requestsPerMinute`,
+`timeoutSeconds`) is settable per call.
+
+Tools advertise an `outputSchema` (`result-v2.schema.json`), so the full result
+envelope always arrives in `structuredContent`, and written artifacts come back
+as `resource_link` blocks. The accompanying text block mirrors that envelope for
+reference delivery, where it is only metadata and paths; under inline delivery it
+collapses to a one-line summary instead, because mirroring would send every
+extracted document body twice in one response. Read inline content from
+`structuredContent.documents[].content`, never from the text block.
+
+`server/discover`, `tools/list`, `resources/list`, `resources/templates/list`,
+and `resources/read` are advertised as cacheable for an hour (`cacheScope:
+"public"`). Every one is a pure function of the installed CLI version, so a host
+that honours the hints can skip re-fetching the catalogue on each reconnect.
 
 Set `OPEN_OCR_MCP_CONFIRM=1` to require confirmation before any run that reaches
 a provider. Dry runs are never gated, and the switch is environment-only so the
@@ -503,15 +616,14 @@ Gemini agentic OCR uses stored Interactions. Compatible providers keep a local
 OpenAI-style transcript, return a result for every tool call, execute parallel
 requests sequentially, and preserve Kimi `reasoning_content` and OpenRouter
 `reasoning_details`. Provider-authored progress remains available as typed v2
-steps with stable streaming IDs; the short `message` field is only a bounded
-human/v1 compatibility summary. All providers use the same deterministic field
+steps with stable streaming IDs. All providers use the same deterministic field
 validation, confidence/coverage stop criteria, and region cropper.
 
 ## Distribution
 
 - npm: `npm install --global open-ocr-cli`
 - container: `ghcr.io/cyanxxy/open-ocr-cli:latest`
-- GitHub Action: `uses: cyanxxy/open-ocr-cli@v2`
+- GitHub Action: `uses: cyanxxy/open-ocr-cli@v3`
 - Homebrew: tagged releases attach a generated `open-ocr-cli.rb` formula
 
 The container runs as the non-root `node` user. Mount input and output beneath
@@ -520,7 +632,7 @@ its writable `/work` directory:
 ```bash
 docker run --rm -v "$PWD:/work" -e GEMINI_API_KEY \
   ghcr.io/cyanxxy/open-ocr-cli:latest \
-  extract /work/invoice.pdf --output /work/gemini-ocr-output
+  extract /work/invoice.pdf --output /work/open-ocr-output
 ```
 
 Release automation runs typechecking, lint, tests, the web build, packed install

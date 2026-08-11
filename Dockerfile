@@ -15,7 +15,6 @@ COPY package.json package-lock.json ./
 COPY --from=build /src/packages/cli packages/cli
 RUN npm ci --omit=dev --workspace=open-ocr-cli --include-workspace-root=false \
     && ln -s /opt/open-ocr/node_modules/.bin/open-ocr-cli /usr/local/bin/open-ocr-cli \
-    && ln -s /opt/open-ocr/node_modules/.bin/gemini-ocr /usr/local/bin/gemini-ocr \
     && npm cache clean --force \
     && mkdir -p /work \
     && chown node:node /work

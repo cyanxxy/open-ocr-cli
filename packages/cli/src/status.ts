@@ -2,7 +2,8 @@ import { constants as fsConstants, promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { GATEWAY_IDS, GEMINI_MODELS, PROVIDER_IDS } from '../../../src/lib/providers';
-import { asRecord, isIsoTimestamp, parseBatchLockOwner } from './jsonValidation';
+import { batchMetadataError, CliExitError } from './errors';
+import { asRecord, isIsoTimestamp, isOneOf, parseBatchLockOwner } from './jsonValidation';
 import { parseCliManifest } from './manifest';
 import {
   CLI_MODES,
@@ -13,6 +14,13 @@ import {
 
 export interface BatchStatusEntry {
   source: string;
+  /**
+   * `path` for a document read from disk, `synthetic` for one that never had a
+   * path — piped stdin bytes and URL sets share the `<stdin>` manifest key.
+   * A synthetic source cannot be stat'ed, so reporting it as missing made every
+   * stdin and URL batch look like permanent source drift.
+   */
+  sourceKind: 'path' | 'synthetic';
   status: ManifestEntry['status'];
   completedAt: string;
   outputFiles: string[];
@@ -99,7 +107,7 @@ async function readJsonIfPresent(filePath: string): Promise<unknown> {
     return JSON.parse(await fs.readFile(filePath, 'utf8')) as unknown;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    if (error instanceof SyntaxError) throw new Error(`Invalid JSON in ${filePath}: ${error.message}`);
+    if (error instanceof SyntaxError) throw batchMetadataError(`Invalid JSON in ${filePath}: ${error.message}`);
     throw error;
   }
 }
@@ -124,6 +132,19 @@ async function readBatchLockIfPresent(lockPath: string): Promise<BatchStatusLock
   };
 }
 
+/**
+ * See {@link manifestRecord} in manifest.ts: `asRecord` belongs to the shared
+ * JSON helpers and reports configuration errors, which is the wrong taxonomy for
+ * a batch directory whose summary is corrupt.
+ */
+function summaryRecord(value: unknown, label: string): Record<string, unknown> {
+  try {
+    return asRecord(value, label);
+  } catch (error) {
+    throw batchMetadataError(error instanceof Error ? error.message : String(error));
+  }
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
@@ -137,14 +158,14 @@ function isNonNegativeNumber(value: unknown): value is number {
 }
 
 function parseSummaryResult(value: unknown, label: string): Pick<OcrJobResult, 'status' | 'skipReason'> {
-  const record = asRecord(value, label);
+  const record = summaryRecord(value, label);
   if (
     record.status !== 'succeeded'
     && record.status !== 'partial'
     && record.status !== 'failed'
     && record.status !== 'skipped'
   ) {
-    throw new Error(`${label} has an invalid status`);
+    throw batchMetadataError(`${label} has an invalid status`);
   }
   const allowedSkipReasons: ReadonlyArray<OcrJobResult['skipReason']> = [
     undefined,
@@ -155,10 +176,10 @@ function parseSummaryResult(value: unknown, label: string): Pick<OcrJobResult, '
     'fail-fast',
   ];
   if (!allowedSkipReasons.includes(record.skipReason as OcrJobResult['skipReason'])) {
-    throw new Error(`${label} has an invalid skipReason`);
+    throw batchMetadataError(`${label} has an invalid skipReason`);
   }
   if (record.status !== 'skipped' && record.skipReason !== undefined) {
-    throw new Error(`${label} has a skipReason but is not skipped`);
+    throw batchMetadataError(`${label} has a skipReason but is not skipped`);
   }
   return {
     status: record.status,
@@ -168,9 +189,9 @@ function parseSummaryResult(value: unknown, label: string): Pick<OcrJobResult, '
 
 function parseSummary(value: unknown, summaryPath: string): ParsedSummary | undefined {
   if (value === undefined) return undefined;
-  const record = asRecord(value, summaryPath);
+  const record = summaryRecord(value, summaryPath);
   const countKeys = ['total', 'succeeded', 'partial', 'failed', 'skipped'] as const;
-  const usage = asRecord(record.usage, `${summaryPath}: usage`);
+  const usage = summaryRecord(record.usage, `${summaryPath}: usage`);
   const usageIntegerKeys = [
     'requests',
     'inputTokens',
@@ -180,22 +201,30 @@ function parseSummary(value: unknown, summaryPath: string): ParsedSummary | unde
     'cachedTokens',
     'totalTokens',
   ] as const;
+  // `provider` and `gateway` are both required. Every summary this CLI writes
+  // carries them, and the old "absent means gemini/direct" fallback silently
+  // relabelled a summary from an unknown writer as a Gemini run.
+  //
+  // The checks are inlined into the guard below rather than hoisted into a
+  // `hasValidProviderMetadata` boolean so that `isOneOf` narrows these three
+  // locals for the return statement. A boolean alias would validate the same
+  // values but leave them `unknown`, which is what previously forced the
+  // unchecked `as NonNullable<BatchSummary['provider']>` assertions.
   const provider = record.provider;
   const gateway = record.gateway;
-  const hasValidProviderMetadata = provider === undefined && gateway === undefined
-    ? GEMINI_MODELS.includes(record.model as (typeof GEMINI_MODELS)[number])
-    : PROVIDER_IDS.includes(provider as (typeof PROVIDER_IDS)[number])
-      && GATEWAY_IDS.includes(gateway as (typeof GATEWAY_IDS)[number])
-      && (provider !== 'gemini' || GEMINI_MODELS.includes(record.model as (typeof GEMINI_MODELS)[number]));
+  const mode = record.mode;
+  const model = record.model;
   if (
     record.version !== 1
     || !isIsoTimestamp(record.startedAt)
     || !isIsoTimestamp(record.completedAt)
     || Date.parse(record.completedAt) < Date.parse(record.startedAt)
-    || !CLI_MODES.includes(record.mode as BatchSummary['mode'])
-    || typeof record.model !== 'string'
-    || record.model.trim().length === 0
-    || !hasValidProviderMetadata
+    || !isOneOf(CLI_MODES, mode)
+    || typeof model !== 'string'
+    || model.trim().length === 0
+    || !isOneOf(PROVIDER_IDS, provider)
+    || !isOneOf(GATEWAY_IDS, gateway)
+    || (provider === 'gemini' && !isOneOf(GEMINI_MODELS, model))
     || !isNonNegativeNumber(record.durationMs)
     || countKeys.some((key) => !isNonNegativeInteger(record[key]))
     || usageIntegerKeys.some((key) => !isNonNegativeInteger(usage[key]))
@@ -203,7 +232,7 @@ function parseSummary(value: unknown, summaryPath: string): ParsedSummary | unde
     || typeof record.costLimitReached !== 'boolean'
     || !Array.isArray(record.results)
   ) {
-    throw new Error(`Invalid batch summary in ${summaryPath}`);
+    throw batchMetadataError(`Invalid batch summary in ${summaryPath}`);
   }
   const total = record.total as number;
   const succeeded = record.succeeded as number;
@@ -221,7 +250,7 @@ function parseSummary(value: unknown, summaryPath: string): ParsedSummary | unde
     || results.filter((result) => result.status === 'failed').length !== failed
     || results.filter((result) => result.status === 'skipped').length !== skipped
   ) {
-    throw new Error(`Invalid batch summary counts in ${summaryPath}`);
+    throw batchMetadataError(`Invalid batch summary counts in ${summaryPath}`);
   }
   return {
     startedAt: record.startedAt,
@@ -232,10 +261,10 @@ function parseSummary(value: unknown, summaryPath: string): ParsedSummary | unde
     partial,
     failed,
     skipped,
-    mode: record.mode as BatchSummary['mode'],
-    provider: (provider ?? 'gemini') as NonNullable<BatchSummary['provider']>,
-    gateway: (gateway ?? 'direct') as NonNullable<BatchSummary['gateway']>,
-    model: record.model,
+    mode,
+    provider,
+    gateway,
+    model,
     usage: {
       requests: usage.requests as number,
       inputTokens: usage.inputTokens as number,
@@ -256,16 +285,24 @@ export async function inspectBatchStatus(
   cwd: string,
 ): Promise<BatchStatusReport> {
   const outputDirectory = path.resolve(cwd, output);
-  const manifestPath = path.join(outputDirectory, '.gemini-ocr-manifest.json');
+  const manifestPath = path.join(outputDirectory, '.open-ocr-manifest.json');
   const summaryPath = path.join(outputDirectory, 'batch-summary.json');
-  const lockPath = path.join(outputDirectory, '.gemini-ocr.lock');
+  const lockPath = path.join(outputDirectory, '.open-ocr.lock');
   const [manifestValue, summaryValue, activeLock] = await Promise.all([
     readJsonIfPresent(manifestPath),
     readJsonIfPresent(summaryPath),
     readBatchLockIfPresent(lockPath),
   ]);
   if (manifestValue === undefined && summaryValue === undefined && activeLock === undefined) {
-    throw new Error(`No Open OCR batch metadata found in ${outputDirectory}`);
+    // Typed rather than bare: the untyped classifier would report "no batch
+    // metadata" as a configuration error, and an agent reading `code` cannot
+    // tell "wrong directory" from "malformed flags".
+    throw new CliExitError(`No Open OCR batch metadata found in ${outputDirectory}`, 2, {
+      code: 'INPUT_NOT_FOUND',
+      category: 'input',
+      retryable: false,
+      hint: 'Point status at the batch output directory (extract writes ./open-ocr-output; run and MCP write .open-ocr-results/<runId>).',
+    });
   }
   const manifest = manifestValue === undefined
     ? undefined
@@ -276,13 +313,17 @@ export async function inspectBatchStatus(
       file,
       exists: await pathExists(file),
     })))).filter(({ exists }) => !exists).map(({ file }) => file);
+    // Every real key is `input.absolutePath`, so anything relative is a
+    // synthetic key rather than a path that has gone missing.
+    const synthetic = !path.isAbsolute(source);
     return {
       source,
+      sourceKind: synthetic ? 'synthetic' : 'path',
       status: entry.status,
       completedAt: entry.completedAt,
       outputFiles: entry.outputFiles,
       missingOutputFiles,
-      sourceExists: await pathExists(source),
+      sourceExists: synthetic ? true : await pathExists(source),
       error: entry.error,
     } satisfies BatchStatusEntry;
   }));
@@ -384,7 +425,9 @@ export function renderBatchStatus(report: BatchStatusReport): string {
     }
     if (issues.length > 20) lines.push(`  - …and ${issues.length - 20} more`);
   }
-  const sourceWarnings = report.entries.filter((entry) => !entry.sourceExists);
+  const sourceWarnings = report.entries.filter((entry) => (
+    entry.sourceKind === 'path' && !entry.sourceExists
+  ));
   if (sourceWarnings.length > 0) {
     lines.push('', 'Source drift (artifacts remain auditable):');
     for (const entry of sourceWarnings.slice(0, 20)) lines.push(`  - ${entry.source}: missing or moved`);

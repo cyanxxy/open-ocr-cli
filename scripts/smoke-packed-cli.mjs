@@ -19,7 +19,6 @@ try {
   run('npm', ['install', path.join(temporary, tarballName)], installDirectory);
   const binaryDirectory = path.join(installDirectory, 'node_modules', '.bin');
   const executable = path.join(binaryDirectory, process.platform === 'win32' ? 'open-ocr-cli.cmd' : 'open-ocr-cli');
-  const alias = path.join(binaryDirectory, process.platform === 'win32' ? 'gemini-ocr.cmd' : 'gemini-ocr');
   const help = run(executable, ['--help']);
   if (!help.includes('Provider-neutral multimodal OCR')) throw new Error('Packed CLI help did not contain the expected identity');
   const providers = JSON.parse(run(executable, ['providers', '--json']));
@@ -30,8 +29,8 @@ try {
   if (
     capabilities.protocolVersion !== 2
     || !Array.isArray(capabilities.supportedProtocolVersions)
-    || !capabilities.supportedProtocolVersions.includes(1)
-    || !capabilities.supportedProtocolVersions.includes(2)
+    || capabilities.supportedProtocolVersions?.length !== 1
+    || capabilities.supportedProtocolVersions[0] !== 2
     || !capabilities.deliveryModes?.includes('reference')
     || capabilities.schemaAccess?.networkFetch !== false
   ) {
@@ -45,11 +44,6 @@ try {
   if (!requestSchema.$id?.endsWith('/request-v2.schema.json')) {
     throw new Error('Packed CLI did not expose the current request schema');
   }
-  const legacyRequestSchema = JSON.parse(run(executable, ['schema', 'request-v1']));
-  if (!legacyRequestSchema.$id?.endsWith('/request-v1.schema.json')) {
-    throw new Error('Packed CLI did not expose the v1 request schema');
-  }
-  run(alias, ['--version']);
   run(executable, [
     'extract',
     path.join(root, 'evals', 'corpus', 'raster', 'invoice.png'),
@@ -60,7 +54,7 @@ try {
   ]);
   const requestPath = path.join(temporary, 'request.json');
   writeFileSync(requestPath, JSON.stringify({
-    protocolVersion: 1,
+    protocolVersion: 2,
     operation: 'extract',
     inputs: [{ type: 'path', path: path.join(root, 'evals', 'corpus', 'raster', 'invoice.png') }],
     delivery: { mode: 'reference', outputDirectory: path.join(temporary, 'results') },
@@ -72,7 +66,7 @@ try {
   }
   const invalidRequestPath = path.join(temporary, 'invalid-request.json');
   writeFileSync(invalidRequestPath, JSON.stringify({
-    protocolVersion: 1,
+    protocolVersion: 2,
     operation: 'extract',
     inputs: [{ type: 'path', path: path.join(root, 'evals', 'corpus', 'raster', 'invoice.png') }],
     extraction: { preset: 'invoice', schema: { type: 'object' } },

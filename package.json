@@ -1,7 +1,7 @@
 {
-  "name": "open-gemini-ocr",
+  "name": "open-ocr-workspace",
   "private": true,
-  "version": "2.7.0",
+  "version": "3.0.0",
   "description": "Provider-neutral multimodal OCR CLI for images, PDFs, URLs, JSON schemas, and agentic extraction, with a Gemini web app.",
   "license": "MIT",
   "type": "module",
@@ -42,7 +42,7 @@
   ],
   "overrides": {
     "esbuild": "^0.28.1",
-    "fast-uri": "3.1.4"
+    "fast-uri": "3.1.5"
   },
   "scripts": {
     "dev": "vite",
@@ -78,7 +78,7 @@
     "ipaddr.js": "^2.4.0",
     "katex": "^0.16.21",
     "lucide-react": "^0.563.0",
-    "pdfjs-dist": "^5.6.205",
+    "pdfjs-dist": "^6.2.108",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-dropzone": "^14.2.3",
@@ -88,7 +88,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",
-    "@modelcontextprotocol/client": "2.0.0",
     "@napi-rs/canvas": "^1.0.2",
     "@tailwindcss/typography": "^0.5.16",
     "@testing-library/jest-dom": "^6.6.3",

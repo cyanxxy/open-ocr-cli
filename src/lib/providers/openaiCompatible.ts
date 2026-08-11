@@ -392,12 +392,6 @@ function messageForWire(message: OpenAIMessage): Record<string, unknown> {
   };
 }
 
-function usesMaxCompletionTokens(config: ProviderRuntimeConfig): boolean {
-  // Kimi's current Chat API deprecates max_tokens for every model family, not
-  // only K3. Keep the legacy field for less predictable compatible endpoints.
-  return config.provider === 'kimi';
-}
-
 function completionRequestBody(
   config: ProviderRuntimeConfig,
   request: ChatCompletionRequest,
@@ -416,7 +410,13 @@ function completionRequestBody(
     ...extraBody,
     model: config.model,
     messages: request.messages.map(messageForWire),
-    ...(usesMaxCompletionTokens(config)
+    // Both named routes have deprecated `max_tokens` in favour of the OpenAI
+    // spelling: Kimi's Chat API across every model family, and OpenRouter's
+    // reference, which now documents `max_tokens` as "deprecated, use
+    // max_completion_tokens". A generic compatible endpoint keeps `max_tokens`,
+    // because a local server built against the older spec is the common case and
+    // an unrecognised field there would silently drop the output cap.
+    ...(config.provider === 'kimi' || config.provider === 'openrouter'
       ? { max_completion_tokens: request.maxTokens }
       : { max_tokens: request.maxTokens }),
     stream,

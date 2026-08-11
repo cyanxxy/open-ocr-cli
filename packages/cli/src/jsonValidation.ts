@@ -6,11 +6,31 @@ export interface BatchLockOwner {
   startedAt: string;
 }
 
+/** A non-null, non-array object: the only JSON shape with readable properties. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 export function asRecord(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error(`${label} must contain a JSON object`);
-  }
-  return value as Record<string, unknown>;
+  if (!isRecord(value)) throw new Error(`${label} must contain a JSON object`);
+  return value;
+}
+
+/**
+ * Membership test that narrows, for validating an untrusted value against a
+ * closed list of allowed literals.
+ *
+ * `allowed.includes(value as T)` is the shape this replaces. That cast exists
+ * only to satisfy `includes`, and because it does not narrow `value`, every
+ * consumer downstream needs a second assertion to use the result — an assertion
+ * the compiler cannot check and that silently starts lying if the guard above it
+ * is ever edited. This carries the proof instead.
+ */
+export function isOneOf<const T extends readonly unknown[]>(
+  allowed: T,
+  value: unknown,
+): value is T[number] {
+  return allowed.includes(value);
 }
 
 export function isIsoTimestamp(value: unknown): value is string {

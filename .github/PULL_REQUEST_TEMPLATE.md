@@ -17,13 +17,12 @@ Fixes # (issue)
 
 Please delete options that are not relevant.
 
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] This change requires a documentation update
-- [ ] Code Refactoring (no functional changes, no api changes)
-- [ ] Build related changes
-- [ ] CI related changes
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Documentation
+- [ ] Refactoring
+- [ ] Build
+- [ ] CI
 - [ ] Other (please describe):
 
 ## How Has This Been Tested?

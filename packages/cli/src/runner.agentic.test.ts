@@ -17,11 +17,16 @@ vi.mock('../../../src/lib/agentLoop', () => ({
 import { resolveCliOptions } from './config';
 import { discoverInputs } from './inputs';
 import { runBatch } from './runner';
+import { cliBatchExitCode } from './errors';
+import { toOcrRunResult } from './protocol';
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 let directory: string;
 
-function partialAgentRun(documentName: string): AsyncGenerator<AgentStep, AgentMemory, void> {
+function partialAgentRun(
+  documentName: string,
+  stopReason: NonNullable<AgentMemory['stopReason']> = 'max_iterations',
+): AsyncGenerator<AgentStep, AgentMemory, void> {
   return (async function* (): AsyncGenerator<AgentStep, AgentMemory, void> {
     await Promise.resolve();
     yield { type: 'thinking', content: 'Inspecting document', timestamp: 1 };
@@ -49,13 +54,13 @@ function partialAgentRun(documentName: string): AsyncGenerator<AgentStep, AgentM
       },
       confidence: 0.72,
       lastUpdated: 1,
-      stopReason: 'max_iterations',
+      stopReason,
     };
   })();
 }
 
 beforeEach(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-agentic-runner-'));
+  directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-agentic-runner-'));
   process.env.GEMINI_API_KEY = 'test-key';
   mockAgentLoop.mockReset();
   mockAgentLoop.mockImplementation((input: { name: string }) => partialAgentRun(input.name));
@@ -67,7 +72,7 @@ afterEach(async () => {
 });
 
 describe('CLI agentic batch orchestration', () => {
-  it('writes useful partial artifacts and resumes them safely', async () => {
+  it('writes useful partial artifacts and re-extracts them on the next run', async () => {
     await writeFile(path.join(directory, 'one.jpg'), JPEG_BYTES);
     await writeFile(path.join(directory, 'two.jpg'), JPEG_BYTES);
     const output = path.join(directory, 'results');
@@ -97,7 +102,41 @@ describe('CLI agentic batch orchestration', () => {
     const resumed = await runBatch(inputs, options, {
       abortController: new AbortController(), writeStdout: () => undefined, writeStderr: () => undefined,
     });
-    expect(resumed).toMatchObject({ total: 2, partial: 0, failed: 0, skipped: 2 });
-    expect(mockAgentLoop).toHaveBeenCalledTimes(2);
+    // An agentic run that stopped on its iteration ceiling is exactly the case
+    // resume must not skip: skipping strands the shortfall permanently. The
+    // rerun replaces the partial run's own artifacts without a collision.
+    expect(resumed).toMatchObject({ total: 2, succeeded: 0, partial: 2, failed: 0, skipped: 0 });
+    expect(mockAgentLoop).toHaveBeenCalledTimes(4);
+  });
+
+  it('stops the batch when an agentic document reports a cost-limit stop', async () => {
+    await writeFile(path.join(directory, 'one.jpg'), JPEG_BYTES);
+    await writeFile(path.join(directory, 'two.jpg'), JPEG_BYTES);
+    // One worker, so the second document is still unscheduled when the first
+    // reports the ceiling.
+    const options = resolveCliOptions(
+      { mode: 'agentic', format: 'json', output: path.join(directory, 'results'), quiet: true, concurrency: '1' },
+      {},
+      directory,
+    );
+    mockAgentLoop.mockImplementation((input: { name: string }) => (
+      partialAgentRun(input.name, 'cost_limit_reached')
+    ));
+    const inputs = await discoverInputs(['*.jpg'], options);
+
+    const summary = await runBatch(inputs, options, {
+      abortController: new AbortController(), writeStdout: () => undefined, writeStderr: () => undefined,
+    });
+
+    // The ceiling is a decision, not a fault: the batch stops scheduling and
+    // says so, rather than reporting the remainder as a retryable NOT_RUN.
+    expect(summary.costLimitReached).toBe(true);
+    expect(summary.partial).toBe(1);
+    expect(mockAgentLoop).toHaveBeenCalledTimes(1);
+    const unscheduled = summary.results.find((result) => result.skipReason === 'cost-limit');
+    expect(unscheduled?.errorDetails).toMatchObject({ code: 'COST_LIMIT', retryable: false });
+
+    expect(toOcrRunResult('run-1', summary).status).toBe('cost_limited');
+    expect(cliBatchExitCode(summary)).toBe(1);
   });
 });

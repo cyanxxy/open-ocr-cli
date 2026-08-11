@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveCliOptions } from './config';
 import { discoverInputs } from './inputs';
-import { OcrJobService, type OcrDocumentExtractor } from './ocrJobService';
+import {
+  agentProgressMessage,
+  normalizeAgentProgressText,
+  OcrJobService,
+  type OcrDocumentExtractor,
+} from './ocrJobService';
 import { jsonlResult } from './output';
 import type { OcrJobEvent } from './protocol';
 import type { OcrJobResult } from './types';
@@ -238,7 +243,6 @@ describe('OcrJobService', () => {
     const execution = await new OcrJobService({ extractDocument }).run(inputs, options, {
       runId: 'timeout-hint-run',
       abortController: new AbortController(),
-      protocolVersion: 2,
       deliveryMode: 'inline',
     });
 
@@ -267,7 +271,6 @@ describe('OcrJobService', () => {
     const execution = await new OcrJobService({ extractDocument }).run(inputs, options, {
       runId: 'interrupted-active-document',
       abortController,
-      protocolVersion: 2,
       deliveryMode: 'inline',
       eventSink: (event) => { events.push(event); },
     });
@@ -297,7 +300,6 @@ describe('OcrJobService', () => {
     const execution = await new OcrJobService({ extractDocument }).run(inputs, options, {
       runId: 'swallowed-cancellation',
       abortController,
-      protocolVersion: 2,
       deliveryMode: 'inline',
     });
 
@@ -335,7 +337,7 @@ describe('OcrJobService', () => {
     // the resume manifest, and the batch summary.
     expect(jsonlResult(result)).not.toContain(ECHOED_KEY);
     const [manifest, summary] = await Promise.all([
-      readFile(path.join(outputDirectory, '.gemini-ocr-manifest.json'), 'utf8'),
+      readFile(path.join(outputDirectory, '.open-ocr-manifest.json'), 'utf8'),
       readFile(path.join(outputDirectory, 'batch-summary.json'), 'utf8'),
     ]);
     expect(manifest).toContain('[REDACTED_KEY]');
@@ -494,7 +496,6 @@ describe('OcrJobService', () => {
       runId: 'unsupported-pdf-dry-run',
       abortController: new AbortController(),
       deliveryMode: 'inline',
-      protocolVersion: 2,
     });
 
     expect(extractDocument).not.toHaveBeenCalled();
@@ -518,7 +519,6 @@ describe('OcrJobService', () => {
       runId: `unsupported-heic-${provider}`,
       abortController: new AbortController(),
       deliveryMode: 'inline',
-      protocolVersion: 2,
     });
 
     expect(extractDocument).not.toHaveBeenCalled();
@@ -566,9 +566,49 @@ describe('OcrJobService', () => {
     expect(resumed.result.documents[0]).toMatchObject({
       status: 'skipped',
       skipReason: 'resumed',
+      artifacts: [{
+        path: path.join(outputDirectory, 'document.md'),
+        kind: 'markdown',
+        mediaType: 'text/markdown',
+      }],
     });
     expect(extractDocument).toHaveBeenCalledOnce();
-    expect(await readFile(path.join(outputDirectory, '.gemini-ocr-manifest.json'), 'utf8')).toContain(documentPath);
+    expect(await readFile(path.join(outputDirectory, '.open-ocr-manifest.json'), 'utf8')).toContain(documentPath);
+  });
+
+  it('never persists stdin document bytes in a batch summary', async () => {
+    const outputDirectory = path.join(directory, 'stdin-output');
+    const options = {
+      ...resolveCliOptions({ output: outputDirectory }, {}, directory),
+      apiKey: 'test-key',
+      quiet: true,
+    };
+    const input = {
+      displayPath: '<stdin>',
+      relativePath: 'stdin.jpg',
+      name: 'stdin.jpg',
+      mimeType: 'image/jpeg',
+      size: JPEG_BYTES.byteLength,
+      mtimeMs: 0,
+      stdinBytes: JPEG_BYTES,
+    };
+    const extractDocument = vi.fn<OcrDocumentExtractor>(() => Promise.resolve({
+      artifacts: { markdown: '# Extracted' },
+      attempts: 1,
+    }));
+
+    await new OcrJobService({ extractDocument }).run([input], options, {
+      runId: 'stdin-reference',
+      abortController: new AbortController(),
+      deliveryMode: 'reference',
+      enableSingleInputResume: true,
+    });
+
+    const persisted = JSON.parse(
+      await readFile(path.join(outputDirectory, 'batch-summary.json'), 'utf8'),
+    ) as { results: Array<{ input: Record<string, unknown>; artifacts?: unknown }> };
+    expect(persisted.results[0]?.input).not.toHaveProperty('stdinBytes');
+    expect(persisted.results[0]).not.toHaveProperty('artifacts');
   });
 
   it('re-extracts a changed document over its own stale artifact instead of aborting the resume batch', async () => {
@@ -683,7 +723,7 @@ describe('OcrJobService', () => {
 
     expect(extractDocument).toHaveBeenCalledOnce();
     expect(resumed.summary.results[0]).toMatchObject({ status: 'skipped', skipReason: 'resumed' });
-    await expect(readFile(path.join(outputDirectory, '.gemini-ocr-manifest.json'), 'utf8'))
+    await expect(readFile(path.join(outputDirectory, '.open-ocr-manifest.json'), 'utf8'))
       .resolves.toContain(documentPath);
 
     // The directory grows to two documents; the first must still resume.
@@ -749,12 +789,12 @@ describe('OcrJobService', () => {
 
     expect(execution.summary.results[0]?.outputFiles).toBeUndefined();
     // Job metadata would be the only reason to materialize a directory here.
-    await expect(readdir(path.join(directory, 'gemini-ocr-output')))
+    await expect(readdir(path.join(directory, 'open-ocr-output')))
       .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('reserves single-run manifest paths before invoking the provider', async () => {
-    const documentPath = path.join(directory, '.gemini-ocr-manifest.jpg');
+    const documentPath = path.join(directory, '.open-ocr-manifest.jpg');
     const outputDirectory = path.join(directory, 'single-output');
     await writeFile(documentPath, JPEG_BYTES);
     const baseOptions = resolveCliOptions({ dryRun: true }, {}, directory);
@@ -805,7 +845,7 @@ describe('OcrJobService', () => {
     expect(eventTypes).toContain('run.failed');
   });
 
-  it('emits lossless typed v2 progress while keeping standard tool payloads compact', async () => {
+  it('emits lossless typed progress while keeping standard tool payloads compact', async () => {
     const documentPath = path.join(directory, 'document.jpg');
     await writeFile(documentPath, JPEG_BYTES);
     const baseOptions = resolveCliOptions({ dryRun: true }, {}, directory);
@@ -839,7 +879,6 @@ describe('OcrJobService', () => {
     await new OcrJobService({ extractDocument }).run(inputs, options, {
       runId: 'progress-run',
       abortController: new AbortController(),
-      protocolVersion: 2,
       progress: 'standard',
       eventSink: (event) => { events.push(event); },
     });
@@ -853,7 +892,6 @@ describe('OcrJobService', () => {
       text: modelSummary,
       delta: true,
     });
-    expect(progress[0]?.message).toBeUndefined();
     expect(progress[1]?.step).toMatchObject({
       kind: 'tool_call',
       status: 'started',
@@ -863,7 +901,7 @@ describe('OcrJobService', () => {
     expect(JSON.stringify(progress[1])).not.toContain(untrustedToolArgument);
   });
 
-  it('exposes tool payloads only for explicitly detailed v2 progress', async () => {
+  it('exposes tool payloads only for explicitly detailed progress', async () => {
     const documentPath = path.join(directory, 'document.jpg');
     await writeFile(documentPath, JPEG_BYTES);
     const baseOptions = resolveCliOptions({ dryRun: true }, {}, directory);
@@ -892,7 +930,6 @@ describe('OcrJobService', () => {
     await new OcrJobService({ extractDocument }).run(inputs, options, {
       runId: 'detailed-progress-run',
       abortController: new AbortController(),
-      protocolVersion: 2,
       progress: 'detailed',
       eventSink: (event) => { events.push(event); },
     });
@@ -911,32 +948,60 @@ describe('OcrJobService', () => {
     ]);
   });
 
-  it('keeps legacy v1 progress bounded and safe for terminal-style consumers', async () => {
-    const documentPath = path.join(directory, 'document.jpg');
-    await writeFile(documentPath, JPEG_BYTES);
-    const baseOptions = resolveCliOptions({ dryRun: true }, {}, directory);
-    const options = { ...baseOptions, apiKey: 'test-key', dryRun: false, quiet: true };
-    const inputs = await discoverInputs([documentPath], options);
-    const raw = `Inspecting the invoice.\n\u001b[31m${'detail '.repeat(100)}`;
-    const extractDocument = vi.fn<OcrDocumentExtractor>((_input, _options, _signal, onStep) => {
-      onStep({ type: 'thinking', source: 'thought_summary', content: raw, timestamp: Date.now() });
-      return Promise.resolve({ artifacts: { markdown: '# Extracted' }, attempts: 1 });
-    });
-    const events: OcrJobEvent[] = [];
+});
 
-    await new OcrJobService({ extractDocument }).run(inputs, options, {
-      runId: 'legacy-progress-run',
-      abortController: new AbortController(),
-      protocolVersion: 1,
-      progress: 'standard',
-      eventSink: (event) => { events.push(event); },
-    });
+describe('agent progress sanitization', () => {
+  const ESC = String.fromCharCode(27);
+  /** U+202E RIGHT-TO-LEFT OVERRIDE: reverses display order after it. */
+  const RTL_OVERRIDE = String.fromCharCode(0x202e);
+  /** U+0007 BEL. */
+  const BELL = String.fromCharCode(7);
 
-    const progress = events.find((event) => event.type === 'document.progress');
-    expect(progress?.message).toHaveLength(512);
-    expect(progress?.message).toMatch(/…$/u);
-    expect(progress?.message).not.toContain('\n');
-    expect(progress?.message).not.toContain('\u001b');
-    expect(progress?.step).toBeUndefined();
+  // This is the boundary where untrusted model- and document-derived text
+  // reaches a rendering surface: `--verbose` writes it to a terminal, and the
+  // MCP server puts it in `notifications/progress` for whatever UI the host has.
+  it('strips ANSI escapes so progress cannot repaint the terminal it is printed to', () => {
+    expect(normalizeAgentProgressText(`${ESC}[31mred${ESC}[0m text`)).toBe('red text');
+    expect(normalizeAgentProgressText(`${ESC}[2J${ESC}[H cleared`)).toBe('cleared');
+  });
+
+  it('drops control characters and bidirectional overrides that misrepresent the text', () => {
+    expect(normalizeAgentProgressText(`safe${RTL_OVERRIDE}reversed`)).toBe('safereversed');
+    expect(normalizeAgentProgressText(`a${BELL}bc`)).toBe('abc');
+    // Tab and newline are whitespace, not control noise: they collapse.
+    expect(normalizeAgentProgressText('a\t\tb\n\nc')).toBe('a b c');
+  });
+
+  it('bounds an unbounded body to a single notification-sized line', () => {
+    const long = normalizeAgentProgressText('y'.repeat(10_000));
+    expect(long).toBeDefined();
+    expect(Array.from(long ?? '').length).toBeLessThanOrEqual(512);
+    expect(long?.endsWith('…')).toBe(true);
+  });
+
+  it('returns undefined for text that is only whitespace or control characters', () => {
+    expect(normalizeAgentProgressText('   \t\n ')).toBeUndefined();
+    expect(normalizeAgentProgressText(BELL)).toBeUndefined();
+  });
+
+  it('never reports an empty progress line, whatever the step carried', () => {
+    // Sanitizing to nothing must still produce a usable message rather than a
+    // blank notification.
+    expect(agentProgressMessage({ type: 'thinking', content: `${ESC}[2J`, timestamp: 1 }))
+      .toBe('Agent is analyzing the document.');
+    expect(agentProgressMessage({ type: 'error', content: ' ', timestamp: 1 }))
+      .toBe('An agent step reported an error.');
+    expect(agentProgressMessage({
+      type: 'function_call',
+      content: '',
+      timestamp: 1,
+      functionCall: { id: 'c1', name: 're_ocr_region', arguments: {} },
+    })).toBe('Agent requested region re-OCR.');
+    expect(agentProgressMessage({
+      type: 'result',
+      content: '',
+      timestamp: 1,
+      functionCall: { id: 'c1', name: 'extract_fields_batch', arguments: {} },
+    })).toBe('Agent completed field extraction.');
   });
 });

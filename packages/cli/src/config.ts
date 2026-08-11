@@ -104,9 +104,9 @@ const DEFAULT_CONFIG: Required<Pick<
  * are wrong and rerunning the identical command cannot succeed.
  *
  * These are typed at the throw site rather than left as bare `Error`s so
- * `asCliExitError` short-circuits before the legacy message-substring
- * classifier, which would otherwise read an option name such as `--timeout`
- * as evidence of a retryable runtime timeout.
+ * `asCliExitError` short-circuits before its untyped-error classifier, which
+ * would otherwise read an option name such as `--timeout` as evidence of a
+ * retryable runtime timeout.
  */
 function configurationError(message: string): CliExitError {
   return new CliExitError(message, 2, {
@@ -150,31 +150,40 @@ function pickConfig(value: Record<string, unknown>, label: string): CliConfigFil
     'inputPricePerMillionUsd', 'outputPricePerMillionUsd',
   ] as const;
   const booleanKeys = [
-    'includeThoughts', 'resume', 'overwrite', 'failFast', 'hidden', 'defaultExcludes', 'detectImages',
+    'resume', 'overwrite', 'failFast', 'hidden', 'defaultExcludes', 'detectImages',
     'detectMath', 'cloudflareByok',
   ] as const;
   const arrayKeys = ['exclude', 'instructions'] as const;
   const knownKeys = new Set<string>([...stringKeys, ...numberKeys, ...booleanKeys, ...arrayKeys]);
 
+  // Typed at the throw site rather than left as bare `Error`s. The untyped
+  // classifier matches substrings of the message, and these messages quote the
+  // offending key: `"timeoutSeconds" must be a finite number` contains the word
+  // "timeout", so a permanently broken config file was reported as a retryable
+  // TIMEOUT and an agent obeying `retryable` would retry it forever.
   for (const key of stringKeys) {
     const entry = value[key];
-    if (entry !== undefined && typeof entry !== 'string') throw new Error(`${label}: "${key}" must be a string`);
+    if (entry !== undefined && typeof entry !== 'string') {
+      throw configurationError(`${label}: "${key}" must be a string`);
+    }
   }
   for (const key of numberKeys) {
     const entry = value[key];
     if (entry !== undefined && (typeof entry !== 'number' || !Number.isFinite(entry))) {
-      throw new Error(`${label}: "${key}" must be a finite number`);
+      throw configurationError(`${label}: "${key}" must be a finite number`);
     }
   }
   for (const key of booleanKeys) {
     const entry = value[key];
-    if (entry !== undefined && typeof entry !== 'boolean') throw new Error(`${label}: "${key}" must be a boolean`);
+    if (entry !== undefined && typeof entry !== 'boolean') {
+      throw configurationError(`${label}: "${key}" must be a boolean`);
+    }
   }
 
   for (const key of arrayKeys) {
     const entry = value[key];
     if (entry !== undefined && (!Array.isArray(entry) || entry.some((item) => typeof item !== 'string'))) {
-      throw new Error(`${label}: "${key}" must be an array of strings`);
+      throw configurationError(`${label}: "${key}" must be an array of strings`);
     }
   }
 
@@ -185,7 +194,7 @@ function pickConfig(value: Record<string, unknown>, label: string): CliConfigFil
   const allowlisted = Object.fromEntries(
     Object.entries(value).filter(([key]) => knownKeys.has(key)),
   );
-  return allowlisted as CliConfigFile;
+  return allowlisted;
 }
 
 async function readConfigFile(
@@ -195,14 +204,20 @@ async function readConfigFile(
 ): Promise<CliConfigFile> {
   try {
     const raw = await readFile(filePath, 'utf8');
-    return pickConfig(asRecord(JSON.parse(raw) as unknown, filePath), filePath);
+    return pickConfig(asRecord(JSON.parse(raw) as unknown, displayPath), displayPath);
   } catch (error) {
+    if (error instanceof CliExitError) throw error;
     const code = (error as NodeJS.ErrnoException).code;
     if (!required && code === 'ENOENT') return {};
-    if (error instanceof SyntaxError) throw configurationError(`Invalid JSON in ${filePath}: ${error.message}`);
+    if (error instanceof SyntaxError) throw configurationError(`Invalid JSON in ${displayPath}: ${error.message}`);
     // An explicitly requested config file that cannot be read is a request
     // error; reporting the raw errno would leak the resolved absolute path.
-    throw configFileError(error, displayPath) ?? error;
+    const typed = configFileError(error, displayPath);
+    if (typed) throw typed;
+    // Everything else here is still a malformed configuration file — `asRecord`
+    // rejecting a JSON array, for one. Typing it keeps the message-substring
+    // classifier from reading the file path or key name as a different failure.
+    throw configurationError(`${displayPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -249,17 +264,13 @@ export async function loadCliConfig(
   // user/project files that could reintroduce baseUrl or credential env names.
   if (hermetic) return explicit;
 
-  const legacyUserPath = path.join(homedir(), '.config', 'gemini-ocr', 'config.json');
   const userPath = path.join(homedir(), '.config', 'open-ocr-cli', 'config.json');
-  const legacyProjectPath = path.join(cwd, '.gemini-ocr.json');
   const projectPath = path.join(cwd, '.open-ocr-cli.json');
-  const [legacyUser, user, legacyProject, project] = await Promise.all([
-    readConfigFile(legacyUserPath, false),
+  const [user, project] = await Promise.all([
     readConfigFile(userPath, false),
-    readConfigFile(legacyProjectPath, false),
     readConfigFile(projectPath, false),
   ]);
-  return { ...legacyUser, ...user, ...legacyProject, ...project, ...explicit };
+  return { ...user, ...project, ...explicit };
 }
 
 export function loadLocalEnv(cwd: string, disabled = false): void {
@@ -340,8 +351,7 @@ export function resolveCliOptions(
   );
   const gatewayContextMatches = selectedGateway === undefined || selectedGateway === configuredGateway;
   const selectedModel = flags.model
-    ?? process.env.OPEN_OCR_MODEL
-    ?? (provider === 'gemini' ? process.env.GEMINI_OCR_MODEL : undefined);
+    ?? process.env.OPEN_OCR_MODEL;
   const configuredModel = providerContextMatches
     ? fileConfig.model ?? providerDefaultModel(provider)
     : providerDefaultModel(provider);
@@ -356,7 +366,6 @@ export function resolveCliOptions(
     && (selectedModel === undefined || selectedModel === configuredModel);
   const configuredThinking = flags.thinking
     ?? process.env.OPEN_OCR_THINKING
-    ?? (provider === 'gemini' ? process.env.GEMINI_OCR_THINKING : undefined)
     ?? (modelContextMatches ? fileConfig.thinking : undefined);
   const isKimiK3 = isKimiK3Route(provider, model);
   let thinking = oneOf<ThinkingLevel>(
@@ -378,12 +387,7 @@ export function resolveCliOptions(
   const preset = flags.preset ?? fileConfig.preset;
   const effectiveMode: CliMode = preset && !flags.mode && !fileConfig.mode ? 'template' : mode;
   const progress = oneOf<ResolvedCliOptions['progress']>(
-    flags.progress
-      ?? fileConfig.progress
-      // Legacy --include-thoughts requested thought summaries only; map to
-      // standard progress so tool argument/result payloads stay opt-in via
-      // explicit --progress detailed / extraction.progress.
-      ?? (flags.includeThoughts || fileConfig.includeThoughts ? 'standard' : undefined),
+    flags.progress ?? fileConfig.progress,
     ['off', 'standard', 'detailed'],
     '--progress',
     DEFAULT_CONFIG.progress,
@@ -559,6 +563,7 @@ export function resolveCliOptions(
     preset,
     format,
     output: flags.output ?? fileConfig.output,
+    outputPathKind: flags.outputPathKind ?? 'auto',
     concurrency: integer(flags.concurrency ?? fileConfig.concurrency, DEFAULT_CONFIG.concurrency, '--concurrency', 1, 16),
     retries: integer(flags.retries ?? fileConfig.retries, DEFAULT_CONFIG.retries, '--retries', 0, 10),
     timeoutSeconds: integer(flags.timeout ?? fileConfig.timeoutSeconds, DEFAULT_CONFIG.timeoutSeconds, '--timeout', 1, 3600),
@@ -636,8 +641,12 @@ export function assertCredentialsAvailable(options: ResolvedCliOptions): void {
 interface ModeScopedOption {
   /** Flag name on the `extract` command. */
   flag: string;
-  /** Field name in a machine-protocol request. */
-  field: string;
+  /**
+   * Field name in a machine-protocol request, when the option has one. Omitted
+   * for a flag with no protocol counterpart, so a `run`/MCP warning can never
+   * name a request key the caller had no way to send.
+   */
+  field?: string;
   /** Modes that actually consume the option. */
   modes: readonly CliMode[];
 }
@@ -659,9 +668,28 @@ const MODE_SCOPED_OPTIONS = {
     modes: ['agentic'],
   },
   progress: { flag: '--progress', field: 'extraction.progress', modes: ['agentic'] },
+  // Honoured in every mode except agentic, where the agent loop owns its own
+  // bounded provider retries and the outer wrapper is pinned to a single attempt
+  // (see providerRetries.ts). Previously an agentic run accepted `--retries 5`
+  // and silently performed one attempt.
+  retries: { flag: '--retries', field: 'execution.retries', modes: ['simple', 'template'] },
+  // Agent steps are the only thing --verbose prints, so outside agentic mode it
+  // is a silent no-op rather than "more output".
+  verbose: { flag: '--verbose', modes: ['agentic'] },
 } as const satisfies Record<string, ModeScopedOption>;
 
 export type ModeScopedOptionKey = keyof typeof MODE_SCOPED_OPTIONS;
+
+/**
+ * The same table widened to the declared interface.
+ *
+ * Indexing the `as const` literal yields a union in which only some members have
+ * `field`, so reading a computed `'flag' | 'field'` key off it needs an
+ * assertion. Assigning it once here makes the compiler check that widening —
+ * which `satisfies` already proves — instead of taking an unchecked `as` at the
+ * point of use.
+ */
+const MODE_SCOPED_OPTION_DETAILS: Record<ModeScopedOptionKey, ModeScopedOption> = MODE_SCOPED_OPTIONS;
 
 /** Options the caller supplied that the resolved mode will not read. */
 export function ignoredModeScopedOptions(
@@ -680,8 +708,12 @@ export function ignoredModeScopedOptionWarning(
   mode: CliMode,
   surface: 'flag' | 'field',
 ): string | undefined {
-  if (ignored.length === 0) return undefined;
-  const names = ignored.map((key) => MODE_SCOPED_OPTIONS[key][surface]);
+  // An option with no protocol counterpart is dropped from the `field` wording:
+  // naming a request key the caller cannot send is worse than staying quiet.
+  const names = ignored
+    .map((key) => MODE_SCOPED_OPTION_DETAILS[key][surface])
+    .filter((name): name is string => name !== undefined);
+  if (names.length === 0) return undefined;
   return `ignoring option(s) that ${mode} mode does not use: ${names.join(', ')}`;
 }
 
@@ -700,6 +732,10 @@ export function suppliedModeScopedFlags(flags: ExtractCommandFlags): ModeScopedO
   if (flags.maxTokens !== undefined) supplied.push('maxTokens');
   if (flags.maxIterations !== undefined) supplied.push('maxIterations');
   if (flags.confidenceThreshold !== undefined) supplied.push('confidenceThreshold');
-  if (flags.progress !== undefined || flags.includeThoughts !== undefined) supplied.push('progress');
+  if (flags.progress !== undefined) supplied.push('progress');
+  if (flags.retries !== undefined) supplied.push('retries');
+  // Commander stores `true` only when --verbose was typed, so this stays quiet
+  // on the far more common run that never asked for it.
+  if (flags.verbose === true) supplied.push('verbose');
   return supplied;
 }

@@ -52,7 +52,7 @@ inputs:
     default: markdown
   output:
     description: Output file or directory.
-    default: gemini-ocr-output
+    default: open-ocr-output
   version:
     description: Optional open-ocr-cli npm version; defaults to the version bundled with this action release.
     required: false
