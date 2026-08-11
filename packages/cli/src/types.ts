@@ -12,9 +12,11 @@ import {
   type ProviderUsageSnapshot,
 } from '../../../src/lib/providers';
 import type { OcrErrorPayload } from './errors';
+import type { ArtifactTarget } from './output';
 
 export const CLI_MODES = ['simple', 'template', 'agentic'] as const;
 export type CliMode = (typeof CLI_MODES)[number];
+export type OutputPathKind = 'auto' | 'file' | 'directory';
 
 export const CLI_FORMATS = ['markdown', 'json', 'csv', 'all'] as const;
 export type CliFormat = (typeof CLI_FORMATS)[number];
@@ -35,7 +37,6 @@ export interface CliConfigFile {
   inputPricePerMillionUsd?: number;
   outputPricePerMillionUsd?: number;
   thinking?: ThinkingLevel;
-  includeThoughts?: boolean;
   progress?: 'off' | 'standard' | 'detailed';
   mode?: CliMode;
   preset?: string;
@@ -84,9 +85,13 @@ export interface ExtractCommandFlags {
   preset?: string;
   format?: string;
   output?: string;
+  /**
+   * How to interpret `output`. Human `extract -o` uses `auto`, Web OCR names a
+   * file, and machine `delivery.outputDirectory` names a directory.
+   */
+  outputPathKind?: OutputPathKind;
   model?: string;
   thinking?: string;
-  includeThoughts?: boolean;
   progress?: string;
   concurrency?: string;
   retries?: string;
@@ -142,6 +147,8 @@ export interface ResolvedCliOptions {
   preset?: string;
   format: CliFormat;
   output?: string;
+  /** See {@link ExtractCommandFlags.outputPathKind}. */
+  outputPathKind: OutputPathKind;
   concurrency: number;
   retries: number;
   timeoutSeconds: number;
@@ -205,6 +212,15 @@ export interface OcrJobResult {
   artifacts?: OcrArtifacts;
   outputFiles?: string[];
   plannedOutputFiles?: string[];
+  /**
+   * The same destinations as {@link outputFiles}, each paired with the artifact
+   * key that produced it. The protocol reads `kind`/`mediaType` from here rather
+   * than guessing them from the filename, which is wrong whenever `--output`
+   * names a file whose extension disagrees with `--format`. The plain path lists
+   * stay because the manifest, resume, JSONL, and status surfaces consume them.
+   */
+  outputArtifacts?: ArtifactTarget[];
+  plannedOutputArtifacts?: ArtifactTarget[];
   skipReason?: 'validated' | 'resumed' | 'cancelled' | 'cost-limit' | 'fail-fast';
   error?: string;
   errorDetails?: OcrErrorPayload;

@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      # Stable semantic versions only; moving Marketplace tags such as v2 must
+      # Stable semantic versions only; moving Marketplace tags such as v3 must
       # never start another publication.
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
@@ -114,10 +114,8 @@ jobs:
           trap 'rm -rf "$smoke_dir"' EXIT
           npm install --prefix "$smoke_dir" "$GITHUB_WORKSPACE/${{ steps.pack.outputs.tarball }}"
           binary="$smoke_dir/node_modules/.bin/open-ocr-cli"
-          alias="$smoke_dir/node_modules/.bin/gemini-ocr"
           expected_version="${GITHUB_REF_NAME#v}"
           [[ "$("$binary" --version)" == "$expected_version" ]]
-          [[ "$("$alias" --version)" == "$expected_version" ]]
           "$binary" providers --json | node -e '
             let input = "";
             process.stdin.on("data", (chunk) => { input += chunk; });
@@ -132,11 +130,11 @@ jobs:
         shell: bash
         run: |
           node scripts/render-homebrew-formula.mjs "${{ steps.pack.outputs.tarball }}" open-ocr-cli.rb
-          tar -czf "open-gemini-ocr-${GITHUB_REF_NAME}-dist.tar.gz" -C dist .
+          tar -czf "open-ocr-cli-${GITHUB_REF_NAME}-dist.tar.gz" -C dist .
           sha256sum \
             "${{ steps.pack.outputs.tarball }}" \
             open-ocr-cli.rb \
-            "open-gemini-ocr-${GITHUB_REF_NAME}-dist.tar.gz" \
+            "open-ocr-cli-${GITHUB_REF_NAME}-dist.tar.gz" \
             release-notes.md > SHA256SUMS
 
       - name: Set up QEMU
@@ -162,7 +160,7 @@ jobs:
           path: |
             ${{ steps.pack.outputs.tarball }}
             open-ocr-cli.rb
-            open-gemini-ocr-${{ github.ref_name }}-dist.tar.gz
+            open-ocr-cli-${{ github.ref_name }}-dist.tar.gz
             release-notes.md
             SHA256SUMS
 
@@ -296,7 +294,7 @@ jobs:
         with:
           body_path: release-notes.md
           files: |
-            open-gemini-ocr-*-dist.tar.gz
+            open-ocr-cli-*-dist.tar.gz
             open-ocr-cli-*.tgz
             open-ocr-cli.rb
             SHA256SUMS
@@ -318,7 +316,7 @@ jobs:
             git fetch --force origin "refs/tags/$major:$previous_ref"
             previous_commit=$(git rev-parse "$previous_ref^{}")
             if ! git merge-base --is-ancestor "$previous_commit" "$GITHUB_SHA"; then
-              echo "Refusing to move $major backwards or to an unrelated history" >&2
+              echo "Refusing to move $major to a non-descendant commit" >&2
               exit 1
             fi
           fi

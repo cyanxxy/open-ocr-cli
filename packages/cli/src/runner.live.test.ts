@@ -4,7 +4,12 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockExtractStructuredDataFromFile, mockExtractTextFromFile } = vi.hoisted(() => ({
+const {
+  mockExtractPresetWithProvider,
+  mockExtractStructuredDataFromFile,
+  mockExtractTextFromFile,
+} = vi.hoisted(() => ({
+  mockExtractPresetWithProvider: vi.fn(),
   mockExtractStructuredDataFromFile: vi.fn(),
   mockExtractTextFromFile: vi.fn(),
 }));
@@ -14,11 +19,19 @@ vi.mock('../../../src/lib/gemini/extraction', () => ({
   extractTextFromFile: mockExtractTextFromFile,
 }));
 
+// Partial mock: runner.ts pulls six other symbols out of this module, so a bare
+// factory would break every neighbouring test in this file.
+vi.mock('../../../src/lib/providers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/lib/providers')>()),
+  extractPresetWithProvider: mockExtractPresetWithProvider,
+}));
+
 import { resolveCliOptions } from './config';
 import { discoverInputs } from './inputs';
 import { runBatch } from './runner';
 import { BatchOutputLock } from './output';
 import { cliExitCode } from './errors';
+import { toOcrRunResult } from './protocol';
 import { recordGeminiUsage } from '../../../src/lib/gemini/usage';
 import type { GeminiClientConfig } from '../../../src/lib/gemini/types';
 
@@ -27,7 +40,7 @@ let directory: string;
 let outputDirectory: string;
 
 beforeEach(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-live-runner-'));
+  directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-live-runner-'));
   outputDirectory = path.join(directory, 'results');
   process.env.GEMINI_API_KEY = 'test-key';
   mockExtractTextFromFile.mockReset();
@@ -37,6 +50,12 @@ beforeEach(async () => {
     sections: [{ content: ['Hello from OCR'] }],
   });
   mockExtractStructuredDataFromFile.mockResolvedValue({ invoice_number: 'INV-42', total: 12.5 });
+  mockExtractPresetWithProvider.mockReset();
+  mockExtractPresetWithProvider.mockResolvedValue({
+    markdown: '# Invoice\n\n- Number: INV-42',
+    json: { invoice_number: 'INV-42', rows: [{ description: 'Widget', line_total: '10.00' }] },
+    csv: 'description,line_total\nWidget,10.00\n',
+  });
 });
 
 afterEach(async () => {
@@ -125,7 +144,7 @@ describe('CLI live batch orchestration', () => {
     expect(mockExtractTextFromFile).toHaveBeenCalledTimes(2);
   });
 
-  it('resumes partial outputs without colliding with their existing artifacts', async () => {
+  it('re-extracts partial outputs over their own artifacts instead of skipping them', async () => {
     await writeFile(path.join(directory, 'partial.jpg'), JPEG_BYTES);
     await writeFile(path.join(directory, 'second.jpg'), JPEG_BYTES);
     const options = resolveCliOptions({ output: outputDirectory, quiet: true }, {}, directory);
@@ -134,7 +153,7 @@ describe('CLI live batch orchestration', () => {
       abortController: new AbortController(), writeStdout: () => undefined, writeStderr: () => undefined,
     });
 
-    const manifestPath = path.join(outputDirectory, '.gemini-ocr-manifest.json');
+    const manifestPath = path.join(outputDirectory, '.open-ocr-manifest.json');
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
       entries: Record<string, { status: string }>;
     };
@@ -144,8 +163,11 @@ describe('CLI live batch orchestration', () => {
     const resumed = await runBatch(inputs, options, {
       abortController: new AbortController(), writeStdout: () => undefined, writeStderr: () => undefined,
     });
-    expect(resumed).toMatchObject({ total: 2, succeeded: 0, failed: 0, skipped: 2 });
-    expect(mockExtractTextFromFile).toHaveBeenCalledTimes(2);
+    // A partial document produced less than the extraction asked for, so resume
+    // re-runs it. Its own recorded artifacts are reclaimed rather than reported
+    // as an output collision, which is what this batch is really guarding.
+    expect(resumed).toMatchObject({ total: 2, succeeded: 2, failed: 0, skipped: 0 });
+    expect(mockExtractTextFromFile).toHaveBeenCalledTimes(4);
   });
 
   it('validates every input during dry runs even when the resume manifest matches', async () => {
@@ -266,5 +288,66 @@ describe('CLI live batch orchestration', () => {
     expect(summary.usage.estimatedCostUsd).toBeGreaterThan(options.maxCostUsd!);
     expect(summary.results[1].error).toContain('--max-cost');
     expect(mockExtractTextFromFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs template mode through the preset extractor and writes its CSV artifact', async () => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    const options = resolveCliOptions(
+      { preset: 'invoice', format: 'all', output: outputDirectory, quiet: true },
+      {},
+      directory,
+    );
+    // A preset implies template mode, and only template mode can produce CSV.
+    expect(options.mode).toBe('template');
+    const inputs = await discoverInputs(['*.jpg'], options);
+
+    const summary = await runBatch(inputs, options, {
+      abortController: new AbortController(), writeStdout: () => undefined, writeStderr: () => undefined,
+    });
+
+    expect(summary).toMatchObject({ total: 1, succeeded: 1, failed: 0 });
+    expect(mockExtractPresetWithProvider).toHaveBeenCalledTimes(1);
+    // The preset itself is resolved and handed over, not the raw id.
+    expect(mockExtractPresetWithProvider.mock.calls[0][4]).toMatchObject({ id: 'invoice' });
+    // Simple-mode extraction must not run for a template document.
+    expect(mockExtractTextFromFile).not.toHaveBeenCalled();
+
+    expect(await readFile(path.join(outputDirectory, 'invoice.csv'), 'utf8')).toContain('Widget,10.00');
+    expect(await readFile(path.join(outputDirectory, 'invoice.json'), 'utf8')).toContain('INV-42');
+    expect(await readFile(path.join(outputDirectory, 'invoice.md'), 'utf8')).toContain('INV-42');
+  });
+
+  it('refuses CSV from a record-shaped preset before spending a request', async () => {
+    // `business-card` extracts one record, so it can never produce rows. The
+    // refusal has to happen at option resolution, not after a billed call.
+    expect(() => resolveCliOptions(
+      { preset: 'business-card', format: 'csv', output: outputDirectory, quiet: true },
+      {},
+      directory,
+    )).toThrow(/cannot produce CSV rows/u);
+    expect(mockExtractPresetWithProvider).not.toHaveBeenCalled();
+  });
+
+  it('describes a single-file artifact by what was written, not by its filename', async () => {
+    await writeFile(path.join(directory, 'one.jpg'), JPEG_BYTES);
+    const target = path.join(directory, 'report.json');
+    // Naming the output `.json` while asking for markdown is legal — the caller
+    // owns the filename. What must not happen is the result claiming the file
+    // holds JSON, which would send an agent to JSON.parse a Markdown body.
+    const options = resolveCliOptions(
+      { format: 'markdown', output: target, quiet: true },
+      {},
+      directory,
+    );
+    const inputs = await discoverInputs(['*.jpg'], options);
+    const summary = await runBatch(inputs, options, {
+      abortController: new AbortController(), writeStdout: () => undefined, writeStderr: () => undefined,
+    });
+
+    expect(await readFile(target, 'utf8')).toContain('Hello from OCR');
+    const result = toOcrRunResult('run-1', summary, 'reference');
+    expect(result.documents[0].artifacts).toEqual([
+      { path: target, mediaType: 'text/markdown', kind: 'markdown' },
+    ]);
   });
 });

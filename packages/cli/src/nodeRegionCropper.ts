@@ -63,7 +63,6 @@ async function renderPdfPage(bytes: Buffer, region: NormalizedRegion): Promise<B
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
     const loadingTask = pdfjs.getDocument({
       data: new Uint8Array(bytes),
-      isEvalSupported: false,
       useSystemFonts: true,
       // Verbosity is module-global in pdf.js, so this call site must pin it too;
       // otherwise a render here re-enables warnings on stderr for input validation.
@@ -90,7 +89,7 @@ async function renderPdfPage(bytes: Buffer, region: NormalizedRegion): Promise<B
       page.cleanup();
       return canvas.toBuffer('image/png');
     } finally {
-      await pdf.destroy();
+      await loadingTask.destroy();
     }
   } finally {
     for (const name of CANVAS_GLOBAL_NAMES) {

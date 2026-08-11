@@ -6,7 +6,7 @@ import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { ocrErrorPayload } from './errors';
-import { executeOcrJobRequest, readOcrJobRequestRaw, readStandardInput } from './machine';
+import { executeOcrJobRequest, readOcrJobRequest, readStandardInput } from './machine';
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 const originalNoConfig = process.env.OPEN_OCR_NO_CONFIG;
@@ -136,7 +136,7 @@ describe('machine request execution', () => {
   it('names an unreadable request path instead of leaking an errno into the payload', async () => {
     let thrown: unknown;
     try {
-      await readOcrJobRequestRaw('request.json', directory);
+      await readOcrJobRequest('request.json', directory);
     } catch (error) {
       thrown = error;
     }
@@ -287,7 +287,7 @@ describe('machine request execution', () => {
       noConfig: true,
     });
 
-    // The run is one document short of what was requested. The v1/v2 result and
+    // The run is one document short of what was requested. The result and
     // event schemas are strict, so the shortfall rides the warning channel in
     // the same wording the direct CLI prints.
     expect(warnings).toEqual([
@@ -431,5 +431,65 @@ describe('machine request execution', () => {
     });
 
     expect(warnings).toEqual([]);
+  });
+
+  it('bounds the request envelope at 1 MB through both guards', async () => {
+    const oversized = JSON.stringify({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+      extraction: { instructions: ['x'.repeat(1024 * 1024)] },
+    });
+    const requestPath = path.join(directory, 'huge.json');
+    await writeFile(requestPath, oversized);
+
+    // The file path checks the size twice on purpose — once through the open
+    // handle's stat, once on the bytes actually read — because the file can be
+    // swapped between the two. Both must report the same refusal.
+    await expect(readOcrJobRequest('huge.json', directory)).rejects.toMatchObject({
+      message: 'OCR request JSON exceeds the 1 MB limit',
+    });
+
+    const stdin = new PassThrough();
+    stdin.end(oversized);
+    await expect(readStandardInput(undefined, stdin)).rejects.toMatchObject({
+      message: 'OCR request JSON exceeds the 1 MB limit',
+    });
+  });
+
+  it('reports malformed request JSON as a fixable configuration error', async () => {
+    await writeFile(path.join(directory, 'broken.json'), '{ "protocolVersion": 2,');
+
+    let thrown: unknown;
+    try {
+      await readOcrJobRequest('broken.json', directory);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect((thrown as Error).message).toMatch(/^OCR request JSON is invalid: /u);
+    expect(ocrErrorPayload(thrown, 2)).toMatchObject({
+      code: 'CONFIG_INVALID',
+      category: 'configuration',
+      retryable: false,
+    });
+  });
+
+  it('rejects a request whose protocolVersion is not the one supported version', async () => {
+    for (const protocolVersion of [1, 3, '2', undefined]) {
+      await writeFile(path.join(directory, 'versioned.json'), JSON.stringify({
+        protocolVersion,
+        operation: 'extract',
+        inputs: [{ type: 'path', path: 'invoice.jpg' }],
+      }));
+
+      const payload = await readOcrJobRequest('versioned.json', directory).then(
+        () => undefined,
+        (error: unknown) => ocrErrorPayload(error, 2),
+      );
+      expect(payload).toMatchObject({ code: 'CONFIG_INVALID', retryable: false });
+      expect(payload?.message).toContain('Unsupported OCR protocol version');
+      expect(payload?.hint).toContain('protocolVersion 2');
+    }
   });
 });

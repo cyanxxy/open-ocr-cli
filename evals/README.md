@@ -59,6 +59,8 @@ markers are removed.
 ## Public datasets
 
 Selections and immutable revisions live in [`datasets.json`](datasets.json).
+Sampling seeds are benchmark identifiers, not product branding; keep them
+stable unless intentionally publishing a new, documented benchmark corpus.
 
 - CORD v2 is used under CC BY 4.0. The installer selects 20 records from its
   official test split and preserves the supplied OCR and parse annotations.

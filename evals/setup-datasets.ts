@@ -77,13 +77,13 @@ async function readManifest(): Promise<DatasetManifest> {
 }
 
 async function fetchBytes(url: string): Promise<Uint8Array> {
-  const response = await fetch(url, { headers: { 'user-agent': 'open-gemini-ocr-evals/1.0' } });
+  const response = await fetch(url, { headers: { 'user-agent': 'open-ocr-evals/1.0' } });
   if (!response.ok) throw new Error(`Download failed (${response.status}) for ${url}`);
   return new Uint8Array(await response.arrayBuffer());
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { headers: { 'user-agent': 'open-gemini-ocr-evals/1.0' } });
+  const response = await fetch(url, { headers: { 'user-agent': 'open-ocr-evals/1.0' } });
   if (!response.ok) throw new Error(`Download failed (${response.status}) for ${url}`);
   return await response.json() as T;
 }

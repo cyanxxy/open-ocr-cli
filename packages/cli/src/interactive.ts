@@ -160,14 +160,12 @@ async function providerArguments(
     defaultGateway,
   );
   const preferredModel = env.OPEN_OCR_MODEL
-    ?? (provider === 'gemini' ? env.GEMINI_OCR_MODEL : undefined)
     ?? (providerContextMatches ? config.model : undefined)
     ?? PROVIDER_PROFILES[provider].defaultModel;
   const model = await chooseModel(prompter, writeOutput, provider, preferredModel);
   const modelContextMatches = providerContextMatches && (!config.model || config.model === model);
   const configuredThinking = (
     env.OPEN_OCR_THINKING
-    ?? (provider === 'gemini' ? env.GEMINI_OCR_THINKING : undefined)
     ?? (modelContextMatches ? config.thinking : undefined)
   )?.toLowerCase();
   const thinkingValues: readonly InteractiveThinkingLevel[] = cliThinkingLevels(provider, model)
@@ -434,7 +432,7 @@ export async function promptInteractiveArguments(runtime: InteractiveRuntime = {
         return ['doctor', ...(config ? ['--config', config] : []), ...await outputFormatArguments(prompter, writeOutput)];
       }
       case 'status': {
-        const output = (await prompter.ask('Batch output directory', 'gemini-ocr-output')).trim();
+        const output = (await prompter.ask('Batch output directory', 'open-ocr-output')).trim();
         return ['status', output, ...await outputFormatArguments(prompter, writeOutput)];
       }
       case 'help': {

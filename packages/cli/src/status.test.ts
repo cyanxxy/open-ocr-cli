@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { CliExitError } from './errors';
 import { inspectBatchStatus, renderBatchStatus } from './status';
 import { BatchOutputLock } from './output';
 
@@ -37,6 +38,10 @@ function batchSummary(results: SummaryResult[], overrides: Record<string, unknow
     failed: results.filter((result) => result.status === 'failed').length,
     skipped: results.filter((result) => result.status === 'skipped').length,
     mode: 'simple',
+    // Required: every summary the CLI writes carries the provider route, and
+    // status no longer guesses gemini/direct when it is absent.
+    provider: 'gemini',
+    gateway: 'direct',
     model: 'gemini-3.5-flash',
     usage,
     costLimitReached: false,
@@ -46,7 +51,7 @@ function batchSummary(results: SummaryResult[], overrides: Record<string, unknow
 }
 
 beforeEach(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-status-'));
+  directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-status-'));
 });
 
 afterEach(async () => {
@@ -60,7 +65,7 @@ describe('CLI batch status', () => {
     const missingOutput = path.join(directory, 'invoice.json');
     await writeFile(source, '%PDF');
     await writeFile(presentOutput, '# Invoice');
-    await writeFile(path.join(directory, '.gemini-ocr-manifest.json'), JSON.stringify({
+    await writeFile(path.join(directory, '.open-ocr-manifest.json'), JSON.stringify({
       version: 1,
       entries: {
         [source]: {
@@ -116,7 +121,7 @@ describe('CLI batch status', () => {
     const output = path.join(directory, 'invoice.md');
     await writeFile(source, '%PDF');
     await writeFile(output, '# Invoice');
-    await writeFile(path.join(directory, '.gemini-ocr-manifest.json'), JSON.stringify({
+    await writeFile(path.join(directory, '.open-ocr-manifest.json'), JSON.stringify({
       version: 1,
       entries: {
         [source]: {
@@ -158,7 +163,7 @@ describe('CLI batch status', () => {
     const source = path.join(directory, 'archived.pdf');
     const output = path.join(directory, 'archived.md');
     await writeFile(output, '# Preserved output');
-    await writeFile(path.join(directory, '.gemini-ocr-manifest.json'), JSON.stringify({
+    await writeFile(path.join(directory, '.open-ocr-manifest.json'), JSON.stringify({
       version: 1,
       entries: {
         [source]: {
@@ -217,5 +222,59 @@ describe('CLI batch status', () => {
 
   it('rejects directories without batch metadata', async () => {
     await expect(inspectBatchStatus('.', directory)).rejects.toThrow('No Open OCR batch metadata');
+  });
+
+  it.each([
+    [
+      'a 2.x summary that predates the required provider metadata',
+      async () => {
+        const legacy = batchSummary([{ status: 'succeeded' }]);
+        delete legacy.provider;
+        delete legacy.gateway;
+        await writeFile(path.join(directory, 'batch-summary.json'), JSON.stringify(legacy));
+      },
+    ],
+    [
+      'a summary that is not JSON',
+      async () => { await writeFile(path.join(directory, 'batch-summary.json'), 'not json'); },
+    ],
+    [
+      'a summary that is not an object',
+      async () => { await writeFile(path.join(directory, 'batch-summary.json'), '[]'); },
+    ],
+    [
+      'a manifest entry with an unknown status',
+      async () => {
+        await writeFile(path.join(directory, '.open-ocr-manifest.json'), JSON.stringify({
+          version: 1,
+          entries: {
+            '/a/b.png': {
+              fingerprint: 'x',
+              status: 'bogus',
+              completedAt: '2026-01-01T00:00:00.000Z',
+              outputFiles: ['/a/b.md'],
+            },
+          },
+        }));
+      },
+    ],
+  ])('reports %s as unreadable batch metadata, not a flag problem', async (_label, seed) => {
+    await seed();
+    // The taxonomy is what an agent acts on: this is a stale or foreign
+    // directory, so the recovery is a fresh output directory. Classifying it as
+    // CONFIG_INVALID sent the caller to re-read their own flags, which cannot
+    // fix a file on disk.
+    const error = await inspectBatchStatus('.', directory).then(
+      () => undefined,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(CliExitError);
+    expect(error).toMatchObject({
+      code: 'INPUT_INVALID',
+      category: 'input',
+      retryable: false,
+      exitCode: 2,
+    });
+    expect((error as CliExitError).hint).toContain('fresh output directory');
   });
 });

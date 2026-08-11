@@ -27,7 +27,6 @@ import {
   type OcrJobServiceResult,
   type OcrJobServiceRuntime,
 } from './ocrJobService';
-import { writeTextFileAtomically } from './output';
 import { assertProviderMediaTypeSupported } from './providerInputs';
 import { providerRuntimeConfig } from './providerRuntime';
 import { runWithProviderRetries } from './providerRetries';
@@ -186,9 +185,15 @@ function isTextualContentType(contentType: string): boolean {
 
 function looksLikeUtf8Text(bytes: Uint8Array): boolean {
   const sample = bytes.subarray(0, 4096);
+  // A truncated sample almost always splits a multibyte sequence at its edge, so
+  // the boundary bytes are decoded in streaming mode rather than treated as
+  // malformed — otherwise any page whose 4096th byte lands mid-character was
+  // rejected as non-text. `stream` is only set when the sample really is a
+  // prefix, so a body that genuinely ends in a truncated sequence still fails.
+  const truncated = sample.byteLength < bytes.byteLength;
   let decoded: string;
   try {
-    decoded = new TextDecoder('utf-8', { fatal: true }).decode(sample);
+    decoded = new TextDecoder('utf-8', { fatal: true }).decode(sample, { stream: truncated });
   } catch {
     return false;
   }
@@ -269,7 +274,14 @@ async function runCompatibleWebExtraction(
     totalBytes += fetched.bytes.byteLength;
     if (totalBytes > 30 * 1024 * 1024) throw new Error('Web OCR source data exceeds the 30 MB combined limit');
     const contentType = fetchedContentType(fetched.contentType, fetched.bytes);
-    if (contentType === 'application/pdf' || contentType.startsWith('image/')) {
+    // `image/svg+xml` is an `image/*` type that `fetchedContentType` already
+    // accepted as text. Routing it by prefix alone uploaded SVG markup as a
+    // binary image part, which the provider rejects; its extractable content is
+    // the markup, so it belongs on the text branch.
+    if (
+      contentType === 'application/pdf'
+      || (contentType.startsWith('image/') && !isTextualContentType(contentType))
+    ) {
       assertProviderMediaTypeSupported(contentType, options);
       hasPdf ||= contentType === 'application/pdf';
       const dataUrl = `data:${contentType};base64,${Buffer.from(fetched.bytes).toString('base64')}`;
@@ -283,7 +295,14 @@ async function runCompatibleWebExtraction(
       ));
     } else {
       const text = readableWebText(fetched.bytes, contentType).slice(0, 1_500_000);
-      if (!text) throw new Error(`URL returned no readable text: ${url}`);
+      if (!text) {
+        throw new CliExitError(`URL returned no readable text: ${url}`, 2, {
+          code: 'INPUT_INVALID',
+          category: 'input',
+          retryable: false,
+          hint: 'Use a URL whose response contains extractable text, or a supported image/PDF URL.',
+        });
+      }
       parts.push({ type: 'text', text: `Source ${index + 1}: ${url}\n\n${text}` });
     }
   }
@@ -302,6 +321,16 @@ async function runCompatibleWebExtraction(
   if (analysis === 'individual') return { results: parseIndividualResults(response.text, urls) };
   if (analysis === 'combined') return { combinedContent: response.text.trim() };
   return { comparisonAnalysis: response.text.trim() };
+}
+
+/** A malformed URL request: the caller's arguments are wrong, not the provider's. */
+function webConfigurationError(message: string, hint: string): CliExitError {
+  return new CliExitError(message, 2, {
+    code: 'CONFIG_INVALID',
+    category: 'configuration',
+    retryable: false,
+    hint,
+  });
 }
 
 function urlListError(message: string, cause: unknown): CliExitError {
@@ -337,11 +366,26 @@ async function readUrlListFile(filePath: string, cwd: string): Promise<string[]>
 export async function resolveWebUrls(rawUrls: string[], filePath: string | undefined, cwd: string): Promise<string[]> {
   const fromFile = filePath ? await readUrlListFile(filePath, cwd) : [];
   const requested = [...rawUrls, ...fromFile].map((url) => url.trim()).filter(Boolean);
-  if (requested.length === 0) throw new Error('Provide at least one URL or use --file');
+  if (requested.length === 0) {
+    throw webConfigurationError(
+      'Provide at least one URL or use --file',
+      'Pass one or more public HTTP(S) URLs, or --file with a URL list.',
+    );
+  }
   const unsupported = getUnsupportedUrls(requested);
-  if (unsupported.length > 0) throw new Error(`Unsupported or unsafe URL(s): ${unsupported.join(', ')}`);
+  if (unsupported.length > 0) {
+    throw webConfigurationError(
+      `Unsupported or unsafe URL(s): ${unsupported.join(', ')}`,
+      'Use public http(s) URLs without embedded credentials; loopback, private, and tunnelling hosts are refused.',
+    );
+  }
   const { urls } = dedupeRequestedUrls(requested);
-  if (urls.length > 20) throw new Error(`Web OCR supports at most 20 unique URLs per request; received ${urls.length}`);
+  if (urls.length > 20) {
+    throw webConfigurationError(
+      `Web OCR supports at most 20 unique URLs per request; received ${urls.length}`,
+      'Split the URL list across several runs.',
+    );
+  }
   return urls;
 }
 
@@ -414,15 +458,4 @@ export async function assertWebOutputAvailable(
     throw error;
   }
   throw new Error(`Output already exists: ${target} (use --overwrite)`);
-}
-
-export async function writeWebOutput(
-  content: string,
-  outputPath: string,
-  cwd: string,
-  overwrite: boolean,
-): Promise<string> {
-  const target = path.resolve(cwd, outputPath);
-  await writeTextFileAtomically(target, content, overwrite);
-  return target;
 }

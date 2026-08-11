@@ -11,7 +11,6 @@ import {
   inputRequired,
   inputResponse,
   type CacheHint,
-  type ClientCapabilities,
   type InputRequiredResult,
   type RequestStateCodec,
 } from '@modelcontextprotocol/server';
@@ -22,9 +21,12 @@ import { GATEWAY_IDS, PROVIDER_IDS } from '../../../src/lib/providers';
 import errorV2Schema from '../schemas/error-v2.schema.json';
 import resultV2Schema from '../schemas/result-v2.schema.json';
 import { CliExitError, cliExitCode, cliSignalExitCode, ocrErrorPayload } from './errors';
+import { isRecord } from './jsonValidation';
 import { executeOcrJobRequest } from './machine';
+import { normalizeAgentProgressText } from './ocrJobService';
 import {
   createOcrCapabilities,
+  isStdinRequestInput,
   parseOcrJobRequest,
   toOcrRunFailure,
   type OcrJobEvent,
@@ -57,11 +59,8 @@ function rewriteExternalErrorRef(node: unknown): unknown {
  *
  * `type: 'object'` is stamped at the root deliberately. The root is a `oneOf`
  * over two `$ref` branches, and the SDK does not follow `$ref` when deciding
- * whether an advertised `outputSchema` has an object root — a non-object root
- * makes the 2025-era wire codec wrap `structuredContent` in `{ result: … }`,
- * silently changing the envelope every existing client already reads. Both
- * branches are `type: 'object'`, so the stamp is accurate and the wire shape
- * stays byte-identical.
+ * whether an advertised `outputSchema` has an object root. Both branches are
+ * objects, so the stamp accurately describes the result.
  */
 function selfContainedResultSchema(): Record<string, unknown> {
   const { $id: _errorId, $schema: _errorSchema, ...errorPayload } = errorV2Schema as Record<string, unknown>;
@@ -75,9 +74,15 @@ function selfContainedResultSchema(): Record<string, unknown> {
 
 const ocrResultOutputSchema = fromJsonSchema<OcrMachineResult>(selfContainedResultSchema());
 
-// `server/discover`, `tools/list` and the capabilities document are pure
-// functions of the CLI version, so shared caches may hold them. Cache fields are
-// only emitted on 2026-07-28 requests; 2025-era responses are never affected.
+// Every catalogue this server publishes — discovery, the tool list, the
+// resource list, and the capabilities document itself — is a pure function of
+// the CLI version, so shared caches may hold all of them.
+//
+// This has to be declared on each cacheable method: SEP-2549 requires `ttlMs`
+// and `cacheScope` on every list result, and the SDK supplies `ttlMs: 0,
+// cacheScope: 'private'` for any method left out. That default is not "no
+// opinion", it is an explicit instruction never to cache — which is the wrong
+// answer for a catalogue that cannot change until the binary does.
 const STATIC_CACHE_HINT: CacheHint = { ttlMs: 3_600_000, cacheScope: 'public' };
 
 // Elicited confirmation before a billed run. Opt-in through the environment
@@ -97,52 +102,103 @@ interface ConfirmationGuard {
   consumed: Map<string, number>;
 }
 
+/**
+ * A local document path.
+ *
+ * `-` is rejected in the advertised schema rather than only at execution time,
+ * so `tools/list` states the restriction and a client that sends it gets a
+ * validation error instead of a hung call: under `mcp`, stdin is the JSON-RPC
+ * channel, and a document read from it never terminates.
+ */
+const documentPath = z.string().min(1)
+  .regex(/^(?!-$).+$/u, 'stdin ("-") is unavailable over MCP; pass a file path');
+
+const inputsField = z.array(documentPath).min(1)
+  .describe('Files, directories, or globs, resolved against the server working directory. Directories are scanned recursively, skipping hidden entries and node_modules, dist, build, vendor, and target.');
+
 const sharedFields = {
-  configPath: z.string().min(1).optional(),
-  noConfig: z.boolean().optional(),
-  provider: z.enum(PROVIDER_IDS).optional(),
-  gateway: z.enum(GATEWAY_IDS).optional(),
-  model: z.string().min(1).optional(),
-  thinking: z.enum(thinkingLevels).optional(),
-  outputDirectory: z.string().min(1).optional(),
-  delivery: z.enum(['inline', 'reference']).optional(),
-  resume: z.boolean().optional(),
-  timeoutSeconds: z.number().int().min(1).max(3600).optional(),
-  maxCostUsd: z.number().positive().max(1_000_000).optional(),
-  requestsPerMinute: z.number().int().min(0).max(60_000).optional(),
-  dryRun: z.boolean().optional(),
+  configPath: z.string().min(1).optional()
+    .describe('Explicit CLI configuration file, resolved against the server working directory.'),
+  noConfig: z.boolean().optional()
+    .describe('Ignore user and project configuration files and the project .env for a hermetic run.'),
+  provider: z.enum(PROVIDER_IDS).optional()
+    .describe('Model provider. Defaults to the configured provider, otherwise gemini.'),
+  gateway: z.enum(GATEWAY_IDS).optional()
+    .describe('API route: direct, or through Cloudflare AI Gateway.'),
+  model: z.string().min(1).optional()
+    .describe('Provider model ID. Gemini IDs are validated against the supported list; other profiles accept upstream IDs.'),
+  thinking: z.enum(thinkingLevels).optional()
+    .describe('Reasoning effort. Supported levels are provider- and model-specific; read them from open-ocr://capabilities.'),
+  outputDirectory: z.string().min(1).optional()
+    .describe('Where reference artifacts are written. Defaults to .open-ocr-results/<runId>. Reference delivery only.'),
+  delivery: z.enum(['inline', 'reference']).optional()
+    .describe('reference (default) writes artifact files and returns their paths; inline returns content in the response and writes nothing.'),
+  resume: z.boolean().optional()
+    .describe('Skip unchanged documents recorded in the output directory manifest. Only meaningful with an explicit outputDirectory, since the default one is per-run.'),
+  timeoutSeconds: z.number().int().min(1).max(3600).optional()
+    .describe('Per-document time limit.'),
+  maxFiles: z.number().int().min(1).max(100_000).optional()
+    .describe('Refuse the run before any provider call if discovery matches more than this many documents.'),
+  maxTotalMb: z.number().min(1).max(1_048_576).optional()
+    .describe('Refuse the run before any provider call if the matched documents exceed this combined size in MB.'),
+  maxCostUsd: z.number().positive().max(1_000_000).optional()
+    .describe('Stop scheduling new requests once estimated paid-tier cost reaches this value.'),
+  requestsPerMinute: z.number().int().min(0).max(60_000).optional()
+    .describe('Cap provider request starts per minute; 0 disables the limit.'),
+  dryRun: z.boolean().optional()
+    .describe('Validate inputs, schemas, limits, and planned artifacts without credentials, provider calls, or writes.'),
 } as const;
 
-const extractInputSchema = z.object({
+// Strict objects, so a misspelled or unsupported argument is refused by name
+// instead of silently stripped. A dropped `maxCostUsd` or `dryRun` is the
+// difference between a bounded validation pass and an unbounded billed run.
+const extractInputSchema = z.strictObject({
   ...sharedFields,
-  inputs: z.array(z.string().min(1)).min(1),
-  mode: z.enum(['simple', 'template']).optional(),
-  preset: z.string().min(1).optional(),
-  contentFormat: z.enum(contentFormats).optional(),
-  schemaPath: z.string().min(1).optional(),
-  instructions: z.array(z.string().min(1)).optional(),
-  concurrency: z.number().int().min(1).max(16).optional(),
-  retries: z.number().int().min(0).max(10).optional(),
-  failFast: z.boolean().optional(),
+  inputs: inputsField,
+  mode: z.enum(['simple', 'template']).optional()
+    .describe('simple for transcription or a custom schema; template for a preset. Defaults to template when preset is set, otherwise simple.'),
+  preset: z.string().min(1).optional()
+    .describe('Structured extraction preset ID. Read the supported IDs from open-ocr://capabilities; setting this implies template mode.'),
+  contentFormat: z.enum(contentFormats).optional()
+    .describe('Artifact format. csv requires template mode and a table-shaped preset.'),
+  schemaPath: z.string().min(1).optional()
+    .describe('JSON Schema file for custom structured extraction. Requires simple mode and json contentFormat, and cannot be combined with preset.'),
+  instructions: z.array(z.string().min(1)).optional()
+    .describe('Extra extraction instructions. Simple mode only.'),
+  concurrency: z.number().int().min(1).max(16).optional()
+    .describe('Documents processed in parallel.'),
+  retries: z.number().int().min(0).max(10).optional()
+    .describe('Transient retries per document.'),
+  failFast: z.boolean().optional()
+    .describe('Stop scheduling new documents after the first failure.'),
 });
 
-const agenticInputSchema = z.object({
+const agenticInputSchema = z.strictObject({
   ...sharedFields,
-  inputs: z.array(z.string().min(1)).min(1),
-  contentFormat: z.enum(['markdown', 'json', 'all']).optional(),
-  instructions: z.array(z.string().min(1)).optional(),
-  progress: z.enum(progressLevels).optional(),
-  maxIterations: z.number().int().min(1).max(20).optional(),
-  confidenceThreshold: z.number().min(0).max(1).optional(),
-  maxTokens: z.number().int().min(256).max(1_048_576).optional(),
-  concurrency: z.number().int().min(1).max(16).optional(),
+  inputs: inputsField,
+  contentFormat: z.enum(['markdown', 'json', 'all']).optional()
+    .describe('Artifact format. all additionally writes the agent step trace.'),
+  instructions: z.array(z.string().min(1)).optional()
+    .describe('Extra extraction instructions. Agentic mode does not read them; they are reported as an ignored option.'),
+  progress: z.enum(progressLevels).optional()
+    .describe('Step detail relayed as MCP progress notifications. detailed also exposes provider reasoning and tool payloads, which can contain document contents.'),
+  maxIterations: z.number().int().min(1).max(20).optional()
+    .describe('Maximum outer agent iterations per document.'),
+  confidenceThreshold: z.number().min(0).max(1).optional()
+    .describe('Completion confidence at which the agent stops.'),
+  maxTokens: z.number().int().min(256).max(1_048_576).optional()
+    .describe('Maximum generated tokens per model response; the selected model may enforce a lower ceiling.'),
+  concurrency: z.number().int().min(1).max(16).optional()
+    .describe('Documents processed in parallel.'),
 });
 
-const webInputSchema = z.object({
+const webInputSchema = z.strictObject({
   ...sharedFields,
-  urls: z.array(z.url()).min(1).max(20),
-  analysis: z.enum(['individual', 'combined', 'comparison']).optional(),
-  contentFormat: z.enum(['markdown', 'json']).optional(),
+  urls: z.array(z.url()).min(1).max(20)
+    .describe('Public HTTP(S) URLs. Loopback, private, and tunnelling hosts are refused.'),
+  analysis: z.enum(['individual', 'combined', 'comparison']).optional()
+    .describe('individual (default) returns one result per URL; combined merges them into one document; comparison contrasts them.'),
+  contentFormat: z.enum(['markdown', 'json']).optional().describe('Output format.'),
 });
 
 type ExtractMcpInput = z.infer<typeof extractInputSchema>;
@@ -160,6 +216,8 @@ type SharedMcpInput = Pick<
   | 'delivery'
   | 'resume'
   | 'timeoutSeconds'
+  | 'maxFiles'
+  | 'maxTotalMb'
   | 'maxCostUsd'
   | 'requestsPerMinute'
   | 'dryRun'
@@ -185,6 +243,8 @@ function executionRequest(
     ...(input.concurrency !== undefined ? { concurrency: input.concurrency } : {}),
     ...(input.retries !== undefined ? { retries: input.retries } : {}),
     ...(input.timeoutSeconds !== undefined ? { timeoutSeconds: input.timeoutSeconds } : {}),
+    ...(input.maxFiles !== undefined ? { maxFiles: input.maxFiles } : {}),
+    ...(input.maxTotalMb !== undefined ? { maxTotalMb: input.maxTotalMb } : {}),
     ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
     ...(input.requestsPerMinute !== undefined
       ? { requestsPerMinute: input.requestsPerMinute }
@@ -278,8 +338,8 @@ interface McpRequestContext {
     _meta?: { progressToken?: string | number };
     /**
      * The per-request `io.modelcontextprotocol/*` envelope. Present only on a
-     * 2026-07-28 request — that era has no handshake, so this is the only place
-     * the client's capabilities appear.
+     * 2026-07-28 request. This revision has no handshake, so this is the only
+     * place the client's capabilities appear.
      */
     envelope?: Readonly<Record<string, unknown>>;
     /** Populated only on a request the client retried with elicited answers. */
@@ -309,7 +369,7 @@ function ocrFailure(message: string, code: 'CONFIG_INVALID' | 'CANCELLED', hint:
     retryable: false,
     hint,
   });
-  return mcpResult(toOcrRunFailure(randomUUID(), ocrErrorPayload(error), 2));
+  return mcpResult(toOcrRunFailure(randomUUID(), ocrErrorPayload(error)));
 }
 
 function confirmationMessage(request: OcrJobRequest): string {
@@ -326,24 +386,20 @@ function confirmationMessage(request: OcrJobRequest): string {
 }
 
 /**
- * The two eras keep client capabilities in different places, and reading only
- * one of them silently disables the gate on the other. 2026-07-28 has no
- * handshake, so capabilities ride the per-request envelope and the session
- * accessor stays `undefined`; the 2025 era is the reverse. Verified on a live
- * stdio connection in both directions.
+ * Takes `unknown` because that is the envelope's declared value type.
+ *
+ * On 2026-07-28 there is no handshake, so client capabilities arrive inside the
+ * per-request `_meta` envelope. The transport validates that envelope against
+ * its schema and answers a malformed one with -32602 before any handler runs, so
+ * this is defence in depth rather than the only check — but the value is still
+ * `unknown` here, and asserting the declared type onto it would be unverified.
+ * Anything that is not the shape this reads counts as "cannot prompt", which
+ * fails closed: the run is refused rather than billed without a prompt.
  */
-function resolveClientCapabilities(
-  context: McpRequestContext,
-  sessionCapabilities: () => ClientCapabilities | undefined,
-): ClientCapabilities | undefined {
-  const fromEnvelope = context.mcpReq.envelope?.[CLIENT_CAPABILITIES_META_KEY];
-  if (fromEnvelope !== undefined) return fromEnvelope as ClientCapabilities;
-  return sessionCapabilities();
-}
-
-function supportsFormElicitation(capabilities: ClientCapabilities): boolean {
+function supportsFormElicitation(capabilities: unknown): boolean {
+  if (!isRecord(capabilities)) return false;
   const elicitation = capabilities.elicitation;
-  if (elicitation === undefined) return false;
+  if (!isRecord(elicitation)) return false;
   return elicitation.form !== undefined || elicitation.url === undefined;
 }
 
@@ -359,7 +415,7 @@ function confirmationRequestHash(request: OcrJobRequest): string {
 async function confirmationGate(
   request: OcrJobRequest,
   context: McpRequestContext,
-  clientCapabilities: ClientCapabilities | undefined,
+  clientCapabilities: unknown,
   guard: ConfirmationGuard,
 ): Promise<InputRequiredResult | ReturnType<typeof mcpResult> | undefined> {
   // A dry run neither bills nor writes, so there is nothing to confirm.
@@ -379,10 +435,6 @@ async function confirmationGate(
 
   const answer = inputResponse(context.mcpReq.inputResponses, CONFIRM_KEY);
   if (answer.kind === 'missing') {
-    // Undefined capabilities means the SDK could not tell us — the 2026-07-28
-    // era carries them per request rather than on a handshake. Ask anyway and
-    // let the client refuse; silently skipping a confirmation the operator
-    // switched on is the worse failure.
     if (clientCapabilities !== undefined && !supportsFormElicitation(clientCapabilities)) {
       return ocrFailure(
         `${CONFIRM_ENV} is set but this MCP client cannot prompt for confirmation.`,
@@ -443,8 +495,19 @@ async function confirmationGate(
   );
 }
 
+/**
+ * A progress line for the MCP client.
+ *
+ * Step text is model- and document-derived, so it goes through the same
+ * bounding and control-character stripping the direct CLI applies before
+ * writing agent progress to a terminal: unbounded raw text here means every
+ * notification can carry a document-sized payload with ANSI escapes and
+ * bidirectional overrides in it, rendered by whatever UI the host has.
+ */
 function progressMessage(event: OcrJobEvent): string {
-  if (event.message) return event.message;
+  const text = event.step?.text ? normalizeAgentProgressText(event.step.text) : undefined;
+  if (text) return text;
+  if (event.step?.name) return `${event.type}: ${event.step.name}`;
   if (event.source) return `${event.type}: ${event.source}`;
   return event.type;
 }
@@ -480,6 +543,25 @@ function artifactResourceLinks(result: OcrMachineResult): McpResourceLinkBlock[]
   })));
 }
 
+/**
+ * The text block that mirrors `structuredContent` for hosts that render content
+ * only.
+ *
+ * Normally that is the envelope itself: for reference delivery it is a few
+ * hundred bytes of metadata and paths. Inline delivery is the exception — the
+ * envelope then carries every extracted document body, and mirroring it verbatim
+ * sends the whole corpus twice in one response. There the mirror collapses to a
+ * summary, and the bodies travel once, in `structuredContent`.
+ */
+function resultTextBlock(result: OcrMachineResult): McpTextBlock {
+  const inline = 'documents' in result && result.documents.some((document) => document.content !== undefined);
+  if (!inline) return { type: 'text', text: JSON.stringify(result) };
+  const summary = `${result.status} run ${result.runId}: `
+    + `${result.succeeded} succeeded, ${result.partial} partial, ${result.failed} failed, ${result.skipped} skipped `
+    + `of ${result.total}. Document bodies are in structuredContent.documents[].content.`;
+  return { type: 'text', text: summary };
+}
+
 export function mcpResult(result: OcrMachineResult): {
   content: Array<McpTextBlock | McpResourceLinkBlock>;
   structuredContent: Record<string, unknown>;
@@ -487,7 +569,7 @@ export function mcpResult(result: OcrMachineResult): {
 } {
   return {
     content: [
-      { type: 'text', text: JSON.stringify(result) },
+      resultTextBlock(result),
       ...artifactResourceLinks(result),
     ],
     structuredContent: result as unknown as Record<string, unknown>,
@@ -506,14 +588,20 @@ async function executeMcpRequest(
   cwd: string,
 ): Promise<ReturnType<typeof mcpResult>> {
   const runId = randomUUID();
-  if (request.inputs.some((input) => input.type === 'stdin')) {
+  // Both spellings of "read the document from stdin" have to be refused here.
+  // `-` as a path is the one the tools can actually produce — their `inputs` are
+  // plain strings mapped to `{ type: 'path' }` — and the job service maps that
+  // back to a stdin read. Under `mcp`, stdin is the JSON-RPC channel, so the
+  // read never ends: the tool call hung forever with no response and swallowed
+  // the client's subsequent requests.
+  if (request.inputs.some(isStdinRequestInput)) {
     const error = new CliExitError('MCP stdio transport cannot also carry document stdin.', 2, {
       code: 'CONFIG_INVALID',
       category: 'configuration',
       retryable: false,
-      hint: 'Use path or URL inputs with MCP tools.',
+      hint: 'Use a file path or a URL; "-" reads stdin, which the MCP transport owns.',
     });
-    return mcpResult(toOcrRunFailure(runId, ocrErrorPayload(error), 2));
+    return mcpResult(toOcrRunFailure(runId, ocrErrorPayload(error)));
   }
 
   const abortController = new AbortController();
@@ -549,7 +637,7 @@ async function executeMcpRequest(
     return mcpResult(execution.result);
   } catch (error) {
     const payload = ocrErrorPayload(error, cliExitCode(error));
-    return mcpResult(toOcrRunFailure(runId, payload, 2));
+    return mcpResult(toOcrRunFailure(runId, payload));
   } finally {
     context.mcpReq.signal.removeEventListener('abort', relayAbort);
   }
@@ -559,7 +647,6 @@ async function executeMcpTool(
   buildRequest: () => OcrJobRequest,
   context: McpRequestContext,
   cwd: string,
-  sessionCapabilities: () => ClientCapabilities | undefined,
   confirmationGuard: ConfirmationGuard,
 ): Promise<ReturnType<typeof mcpResult> | InputRequiredResult> {
   try {
@@ -567,7 +654,7 @@ async function executeMcpTool(
     const gate = await confirmationGate(
       request,
       context,
-      resolveClientCapabilities(context, sessionCapabilities),
+      context.mcpReq.envelope?.[CLIENT_CAPABILITIES_META_KEY],
       confirmationGuard,
     );
     if (gate) return gate;
@@ -575,7 +662,7 @@ async function executeMcpTool(
   } catch (error) {
     const runId = randomUUID();
     const payload = ocrErrorPayload(error, cliExitCode(error));
-    return mcpResult(toOcrRunFailure(runId, payload, 2));
+    return mcpResult(toOcrRunFailure(runId, payload));
   }
 }
 
@@ -590,17 +677,24 @@ export function createOcrMcpServer(version: string, cwd = process.cwd()): McpSer
   const server = new McpServer(
     { name: 'open-ocr-cli', version },
     {
+      supportedProtocolVersions: ['2026-07-28'],
       instructions: 'Use dryRun for local validation, prefer reference delivery, and never place credentials in tool arguments.',
       cacheHints: {
         'server/discover': STATIC_CACHE_HINT,
         'tools/list': STATIC_CACHE_HINT,
+        'resources/list': STATIC_CACHE_HINT,
+        // Always empty — no templates are registered — but an empty list is
+        // still a list, and leaving it out marks it uncacheable for no reason.
+        'resources/templates/list': STATIC_CACHE_HINT,
       },
-      requestState: { verify: confirmationGuard.codec.verify },
+      inputRequired: { legacyShim: false },
+      requestState: {
+        verify: (state, context) => confirmationGuard.codec.verify(state, context),
+      },
     },
   );
-
-  // Legacy-era only; the modern era carries capabilities per request.
-  const sessionCapabilities = (): ClientCapabilities | undefined => server.server.getClientCapabilities();
+  server.server.removeRequestHandler('initialize');
+  server.server.removeNotificationHandler('notifications/initialized');
 
   server.registerResource(
     'open-ocr-capabilities',
@@ -640,7 +734,6 @@ export function createOcrMcpServer(version: string, cwd = process.cwd()): McpSer
       () => buildExtractMcpRequest(input),
       context,
       cwd,
-      sessionCapabilities,
       confirmationGuard,
     ),
   );
@@ -658,7 +751,6 @@ export function createOcrMcpServer(version: string, cwd = process.cwd()): McpSer
       () => buildAgenticMcpRequest(input),
       context,
       cwd,
-      sessionCapabilities,
       confirmationGuard,
     ),
   );
@@ -676,7 +768,6 @@ export function createOcrMcpServer(version: string, cwd = process.cwd()): McpSer
       () => buildWebMcpRequest(input),
       context,
       cwd,
-      sessionCapabilities,
       confirmationGuard,
     ),
   );
@@ -684,16 +775,9 @@ export function createOcrMcpServer(version: string, cwd = process.cwd()): McpSer
   return server;
 }
 
-/**
- * `serveStdio` owns the era decision for the connection: the opening exchange
- * selects it, one instance from the factory is pinned for the connection, and
- * the same registrations serve both. A hand-wired `server.connect(transport)`
- * is pinned to the 2025 era and answers `server/discover` with -32601, so a
- * 2026-07-28 client can never negotiate. `legacy: 'serve'` (the default) keeps
- * today's clients on the exact path they use now.
- */
 export async function runMcpServer(version: string): Promise<void> {
   const handle = serveStdio(() => createOcrMcpServer(version), {
+    legacy: 'reject',
     // stdout is the JSON-RPC channel; out-of-band errors belong on stderr.
     onerror: (error) => process.stderr.write(`${error.message}\n`),
   });

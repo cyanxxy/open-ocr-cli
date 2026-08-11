@@ -23,11 +23,6 @@ import { isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
 import { isGeminiCostLimitError } from './gemini/requestPolicy';
 import { streamAgentOperation, waitForAbortableAgentDelay } from './agentStepStream';
 
-// Re-export the memory reducer from its neutral home so existing importers that
-// reference `applyMemoryUpdate` from this module keep working (the function moved
-// to agentMemory.ts to break the agentLoop <-> agentGemini import cycle — A-01).
-export { applyMemoryUpdate } from './agentMemory';
-
 /**
  * A cancellation is identified by the abort signal or a fetch-level AbortError —
  * never by substring-matching the message. The previous `includes('cancel')` /

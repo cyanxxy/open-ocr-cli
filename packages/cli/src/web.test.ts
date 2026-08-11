@@ -1,22 +1,23 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { resolveCliOptions } from './config';
 import { ocrErrorPayload } from './errors';
 import {
   assertWebOutputAvailable,
   readableWebText,
   renderWebResult,
   resolveWebUrls,
-  writeWebOutput,
+  runWebJob,
 } from './web';
 
 let directory: string;
 
 beforeEach(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-web-'));
+  directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-web-'));
 });
 
 afterEach(async () => {
@@ -88,12 +89,6 @@ describe('CLI Web OCR', () => {
     expect(text).not.toContain('doNotInclude');
   });
 
-  it('protects output files unless overwrite is explicit', async () => {
-    const target = await writeWebOutput('first', 'result.md', directory, false);
-    await expect(writeWebOutput('second', 'result.md', directory, false)).rejects.toMatchObject({ code: 'EEXIST' });
-    await writeWebOutput('second', 'result.md', directory, true);
-    expect(await readFile(target, 'utf8')).toBe('second');
-  });
 
   it('preflights an existing destination before Web OCR can spend API tokens', async () => {
     const target = path.join(directory, 'result.md');
@@ -105,5 +100,27 @@ describe('CLI Web OCR', () => {
     await expect(assertWebOutputAvailable('new.md', directory, false)).resolves.toBe(
       path.join(directory, 'new.md'),
     );
+  });
+
+  it('plans an extensionless --output path as the exact Web OCR file', async () => {
+    const output = path.join(directory, 'result');
+    const options = resolveCliOptions({
+      dryRun: true,
+      output,
+      outputPathKind: 'file',
+    }, {}, directory);
+
+    const execution = await runWebJob(
+      ['https://example.com'],
+      'individual',
+      options,
+      { runId: 'web-output-file', abortController: new AbortController() },
+    );
+
+    expect(execution.result.documents[0]?.plannedArtifacts).toEqual([{
+      path: output,
+      kind: 'markdown',
+      mediaType: 'text/markdown',
+    }]);
   });
 });

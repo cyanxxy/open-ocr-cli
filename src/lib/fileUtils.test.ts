@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockPdfGetDocument, mockPdfDocumentDestroy } = vi.hoisted(() => ({
+const { mockPdfGetDocument, mockPdfLoadingTaskDestroy } = vi.hoisted(() => ({
   mockPdfGetDocument: vi.fn(),
-  mockPdfDocumentDestroy: vi.fn(),
+  mockPdfLoadingTaskDestroy: vi.fn(),
 }));
 
 vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
@@ -29,11 +29,11 @@ const fileFromBytes = (bytes: number[], name: string, type: string): File => {
 
 describe('fileUtils', () => {
   beforeEach(() => {
-    mockPdfDocumentDestroy.mockReset();
+    mockPdfLoadingTaskDestroy.mockReset();
     mockPdfGetDocument.mockReset();
     mockPdfGetDocument.mockReturnValue({
-      promise: Promise.resolve({ numPages: 1, destroy: mockPdfDocumentDestroy }),
-      destroy: vi.fn().mockResolvedValue(undefined),
+      promise: Promise.resolve({ numPages: 1 }),
+      destroy: mockPdfLoadingTaskDestroy.mockResolvedValue(undefined),
     });
   });
 
@@ -199,19 +199,19 @@ describe('fileUtils', () => {
   describe('validatePdfPageCount', () => {
     it('accepts PDFs at the 1,000-page limit', async () => {
       mockPdfGetDocument.mockReturnValue({
-        promise: Promise.resolve({ numPages: 1000, destroy: mockPdfDocumentDestroy }),
-        destroy: vi.fn().mockResolvedValue(undefined),
+        promise: Promise.resolve({ numPages: 1000 }),
+        destroy: mockPdfLoadingTaskDestroy.mockResolvedValue(undefined),
       });
       const pdf = fileFromBytes([0x25, 0x50, 0x44, 0x46, 0x2d], 'limit.pdf', 'application/pdf');
 
       await expect(validatePdfPageCount(pdf)).resolves.toEqual({ valid: true });
-      expect(mockPdfDocumentDestroy).toHaveBeenCalledOnce();
+      expect(mockPdfLoadingTaskDestroy).toHaveBeenCalledOnce();
     });
 
     it('rejects PDFs over 1,000 pages before upload', async () => {
       mockPdfGetDocument.mockReturnValue({
-        promise: Promise.resolve({ numPages: 1001, destroy: mockPdfDocumentDestroy }),
-        destroy: vi.fn().mockResolvedValue(undefined),
+        promise: Promise.resolve({ numPages: 1001 }),
+        destroy: mockPdfLoadingTaskDestroy.mockResolvedValue(undefined),
       });
       const pdf = fileFromBytes([0x25, 0x50, 0x44, 0x46, 0x2d], 'too-many.pdf', 'application/pdf');
 

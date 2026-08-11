@@ -19,7 +19,7 @@ function answers(values: string[], confirmation = true): InitPrompter {
 }
 
 beforeEach(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-init-'));
+  directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-init-'));
 });
 
 afterEach(async () => {

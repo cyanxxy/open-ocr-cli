@@ -1,6 +1,6 @@
 {
   "name": "open-ocr-cli",
-  "version": "2.7.0",
+  "version": "3.0.0",
   "description": "Provider-neutral multimodal OCR CLI for images, PDFs, URLs, JSON schemas, and agentic extraction with Gemini, Kimi, Muse, and OpenRouter.",
   "license": "MIT",
   "type": "module",
@@ -36,8 +36,7 @@
     "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
   },
   "bin": {
-    "open-ocr-cli": "dist/index.js",
-    "gemini-ocr": "dist/index.js"
+    "open-ocr-cli": "dist/index.js"
   },
   "files": [
     "dist",
@@ -66,7 +65,7 @@
     "fast-glob": "^3.3.3",
     "html-to-text": "^10.0.0",
     "ipaddr.js": "^2.4.0",
-    "pdfjs-dist": "^5.6.205",
+    "pdfjs-dist": "^6.2.108",
     "sharp": "^0.35.3",
     "zod": "^4.4.3"
   },

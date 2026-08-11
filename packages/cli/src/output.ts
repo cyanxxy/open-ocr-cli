@@ -4,7 +4,7 @@ import { hostname } from 'node:os';
 import path from 'node:path';
 
 import { parseBatchLockOwner, type BatchLockOwner } from './jsonValidation';
-import { CliExitError, type OcrErrorPayload } from './errors';
+import { batchMetadataError, CliExitError, type OcrErrorPayload } from './errors';
 import type { InputDiscoverySkips } from './inputs';
 import { parseCliManifest } from './manifest';
 import type {
@@ -72,8 +72,11 @@ export function primaryArtifact(artifacts: OcrArtifacts, format: ResolvedCliOpti
   return artifacts.markdown.replace(/\n?$/, '\n');
 }
 
-function artifactEntries(artifacts: OcrArtifacts, format: ResolvedCliOptions['format']): Array<[string, string]> {
-  const entries: Array<[string, string]> = [];
+function artifactEntries(
+  artifacts: OcrArtifacts,
+  format: ResolvedCliOptions['format'],
+): Array<[ArtifactExtension, string]> {
+  const entries: Array<[ArtifactExtension, string]> = [];
   if ((format === 'markdown' || format === 'all') && artifacts.markdown) {
     entries.push(['md', artifacts.markdown.replace(/\n?$/, '\n')]);
   }
@@ -109,7 +112,7 @@ function safeOutputRelative(input: ResolvedInput): string {
   return path.join(safeDirectory, parsed.name);
 }
 
-function plannedArtifactExtensions(options: ResolvedCliOptions): string[] {
+function plannedArtifactExtensions(options: ResolvedCliOptions): ArtifactExtension[] {
   if (options.format === 'markdown') return ['md'];
   if (options.format === 'json') return ['json'];
   if (options.format === 'csv') return ['csv'];
@@ -120,7 +123,7 @@ function plannedArtifactExtensions(options: ResolvedCliOptions): string[] {
   return ['md', 'json'];
 }
 
-function possibleArtifactExtensions(options: ResolvedCliOptions): string[] {
+function possibleArtifactExtensions(options: ResolvedCliOptions): ArtifactExtension[] {
   if (options.format !== 'all') return plannedArtifactExtensions(options);
   if (options.mode === 'template') return ['md', 'json', 'csv'];
   if (options.mode === 'agentic') return ['md', 'json', 'steps.json'];
@@ -128,7 +131,7 @@ function possibleArtifactExtensions(options: ResolvedCliOptions): string[] {
 }
 
 export function defaultOutputDirectory(options: ResolvedCliOptions): string {
-  return path.resolve(options.cwd, options.output ?? 'gemini-ocr-output');
+  return path.resolve(options.cwd, options.output ?? 'open-ocr-output');
 }
 
 /**
@@ -143,30 +146,63 @@ export async function resolvesToSingleArtifactFile(
   options: ResolvedCliOptions,
   totalInputs: number,
 ): Promise<boolean> {
+  // A caller that said "directory" gets a directory. The extension heuristic
+  // below only guesses intent for the human `-o` flag, where the same string can
+  // legitimately mean either.
+  if (options.outputPathKind === 'directory') return false;
   if (totalInputs !== 1 || !options.output || options.format === 'all') return false;
+  if (options.outputPathKind === 'file') return true;
   if (!path.extname(options.output)) return false;
   const explicitOutput = path.resolve(options.cwd, options.output);
   return !(await pathExists(explicitOutput) && (await fs.stat(explicitOutput)).isDirectory());
 }
 
+/**
+ * The artifact extension keys, which are also what determine an artifact's
+ * reported `kind` and `mediaType`.
+ *
+ * Carried alongside each path rather than re-derived from it: `--output
+ * report.json --format markdown` is a legitimate request that writes Markdown to
+ * a `.json` filename, and reading the extension back reported that file to the
+ * caller as `kind: "json"`, `mediaType: "application/json"`. An agent that
+ * trusted the reference would hand Markdown to a JSON parser.
+ */
+export type ArtifactExtension = 'md' | 'json' | 'csv' | 'steps.json';
+
+export interface ArtifactTarget {
+  path: string;
+  extension: ArtifactExtension;
+}
+
+/** Restore typed artifact metadata from paths written by the directory layout. */
+export function artifactTargetFromPath(filePath: string): ArtifactTarget {
+  if (filePath.endsWith('.steps.json')) return { path: filePath, extension: 'steps.json' };
+  if (filePath.endsWith('.json')) return { path: filePath, extension: 'json' };
+  if (filePath.endsWith('.csv')) return { path: filePath, extension: 'csv' };
+  return { path: filePath, extension: 'md' };
+}
+
 async function resolveArtifactTargets(
   input: ResolvedInput,
-  extensions: string[],
+  extensions: ArtifactExtension[],
   options: ResolvedCliOptions,
   totalInputs: number,
-): Promise<string[]> {
-  return await resolvesToSingleArtifactFile(options, totalInputs)
-    ? [path.resolve(options.cwd, options.output!)]
-    : extensions.map((extension) => (
-        path.join(defaultOutputDirectory(options), `${safeOutputRelative(input)}.${extension}`)
-      ));
+): Promise<ArtifactTarget[]> {
+  if (await resolvesToSingleArtifactFile(options, totalInputs)) {
+    // One destination for one artifact, whatever the caller named the file.
+    return [{ path: path.resolve(options.cwd, options.output!), extension: extensions[0] }];
+  }
+  return extensions.map((extension) => ({
+    path: path.join(defaultOutputDirectory(options), `${safeOutputRelative(input)}.${extension}`),
+    extension,
+  }));
 }
 
 export async function plannedArtifactTargets(
   input: ResolvedInput,
   options: ResolvedCliOptions,
   totalInputs: number,
-): Promise<string[]> {
+): Promise<ArtifactTarget[]> {
   const writesFiles = totalInputs > 1 || Boolean(options.output) || options.format === 'all';
   if (!writesFiles) return [];
   return resolveArtifactTargets(input, plannedArtifactExtensions(options), options, totalInputs);
@@ -208,7 +244,7 @@ export async function assertArtifactTargetsAvailable(
     options,
     totalInputs,
   );
-  const existing = (await Promise.all(targets.map(async (target): Promise<string | undefined> => {
+  const existing = (await Promise.all(targets.map(async ({ path: target }): Promise<string | undefined> => {
     if (reclaimable.has(artifactPathKey(target))) return undefined;
     try {
       // lstat treats a dangling symlink as occupied; access() would follow it,
@@ -246,9 +282,9 @@ export async function assertNoOutputCollisions(
   if (reserveJobMetadata) {
     const outputDirectory = defaultOutputDirectory(options);
     for (const metadataPath of [
-      path.join(outputDirectory, '.gemini-ocr-manifest.json'),
+      path.join(outputDirectory, '.open-ocr-manifest.json'),
       path.join(outputDirectory, 'batch-summary.json'),
-      path.join(outputDirectory, '.gemini-ocr.lock'),
+      path.join(outputDirectory, '.open-ocr.lock'),
     ]) {
       const key = path.normalize(metadataPath).normalize('NFC').toLowerCase();
       owners.set(key, ['reserved job metadata']);
@@ -256,7 +292,7 @@ export async function assertNoOutputCollisions(
   }
   await Promise.all(inputs.map(async (input) => {
     const targets = await plannedArtifactTargets(input, options, inputs.length);
-    for (const target of targets) {
+    for (const { path: target } of targets) {
       // Use a portable case-folded key on every platform. This deliberately
       // rejects names that are distinct on some Linux filesystems but collide
       // on default macOS/Windows volumes or when outputs are moved between them.
@@ -454,18 +490,28 @@ export async function writeArtifacts(
   totalInputs: number,
   /** Stale artifact paths this input's manifest entry recorded (see {@link ArtifactAvailabilityOptions}). */
   reclaimable?: ReadonlySet<string>,
-): Promise<string[]> {
+): Promise<ArtifactTarget[]> {
   const entries = artifactEntries(artifacts, options.format);
-  const targetPaths = await resolveArtifactTargets(
+  const targets = await resolveArtifactTargets(
     input,
     entries.map(([extension]) => extension),
     options,
     totalInputs,
   );
-  const targets = targetPaths.map((target, index) => [target, entries[index][1]] as const);
-  await commitArtifacts(targets, options.overwrite, reclaimable);
-  return targetPaths;
+  await commitArtifacts(
+    targets.map((target, index) => [target.path, entries[index][1]] as const),
+    options.overwrite,
+    reclaimable,
+  );
+  return targets;
 }
+
+/**
+ * Manifest key for a document that has no path on disk — piped stdin bytes and
+ * URL sets. Every other key is an absolute path, which is what lets `status`
+ * tell a moved source from one that never existed as a file.
+ */
+export const STDIN_MANIFEST_KEY = '<stdin>';
 
 export class ManifestStore {
   private readonly manifestPath: string;
@@ -473,7 +519,7 @@ export class ManifestStore {
   private pendingWrite: Promise<void> = Promise.resolve();
 
   constructor(outputDirectory: string) {
-    this.manifestPath = path.join(outputDirectory, '.gemini-ocr-manifest.json');
+    this.manifestPath = path.join(outputDirectory, '.open-ocr-manifest.json');
   }
 
   async load(): Promise<void> {
@@ -483,21 +529,27 @@ export class ManifestStore {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
       if (error instanceof SyntaxError) {
-        throw new Error(`Invalid JSON in ${this.manifestPath}: ${error.message}`);
+        throw batchMetadataError(`Invalid JSON in ${this.manifestPath}: ${error.message}`);
       }
       throw error;
     }
   }
 
-  async completed(key: string, fingerprint: string): Promise<boolean> {
-    return (await this.completedEntry(key, fingerprint)) !== undefined;
-  }
-
+  /**
+   * The entry a resume may skip: same input, same output-affecting options, and
+   * a run that actually finished.
+   *
+   * `partial` is deliberately not resumable. A partial document produced less
+   * than the extraction asked for — an agentic run that stopped on its iteration
+   * ceiling, say — so skipping it strands the shortfall permanently, and the
+   * rerun then reports the batch as fully succeeded because the skip is counted
+   * as `resumed`. Re-extracting is the only outcome that can improve it.
+   */
   async completedEntry(key: string, fingerprint: string): Promise<ManifestEntry | undefined> {
     const entry = this.manifest.entries[key];
     if (
       !entry
-      || (entry.status !== 'succeeded' && entry.status !== 'partial')
+      || entry.status !== 'succeeded'
       || entry.fingerprint !== fingerprint
     ) return undefined;
     if (!(await Promise.all(entry.outputFiles.map(pathExists))).every(Boolean)) return undefined;
@@ -543,7 +595,7 @@ export class BatchOutputLock {
     options: BatchLockAcquireOptions = {},
   ): Promise<BatchOutputLock> {
     await fs.mkdir(outputDirectory, { recursive: true });
-    const lockPath = path.join(outputDirectory, '.gemini-ocr.lock');
+    const lockPath = path.join(outputDirectory, '.open-ocr.lock');
     const owner: BatchLockOwner = {
       version: 1,
       token: randomUUID(),

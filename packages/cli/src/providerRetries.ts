@@ -1,5 +1,6 @@
 import { waitForAbortableAgentDelay } from '../../../src/lib/agentStepStream';
-import { isRetryableExtractionError } from '../../../src/lib/providers';
+import { isProviderCostLimitError, isRetryableExtractionError } from '../../../src/lib/providers';
+import { CliExitError } from './errors';
 import type { ResolvedCliOptions } from './types';
 
 export interface ProviderRetryResult<T> {
@@ -12,6 +13,11 @@ export class ExtractionAttemptsError extends Error {
     super(error instanceof Error ? error.message : String(error), { cause: error });
     this.name = 'ExtractionAttemptsError';
   }
+}
+
+function isRetryableFailure(options: ResolvedCliOptions, error: unknown): boolean {
+  if (error instanceof CliExitError) return error.retryable;
+  return isRetryableExtractionError(options.provider, error);
 }
 
 /** Run one provider operation under the CLI's bounded retry contract. */
@@ -28,7 +34,11 @@ export async function runWithProviderRetries<T>(
       if (
         signal.aborted
         || attempt === allowedAttempts
-        || !isRetryableExtractionError(options.provider, error)
+        // A cost ceiling is a decision, not a transient fault: retrying spends
+        // the whole backoff budget re-asking a runtime that has already refused,
+        // and contradicts the COST_LIMIT taxonomy (retryable: false).
+        || isProviderCostLimitError(error)
+        || !isRetryableFailure(options, error)
       ) {
         throw new ExtractionAttemptsError(error, attempt);
       }

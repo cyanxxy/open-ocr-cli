@@ -25,10 +25,9 @@ endpoint — behind one consistent extraction contract.
 ---
 
 > [!NOTE]
-> `open-ocr-cli` is the current executable and npm package; the earlier
-> `gemini-ocr` executable and config paths still work. This repository also
-> hosts the original Gemini [web app](#web-application) — provider-neutral
-> support applies to the CLI.
+> `open-ocr-cli` is the executable, npm package, and configuration namespace.
+> This repository also hosts the Gemini [web app](#web-application) —
+> provider-neutral support applies to the CLI.
 
 ## Quick start
 
@@ -57,7 +56,7 @@ guided paths.
 
 Also available as a [Docker image](packages/cli/README.md#distribution)
 (`ghcr.io/cyanxxy/open-ocr-cli`), a [GitHub Action](action.yml)
-(`cyanxxy/open-ocr-cli@v2`), and a Homebrew formula.
+(`cyanxxy/open-ocr-cli@v3`), and a Homebrew formula.
 
 ## Extraction modes
 
@@ -112,8 +111,8 @@ to `stderr` — every command composes safely in a pipeline.
 
 Three entry points wrap the same job engine.
 
-**Machine protocol** — `run` executes a versioned request (v2 current, v1 still
-supported) validated against published Draft 2020-12 JSON Schemas, returning a
+**Machine protocol** — `run` executes a protocol v2 request validated against
+published Draft 2020-12 JSON Schemas, returning a
 typed result object or an ordered JSONL event stream with stable sequence
 numbers and typed error codes carrying recovery hints:
 
@@ -124,7 +123,8 @@ open-ocr-cli run --request request.json --response-format jsonl
 
 **MCP server** — `open-ocr-cli mcp` starts a stdio server exposing
 `ocr_extract`, `ocr_run_agentic`, and `ocr_web`, plus an
-`open-ocr://capabilities` resource:
+`open-ocr://capabilities` resource. The host must open MCP revision
+`2026-07-28`; clients that use the earlier `initialize` handshake are rejected:
 
 ```json
 {
@@ -203,7 +203,7 @@ One repository, three entry points over a shared extraction engine:
 
 | Path | What it is |
 | --- | --- |
-| `src/lib` | The engine: providers, extraction modes, agent loop, protocol types. No browser APIs, so both front ends use it. |
+| `src/lib` | The engine: providers, extraction modes, agent loop, protocol types. Both front ends share it. The CLI-reachable subset is Node-safe; `regionRaster.ts` (canvas), `fileUtils.ts` (FileReader), and `crypto.ts` (localStorage) are browser-only, and the CLI substitutes Node adapters such as `packages/cli/src/nodeRegionCropper.ts`. |
 | `src/` (rest) | The React web app — the `npm run dev` target described above. |
 | `packages/cli` | The published `open-ocr-cli` npm package. Owns its own source, build, and protocol schemas. |
 | `integrations/open-ocr/skills` | Agent skill definitions. Source of truth; `packages/cli/skills` is a generated copy. |
@@ -213,8 +213,9 @@ One repository, three entry points over a shared extraction engine:
 the CLI, alongside `extract` (human-facing) and `run` (versioned protocol), all
 routed through the same job service.
 
-The CLI is typechecked without DOM libraries on purpose, so a browser API cannot
-reach it through the shared engine.
+The CLI is typechecked without DOM libraries on purpose: that is what keeps the
+browser-only modules above from being reachable from CLI code, and it fails the
+build rather than failing at runtime if one ever is.
 
 ## Contributing
 

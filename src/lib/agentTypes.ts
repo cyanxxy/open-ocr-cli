@@ -81,7 +81,7 @@ export interface AgentDocumentInput {
  */
 export interface AgentStep {
   type: 'thinking' | 'function_call' | 'result' | 'error';
-  /** Semantic origin; `type` remains for the browser UI and persisted v1 traces. */
+  /** Semantic origin; `type` is the browser UI presentation category. */
   source?: 'runtime' | 'thought_summary' | 'reasoning' | 'model_output' | 'tool_call' | 'tool_result';
   /** Provider step identifier when one exists. */
   id?: string;

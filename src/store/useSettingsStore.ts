@@ -58,27 +58,26 @@ function applyTheme(theme: ThemeMode) {
   }
 }
 
-function migratePersistedModel(raw: string | undefined): ModelType {
-  if (raw === 'gemini-3-pro-preview') {
-    return 'gemini-3.1-pro-preview';
-  }
-
-  if (raw && VALID_MODELS.includes(raw as ModelType)) {
-    return raw as ModelType;
-  }
-
-  return 'gemini-3.5-flash';
+/**
+ * Membership test that narrows, so validating rehydrated state does not need a
+ * cast to express its own result.
+ *
+ * `allowed.includes(raw as T)` reads as a check but is two separate claims: the
+ * runtime one, and an unchecked assertion that only exists to satisfy
+ * `includes`. Because it does not narrow, the value then has to be asserted a
+ * second time on the way out — and that assertion keeps compiling even if the
+ * list above it stops matching the type.
+ */
+function isOneOf<T extends string>(allowed: readonly T[], value: string | undefined): value is T {
+  return allowed.some((candidate) => candidate === value);
 }
 
-function migrateThinkingLevel(raw: string | undefined): ThinkingLevel {
-  if (!raw) return 'HIGH';
+function validateModel(raw: string | undefined): ModelType {
+  return isOneOf(VALID_MODELS, raw) ? raw : 'gemini-3.5-flash';
+}
 
-  const upper = raw.toUpperCase() as ThinkingLevel;
-  if (VALID_LEVELS.includes(upper)) {
-    return upper;
-  }
-
-  return 'HIGH';
+function validateThinkingLevel(raw: string | undefined): ThinkingLevel {
+  return isOneOf(VALID_LEVELS, raw) ? raw : 'HIGH';
 }
 
 function clampThinkingLevel(model: ModelType, level: ThinkingLevel): ThinkingLevel {
@@ -101,9 +100,9 @@ function clampThinkingLevel(model: ModelType, level: ThinkingLevel): ThinkingLev
 function validateRehydratedState(state: SettingsState): Partial<SettingsState> {
   const patch: Partial<SettingsState> = {};
 
-  const migratedModel = migratePersistedModel(state.model);
-  if (migratedModel !== state.model) {
-    patch.model = migratedModel;
+  const model = validateModel(state.model);
+  if (model !== state.model) {
+    patch.model = model;
   }
 
   if (!VALID_THEMES.includes(state.theme)) {
@@ -123,12 +122,12 @@ function validateRehydratedState(state: SettingsState): Partial<SettingsState> {
     return patch;
   }
 
-  const migratedLevel = migrateThinkingLevel(state.thinkingConfig.level);
+  const level = validateThinkingLevel(state.thinkingConfig.level);
   const includeThoughts = typeof state.thinkingConfig.includeThoughts === 'boolean'
     ? state.thinkingConfig.includeThoughts
     : false;
   const normalizedThinkingConfig = {
-    level: clampThinkingLevel(migratedModel, migratedLevel),
+    level: clampThinkingLevel(model, level),
     includeThoughts,
   };
 
@@ -238,17 +237,15 @@ const useSettingsStoreBase = create<SettingsState>()(
       },
 
       setModel: (model) => {
-        const rawModel = model as string;
-        if (rawModel !== 'gemini-3-pro-preview' && !VALID_MODELS.includes(rawModel as ModelType)) {
+        if (!VALID_MODELS.includes(model)) {
           return;
         }
 
-        const normalizedModel = migratePersistedModel(rawModel);
         set((state) => ({
-          model: normalizedModel,
+          model,
           thinkingConfig: {
             ...state.thinkingConfig,
-            level: clampThinkingLevel(normalizedModel, state.thinkingConfig.level),
+            level: clampThinkingLevel(model, state.thinkingConfig.level),
           },
         }));
       },
@@ -266,7 +263,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       updateThinkingConfig: (config) => set((state) => {
         const level = clampThinkingLevel(
           state.model,
-          migrateThinkingLevel(config.level ?? state.thinkingConfig.level),
+          validateThinkingLevel(config.level ?? state.thinkingConfig.level),
         );
 
         return {

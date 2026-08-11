@@ -75,7 +75,7 @@ describe('BulkExtractedContent (audit H-09)', () => {
     render(
       <BulkExtractedContent
         results={[
-          result('2', 'bad.png', 'failed', { sections: [], content: 'legacy error string' }),
+          result('2', 'bad.png', 'failed', { sections: [], content: 'provider error string' }),
         ]}
         files={[trackedFile('2', 'bad.png')]}
         expandedFiles={{ '2': true }}
@@ -87,6 +87,6 @@ describe('BulkExtractedContent (audit H-09)', () => {
       />
     );
 
-    expect(screen.getByText('legacy error string')).toBeInTheDocument();
+    expect(screen.getByText('provider error string')).toBeInTheDocument();
   });
 });

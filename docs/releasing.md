@@ -6,7 +6,7 @@ file, GitHub Release, container tag, Homebrew formula, and GitHub Action tag.
 ## One-time repository setup
 
 1. On npm, configure `open-ocr-cli` to trust the GitHub Actions publisher:
-   organization/user `cyanxxy`, repository `gemini-ocr`, workflow
+   organization/user `cyanxxy`, repository `open-ocr-cli`, workflow
    `release.yml`, and the `npm publish` permission. The workflow uses a
    GitHub-hosted runner with `id-token: write`; no long-lived npm token is
    required.
@@ -35,7 +35,7 @@ file, GitHub Release, container tag, Homebrew formula, and GitHub Action tag.
    npm run action:smoke
    npx audit-ci --config audit-ci.json
    docker build --tag open-ocr-cli:release-candidate .
-   VERSION=2.1.0
+   VERSION=3.0.0
    node scripts/assert-release-version.mjs "v$VERSION"
    ```
 
@@ -45,20 +45,20 @@ file, GitHub Release, container tag, Homebrew formula, and GitHub Action tag.
 4. Merge the release commit to `main`, wait for CI, then push the immutable tag:
 
    ```bash
-   VERSION=2.1.0
+   VERSION=3.0.0
    git tag "v$VERSION"
    git push origin "v$VERSION"
    ```
 
 5. Confirm the workflow published all five surfaces: npm, GitHub Release,
    `ghcr.io/cyanxxy/open-ocr-cli`, the attached Homebrew formula, and the moving
-   `v2` GitHub Action tag. The workflow only moves `v2` forward from an ancestor
+   `v3` GitHub Action tag. The workflow only moves `v3` forward from an ancestor
    and uses a force-with-lease so a concurrent tag change cannot be overwritten.
    Install from npm and run `open-ocr-cli doctor` once outside the repository.
 
 ## Rollback
 
 Never move or overwrite an immutable release tag. If a release is bad,
-deprecate that npm version with a clear message, point the moving `v2` Action
-tag back to the last safe v2 release, mark the container tag as affected, and
+mark that npm version unusable with a clear message, point the moving `v3`
+Action tag back to the last safe v3 release, mark the container tag as affected, and
 ship a patch release. Preserve the original release artifacts for auditability.

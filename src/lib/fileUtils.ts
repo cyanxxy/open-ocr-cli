@@ -205,9 +205,6 @@ export async function validatePdfPageCount(
     return { valid: true };
   }
 
-  let loadingTask: { promise: Promise<{ numPages: number; destroy: () => Promise<void> | void }>; destroy: () => Promise<void> } | undefined;
-  let document: { numPages: number; destroy: () => Promise<void> | void } | undefined;
-
   try {
     const [pdfjs, workerModule] = await Promise.all([
       import('pdfjs-dist/legacy/build/pdf.mjs'),
@@ -215,32 +212,25 @@ export async function validatePdfPageCount(
     ]);
     pdfjs.GlobalWorkerOptions.workerSrc = workerModule.default;
     const data = new Uint8Array(await file.arrayBuffer());
-    loadingTask = pdfjs.getDocument({ data });
-    document = await loadingTask.promise;
-
-    if (document.numPages > FILE_CONSTRAINTS.MAX_PDF_PAGES) {
-      return {
-        valid: false,
-        error: `PDF "${file.name}" has ${document.numPages} pages; the maximum is ${FILE_CONSTRAINTS.MAX_PDF_PAGES}.`,
-      };
+    const loadingTask = pdfjs.getDocument({ data });
+    try {
+      const document = await loadingTask.promise;
+      if (document.numPages > FILE_CONSTRAINTS.MAX_PDF_PAGES) {
+        return {
+          valid: false,
+          error: `PDF "${file.name}" has ${document.numPages} pages; the maximum is ${FILE_CONSTRAINTS.MAX_PDF_PAGES}.`,
+        };
+      }
+      return { valid: true };
+    } finally {
+      await loadingTask.destroy();
     }
-    return { valid: true };
   } catch (error) {
     // PDF.js and Gemini do not accept exactly the same set of valid PDFs.
     // Keep the explicit >1,000-page rejection when decoding succeeds, but do
     // not block a valid Gemini input solely because local preflight failed.
     logger.warn(`Skipping page-count preflight for PDF "${file.name}":`, error);
     return { valid: true };
-  } finally {
-    try {
-      if (document) {
-        await document.destroy();
-      } else if (loadingTask) {
-        await loadingTask.destroy();
-      }
-    } catch (error) {
-      logger.warn('PDF validation cleanup failed:', error);
-    }
   }
 }
 

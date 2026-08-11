@@ -46,6 +46,13 @@ npm run cli:install-smoke
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) when practical.
 
+## Project Contract
+
+The project maintains one current contract and does not add fallbacks for
+earlier releases. When a contract changes, delete superseded schemas, aliases,
+configuration paths, migrations, negotiation branches, documentation, and
+tests in the same change.
+
 ## Templates And Evals
 
 - New presets should reuse the shared `ExtractionRule` schema.
@@ -78,8 +85,8 @@ Releases are created from matching semantic version tags after the release
 checklist in [docs/releasing.md](docs/releasing.md) is complete:
 
 ```bash
-git tag v2.0.0
-git push origin v2.0.0
+git tag v3.0.0
+git push origin v3.0.0
 ```
 
 The release workflow repeats the quality and security gates, publishes the npm

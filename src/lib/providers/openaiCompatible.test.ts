@@ -632,7 +632,57 @@ describe('OpenAI-compatible transport', () => {
 
     const init = fetchMock.mock.calls[0]?.[1];
     if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body');
-    expect(JSON.parse(init.body)).toMatchObject({ reasoning_effort: 'minimal' });
+    expect(JSON.parse(init.body)).toMatchObject({
+      reasoning_effort: 'minimal',
+      max_tokens: 1000,
+    });
+    expect(JSON.parse(init.body)).not.toHaveProperty('max_completion_tokens');
+  });
+
+  it('uses the token field supported by the default local endpoint', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+      choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'done' } }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createChatCompletion(config({
+      provider: 'openai-compatible',
+      model: 'local-model',
+      baseUrl: 'http://localhost:11434/v1',
+    }), {
+      messages: [{ role: 'user', content: 'Extract this' }],
+      maxTokens: 1000,
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1];
+    if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body');
+    expect(JSON.parse(init.body)).toMatchObject({ max_tokens: 1000 });
+    expect(JSON.parse(init.body)).not.toHaveProperty('max_completion_tokens');
+  });
+
+  it.each([
+    ['kimi', 'kimi-k3', 'https://api.moonshot.ai/v1'],
+    ['openrouter', 'google/gemini-3.5-flash', 'https://openrouter.ai/api/v1'],
+  ] as const)('sends the output cap as max_completion_tokens on %s', async (provider, model, baseUrl) => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+      choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'done' } }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createChatCompletion(config({ provider, model, baseUrl }), {
+      messages: [{ role: 'user', content: 'Extract this' }],
+      maxTokens: 1000,
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1];
+    if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body');
+    // Both routes deprecate `max_tokens`. Sending only the deprecated spelling
+    // risks the cap being ignored, which turns a bounded run into an unbounded
+    // billed one, so the field is pinned rather than left to the transport.
+    expect(JSON.parse(init.body)).toMatchObject({ max_completion_tokens: 1000 });
+    expect(JSON.parse(init.body)).not.toHaveProperty('max_tokens');
   });
 
   it('uses Cloudflare gateway authentication and omits provider auth in BYOK mode', async () => {

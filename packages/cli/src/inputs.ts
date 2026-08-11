@@ -217,7 +217,7 @@ function sampleSkippedPath(sample: string[], absolutePath: string): void {
 }
 
 /**
- * Walk a directory once with the historical hidden/exclude pruning, partitioning
+ * Walk a directory once with the configured hidden/exclude pruning, partitioning
  * on extension as entries stream past rather than inside the glob.
  *
  * A glob only ever returns its matches, so filtered-out entries were never
@@ -637,7 +637,6 @@ export async function readAndValidateInput(input: ResolvedInput): Promise<{ byte
       // Buffer#slice returns another Buffer, which pdf.js deliberately rejects;
       // Uint8Array.from always creates the runtime-neutral byte type it expects.
       data: Uint8Array.from(bytes),
-      isEvalSupported: false,
       useSystemFonts: true,
       // pdf.js defaults to WARNINGS and writes them straight to stderr, bypassing
       // the CLI's own reporter and --quiet. Verbosity is module-global state, so
@@ -646,23 +645,20 @@ export async function readAndValidateInput(input: ResolvedInput): Promise<{ byte
     });
     try {
       const pdf = await loadingTask.promise;
-      try {
-        if (pdf.numPages > FILE_CONSTRAINTS.MAX_PDF_PAGES) {
-          throw inputError(`${input.displayPath} has ${pdf.numPages} pages; the maximum is ${FILE_CONSTRAINTS.MAX_PDF_PAGES}`);
-        }
-      } finally {
-        await pdf.destroy();
+      if (pdf.numPages > FILE_CONSTRAINTS.MAX_PDF_PAGES) {
+        throw inputError(`${input.displayPath} has ${pdf.numPages} pages; the maximum is ${FILE_CONSTRAINTS.MAX_PDF_PAGES}`);
       }
     } catch (error) {
       if (error instanceof CliExitError) throw error;
-      try {
-        await loadingTask.destroy();
-      } catch {
-        // Preserve the input-validation error when pdf.js cleanup also fails.
-      }
       throw inputError(
         `${input.displayPath} is not a valid PDF: ${error instanceof Error ? error.message : String(error)}`,
       );
+    } finally {
+      try {
+        await loadingTask.destroy();
+      } catch {
+        // Preserve the input-validation result when pdf.js cleanup also fails.
+      }
     }
   }
 

@@ -15,7 +15,7 @@ import {
 let directory: string;
 
 beforeEach(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-schema-'));
+  directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-schema-'));
 });
 
 afterEach(async () => {

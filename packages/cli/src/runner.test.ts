@@ -12,7 +12,7 @@ const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 let directory: string;
 
 beforeEach(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-runner-'));
+  directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-runner-'));
 });
 
 afterEach(async () => {
@@ -29,7 +29,6 @@ describe('CLI batch runner', () => {
       cloudflareAccountId: 'account',
       cloudflareGatewayId: 'gateway',
     }, {}, directory);
-    const withThoughts = resolveCliOptions({ dryRun: true, includeThoughts: true }, {}, directory);
     const traceStandard = resolveCliOptions({
       dryRun: true, format: 'all', progress: 'standard',
     }, {}, directory);
@@ -39,7 +38,6 @@ describe('CLI batch runner', () => {
 
     expect(modeFingerprint(kimi)).not.toBe(modeFingerprint(gemini));
     expect(modeFingerprint(cloudflare)).not.toBe(modeFingerprint(gemini));
-    expect(modeFingerprint(withThoughts)).toBe(modeFingerprint(gemini));
     expect(modeFingerprint(traceDetailed)).not.toBe(modeFingerprint(traceStandard));
   });
 
@@ -61,7 +59,7 @@ describe('CLI batch runner', () => {
     expect(summary.usage.requests).toBe(0);
     expect(stdout).toEqual([]);
     expect(stderr.join('')).toContain('validated (dry run)');
-    expect(stderr.join('')).toContain(path.join(directory, 'gemini-ocr-output', 'one.md'));
+    expect(stderr.join('')).toContain(path.join(directory, 'open-ocr-output', 'one.md'));
   });
 
   it('reports invalid documents individually during dry runs', async () => {

@@ -125,7 +125,17 @@ export interface EvalCaseResult {
 export interface EvalRunOutput {
   markdown: string;
   csv?: string;
-  json?: Record<string, unknown> | null;
+  /**
+   * The run's structured payload, shaped by whichever mode produced it.
+   *
+   * Deliberately `unknown`: every consumer reads it through `getValueAtPath`,
+   * which already takes `unknown` and validates as it walks. Declaring
+   * `Record<string, unknown>` promised an index signature that neither
+   * `ExtractedContent` nor a preset result actually has, so each producer had to
+   * launder its value through `as unknown as` — an unchecked assertion in
+   * exchange for a guarantee nothing consumed.
+   */
+  json?: unknown;
 }
 
 export interface EvalSuiteConfig {
@@ -141,7 +151,6 @@ type PathLookup =
   | { found: false; value: undefined };
 
 function normalizeEvalMode(mode: unknown): EvalMode | null {
-  if (mode === 'ocr') return 'simple';
   if (mode === 'simple' || mode === 'template' || mode === 'agentic') return mode;
   return null;
 }
@@ -556,5 +565,5 @@ export function renderEvalSummaryMarkdown(summary: EvalRunSummary): string {
 }
 
 export function toEvalRunOutput(result: PresetRunResult): EvalRunOutput {
-  return { markdown: result.markdown, csv: result.csv, json: result.json as unknown as Record<string, unknown> };
+  return { markdown: result.markdown, csv: result.csv, json: result.json };
 }

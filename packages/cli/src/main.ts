@@ -37,18 +37,19 @@ import {
   type CliExitCode,
 } from './errors';
 import { describeDiscoverySkips, discoverInputSet } from './inputs';
+import { isRecord } from './jsonValidation';
 import { runInit, validateProviderCredentials, type InitFlags } from './init';
 import { promptInteractiveArguments } from './interactive';
 import { jsonlRunError, primaryArtifact } from './output';
 import { customSchemaCompatibilityWarning, loadCustomSchema } from './schema';
-import { executeOcrJobRequest, readOcrJobRequestRaw } from './machine';
+import { executeOcrJobRequest, readOcrJobRequest } from './machine';
 import {
   assertOcrJobEvent,
   createOcrCapabilities,
-  errorPayloadForProtocol,
+  isStdinRequestInput,
+  OCR_PROTOCOL_SCHEMA_NAMES,
   OCR_PROTOCOL_SCHEMAS,
   OCR_PROTOCOL_VERSION,
-  parseOcrJobRequest,
   toOcrRunFailure,
   type OcrJobEvent,
 } from './protocol';
@@ -66,12 +67,6 @@ import {
 } from './web';
 
 export const PRIMARY_CLI_NAME = 'open-ocr-cli';
-const CLI_BINARY_NAMES = new Set([PRIMARY_CLI_NAME, 'gemini-ocr']);
-
-export function cliBinaryName(argv: string[] = process.argv): string {
-  const invoked = path.basename(argv[1] ?? '');
-  return CLI_BINARY_NAMES.has(invoked) ? invoked : PRIMARY_CLI_NAME;
-}
 
 export function cliVersion(): string {
   const version: unknown = cliPackageJson.version;
@@ -135,8 +130,24 @@ async function withInterruptHandling<T>(
   }
 }
 
+/**
+ * The parent command's raw argv tokens.
+ *
+ * `rawArgs` is a real Commander property that its public typings omit, so it
+ * cannot be reached without leaving the declared type. Reading it through a
+ * runtime check rather than an assertion means the escape hatch is verified: a
+ * Commander release that renames or retypes it yields `[]` — the same answer as
+ * a command with no parent — instead of an assertion that keeps compiling while
+ * silently describing something that is no longer there.
+ */
+function parentRawArgs(command: Command): string[] {
+  const parent: unknown = command.parent;
+  if (!isRecord(parent) || !Array.isArray(parent.rawArgs)) return [];
+  return parent.rawArgs.filter((argument): argument is string => typeof argument === 'string');
+}
+
 function assertConfigFlagsDoNotConflict(command: Command): void {
-  const rawArgs = (command.parent as (Command & { rawArgs?: string[] }) | null)?.rawArgs ?? [];
+  const rawArgs = parentRawArgs(command);
   const hasConfigPath = rawArgs.some((argument: string) => argument === '--config' || argument.startsWith('--config='));
   const hasNoConfig = rawArgs.includes('--no-config');
   if (hasConfigPath && hasNoConfig) {
@@ -178,7 +189,6 @@ function addExtractOptions(command: Command): Command {
     .option('-o, --output <path>', 'output file for one document or directory for batches')
     .addOption(new Option('--thinking <level>', 'thinking/reasoning effort').choices(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']))
     .addOption(new Option('--progress <level>', 'agent progress detail').choices(['off', 'standard', 'detailed']))
-    .option('--include-thoughts', 'deprecated alias for --progress standard')
     .option('-c, --concurrency <count>', 'parallel documents (1-16)')
     .option('--retries <count>', 'transient retries per document (0-10)')
     .option('--timeout <seconds>', 'per-document time limit')
@@ -211,8 +221,8 @@ function addExtractOptions(command: Command): Command {
     .option('--confidence-threshold <number>', 'agentic completion threshold from 0 to 1');
 }
 
-export function createProgram(binaryName = PRIMARY_CLI_NAME): Command {
-  const commandName = CLI_BINARY_NAMES.has(binaryName) ? binaryName : PRIMARY_CLI_NAME;
+export function createProgram(): Command {
+  const commandName = PRIMARY_CLI_NAME;
   const program = new Command()
     .name(commandName)
     .description('Provider-neutral multimodal OCR for files, URLs, and document pipelines')
@@ -242,18 +252,20 @@ Examples:
 Environment:
   GEMINI_API_KEY / MOONSHOT_API_KEY / META_API_KEY / OPENROUTER_API_KEY
   OPEN_OCR_PROVIDER       Default provider override
+  OPEN_OCR_GATEWAY        Default gateway override (direct or cloudflare)
   OPEN_OCR_MODEL          Default model override
   OPEN_OCR_THINKING       Default thinking level override
   OPEN_OCR_NO_CONFIG      Set to 1 for a hermetic run without config files or .env
+  OPEN_OCR_MCP_CONFIRM    Set to 1 to require confirmation before a billed mcp run
+  OPEN_OCR_DEBUG          Set to 1 to add a stack trace to fatal errors on stderr
   CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_AI_GATEWAY_ID / CLOUDFLARE_AI_GATEWAY_TOKEN
 
-Configuration is loaded from the legacy Gemini paths, then
-~/.config/open-ocr-cli/config.json, ./.open-ocr-cli.json, and --config.
-CLI flags take precedence.
+Configuration is loaded from ~/.config/open-ocr-cli/config.json,
+./.open-ocr-cli.json, and --config, then OPEN_OCR_* environment variables,
+then CLI flags. Later sources win.
 `);
 
   program.command('interactive')
-    .alias('i')
     .description('launch the guided command menu')
     .action(async () => {
       if (!process.stdin.isTTY || !process.stderr.isTTY) {
@@ -261,7 +273,7 @@ CLI flags take precedence.
       }
       const selectedArguments = await promptInteractiveArguments();
       if (!selectedArguments) return;
-      await createProgram(commandName).parseAsync(['node', commandName, ...selectedArguments]);
+      await createProgram().parseAsync(['node', commandName, ...selectedArguments]);
     });
 
   addExtractOptions(program.command('extract').description('extract one or many documents'))
@@ -414,7 +426,6 @@ CLI flags take precedence.
     .option('--no-config', 'ignore config files and .env for a hermetic run')
     .action(async (flags: { request: string; responseFormat: 'json' | 'jsonl'; config?: boolean }) => {
       const runId = randomUUID();
-      let protocolVersion: 1 | 2 = OCR_PROTOCOL_VERSION;
       let lastSequence = -1;
       let emittedFailure = false;
       const eventSink = flags.responseFormat === 'jsonl'
@@ -426,18 +437,12 @@ CLI flags take precedence.
         : undefined;
       await withInterruptHandling(async ({ abortController, interruptedExitCode }) => {
         try {
-          const loaded = await readOcrJobRequestRaw(
+          const request = await readOcrJobRequest(
             flags.request,
             process.cwd(),
             abortController.signal,
           );
-          // Peek before full validation so invalid v1 bodies still fail as v1.
-          if (loaded.declaredProtocolVersion) protocolVersion = loaded.declaredProtocolVersion;
-          const request = parseOcrJobRequest(loaded.parsed);
-          protocolVersion = request.protocolVersion;
-          if (flags.request === '-' && request.inputs.some((input) => (
-            input.type === 'stdin' || (input.type === 'path' && input.path === '-')
-          ))) {
+          if (flags.request === '-' && request.inputs.some(isStdinRequestInput)) {
             throw new CliExitError(
               'Request JSON and document bytes cannot both be read from stdin; store the request in a file.',
               2,
@@ -469,15 +474,15 @@ CLI flags take precedence.
           const signalExitCode = interruptedExitCode();
           const payload = ocrErrorPayload(error, signalExitCode ?? 2);
           if (flags.responseFormat === 'json') {
-            await writeMachineStdout(`${JSON.stringify(toOcrRunFailure(runId, payload, protocolVersion))}\n`);
+            await writeMachineStdout(`${JSON.stringify(toOcrRunFailure(runId, payload))}\n`);
           } else if (!emittedFailure) {
             const event: OcrJobEvent = {
-              protocolVersion,
+              protocolVersion: OCR_PROTOCOL_VERSION,
               type: 'run.failed',
               runId,
               sequence: lastSequence + 1,
               timestamp: new Date().toISOString(),
-              error: errorPayloadForProtocol(payload, protocolVersion),
+              error: payload,
             };
             assertOcrJobEvent(event);
             await writeMachineStdout(`${JSON.stringify(event)}\n`);
@@ -501,10 +506,19 @@ CLI flags take precedence.
 
   program.command('schema')
     .description('print one bundled machine-protocol JSON Schema')
-    .argument('<name>', 'request/result/event/error/capabilities, optionally suffixed with -v1 or -v2; also accepts the $id URL capabilities publishes')
+    .argument('<name>', 'request/result/event/error/capabilities, optionally suffixed with -v2; also accepts the $id URL capabilities publishes')
     .action((name: string) => {
-      if (!(name in OCR_PROTOCOL_SCHEMAS)) {
-        throw new Error(`Unknown protocol schema: ${name}`);
+      // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so `constructor`
+      // and `toString` resolved to functions that `JSON.stringify` renders as the
+      // literal text `undefined` on stdout with exit 0 — a machine consumer parsing
+      // that stream sees a successful command that produced no JSON.
+      if (!Object.hasOwn(OCR_PROTOCOL_SCHEMAS, name)) {
+        throw new CliExitError(`Unknown protocol schema: ${name}`, 2, {
+          code: 'CONFIG_INVALID',
+          category: 'configuration',
+          retryable: false,
+          hint: `Use one of: ${OCR_PROTOCOL_SCHEMA_NAMES.join(', ')}.`,
+        });
       }
       const schema = OCR_PROTOCOL_SCHEMAS[name as keyof typeof OCR_PROTOCOL_SCHEMAS];
       process.stdout.write(`${JSON.stringify(schema, null, 2)}\n`);
@@ -541,7 +555,6 @@ CLI flags take precedence.
     .addOption(new Option('--format <format>', 'output format').choices(['markdown', 'json']))
     .option('-o, --output <path>', 'write output to a file instead of stdout')
     .addOption(new Option('--thinking <level>', 'thinking/reasoning effort').choices(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']))
-    .option('--include-thoughts', 'deprecated compatibility flag; Web OCR does not emit reasoning progress')
     .option('--timeout <seconds>', 'request time limit')
     .option('--max-cost <usd>', 'fail if estimated paid-tier cost reaches this value')
     .option('--requests-per-minute <count>', 'maximum provider API request starts per minute (0 disables)')
@@ -564,13 +577,26 @@ CLI flags take precedence.
         noConfig,
       );
       const options = resolveCliOptions(
-        flags,
-        { ...fileConfig, mode: 'simple', preset: undefined, schema: undefined },
+        { ...flags, outputPathKind: 'file' },
+        {
+          ...fileConfig,
+          mode: 'simple',
+          preset: undefined,
+          schema: undefined,
+          // `web` supports only markdown and JSON, so a `format` meant for
+          // `extract` (`csv`, `all`) must not leak in from the config file and
+          // fail the run. Commander already restricts the flag itself, so an
+          // explicit --format still wins.
+          format: fileConfig.format === 'json' ? 'json' : 'markdown',
+        },
         cwd,
       );
-      if (options.format !== 'markdown' && options.format !== 'json') {
-        throw new Error('Web OCR format must be markdown or json');
-      }
+      // Narrowing only. Both inputs to `format` are already constrained to
+      // markdown/json — Commander rejects any other `--format` value, and the
+      // config coercion above maps `csv`/`all` to markdown — so this cannot
+      // throw; it exists to prove that to the compiler.
+      /* c8 ignore next */
+      if (options.format !== 'markdown' && options.format !== 'json') throw new Error('unreachable');
       const webFormat: WebOutputFormat = options.format;
       const urls = await resolveWebUrls(rawUrls, flags.file, cwd);
       // Anything checkable without a credential is checked before the credential
@@ -737,11 +763,7 @@ CLI flags take precedence.
         }
       }
       const projectConfigPath = path.join(cwd, '.open-ocr-cli.json');
-      const legacyProjectConfigPath = path.join(cwd, '.gemini-ocr.json');
-      const [projectConfigExists, legacyProjectConfigExists] = await Promise.all([
-        configFileExists(projectConfigPath),
-        configFileExists(legacyProjectConfigPath),
-      ]);
+      const projectConfigExists = await configFileExists(projectConfigPath);
       const checks = {
         node: { ok: isSupportedNode(process.versions.node), version: process.versions.node },
         configuration: { ok: !configurationError, error: configurationError },
@@ -757,8 +779,6 @@ CLI flags take precedence.
         credentialProbe,
         projectConfig: projectConfigPath,
         projectConfigExists,
-        legacyProjectConfig: legacyProjectConfigPath,
-        legacyProjectConfigExists,
         effectiveConfig: config,
       };
       if (flags.json) process.stdout.write(`${JSON.stringify(checks, null, 2)}\n`);
@@ -778,11 +798,6 @@ CLI flags take precedence.
         process.stdout.write(
           `Project config: ${checks.projectConfig}${checks.projectConfigExists ? '' : ' (not found)'}\n`,
         );
-        // Only worth a line when it exists: a legacy file silently participates
-        // in the merge, so its presence is what a reader needs to know about.
-        if (checks.legacyProjectConfigExists) {
-          process.stdout.write(`Legacy project config: ${checks.legacyProjectConfig}\n`);
-        }
         if (!checks.apiKey.ok) process.stdout.write(`${credentialSetupGuidance(apiKeyEnv, cwd, provider)}\n`);
       }
       if (
@@ -799,7 +814,7 @@ CLI flags take precedence.
 
   program.command('status')
     .description('inspect a batch manifest, artifacts, failures, and usage')
-    .argument('[output]', 'batch output directory', 'gemini-ocr-output')
+    .argument('[output]', 'batch output directory', 'open-ocr-output')
     .option('--json', 'emit machine-readable JSON')
     .action(async (output: string, flags: { json?: boolean }) => {
       const report = await inspectBatchStatus(output, process.cwd());
@@ -811,29 +826,48 @@ CLI flags take precedence.
 }
 
 /**
- * True when this argv asked `extract` for the `--jsonl` stream.
+ * The machine channel this argv promised its caller, or `undefined` for a purely
+ * human invocation.
  *
  * Read from raw argv rather than resolved options because the only caller runs
  * after parsing has already failed: Commander rejects an unknown option — or a
- * missing operand — before the action body, and therefore before the stream's
- * terminal-record emitter exists. Without this the stream ends in zero records
- * and a consumer has to special-case empty stdout as a parse failure, while the
- * neighbouring bad-option-*value* path correctly ends in one.
+ * missing operand — before the action body, and therefore before the command's
+ * own terminal-record emitter exists. Without this the promised stream ends in
+ * zero records and a consumer has to special-case empty stdout as a parse
+ * failure, while the neighbouring bad-option-*value* path correctly ends in one.
  *
- * `extract` is the only command declaring `--jsonl`, and no option before the
- * subcommand takes a value, so the first non-flag token names the command
- * exactly. Tokens after `--` are operands, never flags.
+ * Both machine commands are covered. `extract --jsonl` owes a CLI-native `error`
+ * record; `run` owes a protocol payload in whichever `--response-format` it
+ * asked for — and `run`'s dialect is the versioned one, so a parse failure there
+ * cannot borrow `extract`'s record family.
+ *
+ * No option before the subcommand takes a value, so the first non-flag token
+ * names the command exactly. Tokens after `--` are operands, never flags.
  */
-export function requestedExtractJsonlStream(argv: string[]): boolean {
+export type MachineFailureChannel =
+  | { command: 'extract' }
+  | { command: 'run'; responseFormat: 'json' | 'jsonl' };
+
+export function machineFailureChannel(argv: string[]): MachineFailureChannel | undefined {
   const tokens = argv.slice(2);
   const operandsFrom = tokens.indexOf('--');
   const flags = operandsFrom === -1 ? tokens : tokens.slice(0, operandsFrom);
-  return tokens.find((token) => !token.startsWith('-')) === 'extract'
-    && flags.includes('--jsonl');
+  const command = tokens.find((token) => !token.startsWith('-'));
+  if (command === 'extract') {
+    return flags.includes('--jsonl') ? { command: 'extract' } : undefined;
+  }
+  if (command !== 'run') return undefined;
+  // Accept both spellings Commander does. An unrecognised value falls back to
+  // the command's own default rather than guessing, so the emitted record always
+  // matches a format `run` would have produced had parsing succeeded.
+  const inline = flags.find((token) => token.startsWith('--response-format='));
+  const separate = flags[flags.indexOf('--response-format') + 1];
+  const value = inline ? inline.slice('--response-format='.length) : separate;
+  return { command: 'run', responseFormat: value === 'jsonl' ? 'jsonl' : 'json' };
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {
-  const program = createProgram(cliBinaryName(argv));
+  const program = createProgram();
   try {
     if (argv.length <= 2) {
       program.outputHelp();
@@ -846,20 +880,37 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       // help/version success while mapping usage errors to the CLI contract.
       if (error.exitCode === 0) return;
       process.exitCode = 2;
-      // A parse failure is still a run of `extract --jsonl` that produced no
-      // summary, so the stream owes its consumer the same single terminal
-      // record every other fatal path emits. Commander's own prose already went
-      // to stderr; this is the machine-readable half.
-      if (requestedExtractJsonlStream(argv)) {
-        await writeMachineStdout(`${jsonlRunError(ocrErrorPayload(
+      // A parse failure is still a run of a machine command that produced no
+      // result, so its promised stream owes the consumer the same single
+      // terminal record every other fatal path emits. Commander's own prose
+      // already went to stderr; this is the machine-readable half.
+      const channel = machineFailureChannel(argv);
+      if (channel) {
+        const payload = ocrErrorPayload(
           new CliExitError(error.message.replace(/^error:\s*/, ''), 2, {
             code: 'CONFIG_INVALID',
             category: 'configuration',
             retryable: false,
-            hint: `Run \`${cliBinaryName(argv)} extract --help\` for the supported options.`,
+            hint: `Run \`${PRIMARY_CLI_NAME} ${channel.command} --help\` for the supported options.`,
           }),
           2,
-        ))}\n`);
+        );
+        if (channel.command === 'extract') {
+          await writeMachineStdout(`${jsonlRunError(payload)}\n`);
+        } else if (channel.responseFormat === 'json') {
+          await writeMachineStdout(`${JSON.stringify(toOcrRunFailure(randomUUID(), payload))}\n`);
+        } else {
+          const event: OcrJobEvent = {
+            protocolVersion: OCR_PROTOCOL_VERSION,
+            type: 'run.failed',
+            runId: randomUUID(),
+            sequence: 0,
+            timestamp: new Date().toISOString(),
+            error: payload,
+          };
+          assertOcrJobEvent(event);
+          await writeMachineStdout(`${JSON.stringify(event)}\n`);
+        }
       }
       return;
     }

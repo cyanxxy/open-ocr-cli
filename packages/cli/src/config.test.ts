@@ -26,8 +26,6 @@ const originalGatewayToken = process.env.CLOUDFLARE_AI_GATEWAY_TOKEN;
 afterEach(() => {
   if (originalApiKey === undefined) delete process.env.GEMINI_API_KEY;
   else process.env.GEMINI_API_KEY = originalApiKey;
-  delete process.env.GEMINI_OCR_MODEL;
-  delete process.env.GEMINI_OCR_THINKING;
   delete process.env.OPEN_OCR_PROVIDER;
   delete process.env.OPEN_OCR_GATEWAY;
   delete process.env.OPEN_OCR_MODEL;
@@ -69,7 +67,7 @@ describe('CLI configuration', () => {
 
   it('lets CLI flags override environment and file configuration', () => {
     process.env.GEMINI_API_KEY = 'test-key';
-    process.env.GEMINI_OCR_MODEL = 'gemini-3-flash-preview';
+    process.env.OPEN_OCR_MODEL = 'gemini-3-flash-preview';
     const options = resolveCliOptions(
       { model: 'gemini-3.1-pro-preview', thinking: 'high', concurrency: '6' },
       { model: 'gemini-3.1-flash-lite', thinking: 'LOW', concurrency: 3 },
@@ -213,12 +211,12 @@ describe('CLI configuration', () => {
     expect(flagMessage).toContain(`or a table preset: ${tablePresets}`);
   });
 
-  it('does not carry provider-coupled legacy settings across a provider switch', () => {
+  it('does not carry provider-coupled settings across a provider switch', () => {
     process.env.MOONSHOT_API_KEY = 'kimi-key';
     const options = resolveCliOptions({ provider: 'kimi' }, {
       model: 'gemini-3.1-flash-lite',
       apiKeyEnv: 'GEMINI_API_KEY',
-      baseUrl: 'https://legacy-gemini.example/v1',
+      baseUrl: 'https://gemini.example/v1',
       thinking: 'MINIMAL',
       maxTokens: 1024,
       inputPricePerMillionUsd: 99,
@@ -525,14 +523,10 @@ describe('CLI configuration', () => {
     const simple = resolveCliOptions({ dryRun: true }, {}, '/workspace');
     const agentic = resolveCliOptions({ dryRun: true, mode: 'agentic' }, {}, '/workspace');
     const silentAgent = resolveCliOptions({ dryRun: true, mode: 'agentic', progress: 'off' }, {}, '/workspace');
-    const legacyAlias = resolveCliOptions({ dryRun: true, mode: 'agentic', includeThoughts: true }, {}, '/workspace');
-    const irrelevantSimpleAlias = resolveCliOptions({ dryRun: true, includeThoughts: true }, {}, '/workspace');
 
     expect(simple).toMatchObject({ progress: 'standard', includeThoughts: false });
     expect(agentic).toMatchObject({ progress: 'standard', includeThoughts: true });
     expect(silentAgent).toMatchObject({ progress: 'off', includeThoughts: false });
-    expect(legacyAlias).toMatchObject({ progress: 'standard', includeThoughts: true });
-    expect(irrelevantSimpleAlias).toMatchObject({ progress: 'standard', includeThoughts: false });
   });
 
   it('accepts Muse xhigh thinking and rejects it for Gemini', () => {
@@ -651,10 +645,10 @@ describe('CLI configuration', () => {
   });
 
   it('allowlists file configuration and warns about unknown keys without retaining secrets', async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-config-'));
+    const directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-config-'));
     const warning = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      await writeFile(path.join(directory, '.gemini-ocr.json'), JSON.stringify({
+      await writeFile(path.join(directory, '.open-ocr-cli.json'), JSON.stringify({
         concurrency: 3,
         apiKey: 'must-not-survive',
         concurreny: 9,
@@ -671,7 +665,7 @@ describe('CLI configuration', () => {
   });
 
   it('loads a project-local .env file for first-run credential setup', async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-env-'));
+    const directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-env-'));
     delete process.env.PROJECT_GEMINI_KEY;
     try {
       await writeFile(path.join(directory, '.env'), 'PROJECT_GEMINI_KEY=from-project-env\n');
@@ -684,7 +678,7 @@ describe('CLI configuration', () => {
   });
 
   it('supports hermetic runs that ignore config files and project .env', async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-hermetic-'));
+    const directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-hermetic-'));
     delete process.env.HERMETIC_TEST_KEY;
     try {
       await writeFile(path.join(directory, '.open-ocr-cli.json'), JSON.stringify({ concurrency: 9 }));
@@ -705,7 +699,7 @@ describe('CLI configuration', () => {
   });
 
   it('loads only an explicit config under ambient hermetic mode without ambient merge or .env', async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), 'gemini-ocr-explicit-config-'));
+    const directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-explicit-config-'));
     const configPath = path.join(directory, 'agent-config.json');
     delete process.env.EXPLICIT_CONFIG_TEST_KEY;
     try {

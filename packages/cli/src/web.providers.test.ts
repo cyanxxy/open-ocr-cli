@@ -21,6 +21,7 @@ function options(): ResolvedCliOptions {
   return {
     provider: 'openrouter',
     gateway: 'direct',
+    outputPathKind: 'auto',
     apiKey: 'secret',
     apiKeyEnv: 'OPENROUTER_API_KEY',
     model: 'moonshotai/kimi-k2.6',
