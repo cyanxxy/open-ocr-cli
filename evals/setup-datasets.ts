@@ -70,6 +70,41 @@ interface OmniPage {
 }
 
 const cacheRoot = path.resolve(repoRoot, 'evals', 'cache');
+const MAX_DOWNLOAD_REDIRECTS = 5;
+
+function validateHuggingFaceUrl(url: URL): void {
+  const hostname = url.hostname.toLowerCase();
+  const allowedHost = hostname === 'huggingface.co'
+    || hostname.endsWith('.huggingface.co')
+    || hostname === 'hf.co'
+    || hostname.endsWith('.hf.co');
+  if (
+    url.protocol !== 'https:'
+    || !allowedHost
+    || (url.port !== '' && url.port !== '443')
+    || url.username !== ''
+    || url.password !== ''
+  ) {
+    throw new Error(`Refusing dataset download from untrusted URL: ${url.origin}`);
+  }
+}
+
+async function fetchHuggingFace(rawUrl: string): Promise<Response> {
+  let url = new URL(rawUrl);
+  for (let redirectCount = 0; redirectCount <= MAX_DOWNLOAD_REDIRECTS; redirectCount += 1) {
+    validateHuggingFaceUrl(url);
+    const response = await fetch(url, {
+      headers: { 'user-agent': 'open-ocr-evals/1.0' },
+      redirect: 'manual',
+    });
+    if (response.status < 300 || response.status >= 400) return response;
+
+    const location = response.headers.get('location');
+    if (!location) throw new Error(`Dataset download redirect from ${url.origin} omitted Location`);
+    url = new URL(location, url);
+  }
+  throw new Error(`Dataset download exceeded ${MAX_DOWNLOAD_REDIRECTS} redirects`);
+}
 
 async function readManifest(): Promise<DatasetManifest> {
   const raw = await fs.readFile(path.resolve(repoRoot, 'evals', 'datasets.json'), 'utf8');
@@ -77,13 +112,13 @@ async function readManifest(): Promise<DatasetManifest> {
 }
 
 async function fetchBytes(url: string): Promise<Uint8Array> {
-  const response = await fetch(url, { headers: { 'user-agent': 'open-ocr-evals/1.0' } });
+  const response = await fetchHuggingFace(url);
   if (!response.ok) throw new Error(`Download failed (${response.status}) for ${url}`);
   return new Uint8Array(await response.arrayBuffer());
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { headers: { 'user-agent': 'open-ocr-evals/1.0' } });
+  const response = await fetchHuggingFace(url);
   if (!response.ok) throw new Error(`Download failed (${response.status}) for ${url}`);
   return await response.json() as T;
 }
