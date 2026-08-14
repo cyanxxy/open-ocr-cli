@@ -24,6 +24,18 @@ export const FILE_CONSTRAINTS = {
   SUPPORTED_DOCUMENT_MIME_TYPES: ['application/pdf'],
 } as const;
 
+/** File-extension → MIME map shared by every host (CLI discovery, evals fixtures). */
+export const EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
+};
+
 /** Max input size for a given MIME type (PDF vs image). */
 export function maxFileSizeForMime(mimeType: string): { bytes: number; label: string } {
   if (mimeType === 'application/pdf') {

@@ -4,5 +4,4 @@ export {
   isProviderCostLimitError as isGeminiCostLimitError,
   resetProviderRequestPolicy as resetGeminiRequestPolicy,
   waitForProviderRequestSlot as waitForGeminiRequestSlot,
-  type ProviderRequestPolicy as GeminiRequestPolicy,
 } from '../providers/requestPolicy';

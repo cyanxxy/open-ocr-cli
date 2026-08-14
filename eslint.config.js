@@ -4,7 +4,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   // Global ignores
-  { ignores: ['dist', 'dist-cli', '**/dist/**', 'coverage', '**/coverage/**', 'node_modules', '.claude/**', '*.config.js'] },
+  { ignores: ['dist', '**/dist/**', 'coverage', '**/coverage/**', 'node_modules', '.claude/**', '*.config.js'] },
 
   // Base configuration for all JS/TS files. Everything in this repo runs in
   // Node (the OCR engine in packages/engine, the CLI in packages/cli, the evals
@@ -63,16 +63,16 @@ export default tseslint.config(
   // app tsconfig project graph; lint them without type information to avoid
   // "file not found by the project service" parsing errors (audit M-08).
   {
-    files: ['**/*.config.{js,ts}', 'eslint.config.js', 'evals/**/*.ts', 'scripts/**/*.{js,mjs,cjs,ts}'],
+    files: ['**/*.config.{js,ts}', 'evals/**/*.ts', 'scripts/**/*.{js,mjs,cjs,ts}'],
     extends: [tseslint.configs.disableTypeChecked],
   },
 
   // Test files configuration - strict type safety enforced
   {
-    files: ['**/*.{test,spec}.{js,mjs,cjs,ts}', '**/__tests__/**/*'],
+    files: ['**/*.{test,spec}.{js,mjs,cjs,ts}'],
     languageOptions: {
       globals: {
-        ...globals.jest,
+        ...globals.vitest,
         ...globals.node,
       },
     },

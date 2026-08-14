@@ -171,21 +171,6 @@ function optionalPositiveNumber(value: string, label: string, max: number): numb
   return parsed;
 }
 
-export async function validateGeminiCredentials(apiKey: string, model: GeminiModel): Promise<void> {
-  const client = getGenAIClient(apiKey);
-  await waitForGeminiRequestSlot();
-  const response = await client.models.generateContent({
-    model,
-    contents: 'Reply with OK.',
-    config: applyThinkingConfig(
-      { maxOutputTokens: 1024 },
-      model,
-      { level: 'LOW' },
-    ),
-  });
-  recordGeminiUsage(response, model);
-}
-
 async function writeConfig(configPath: string, config: CliConfigFile): Promise<void> {
   await fs.mkdir(path.dirname(configPath), { recursive: true });
   const temporary = `${configPath}.${process.pid}.tmp`;

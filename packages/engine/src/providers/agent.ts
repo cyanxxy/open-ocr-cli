@@ -23,6 +23,7 @@ import {
   type OpenAITool,
 } from './openaiCompatible';
 import { isProviderCostLimitError } from './requestPolicy';
+import { transientRetryDelayMs } from './retry';
 import type { ProviderRuntimeConfig } from './types';
 import { streamAgentOperation, waitForAbortableAgentDelay } from '../agentStepStream';
 
@@ -106,7 +107,7 @@ async function completionWithRetries(
         || !isRetryableProviderError(error)
         || attempt >= MAX_TRANSIENT_RETRIES
       ) throw error;
-      const delay = 750 * 2 ** attempt + Math.floor(Math.random() * 250);
+      const delay = transientRetryDelayMs(attempt);
       await waitForAbortableAgentDelay(delay, signal);
     }
   }

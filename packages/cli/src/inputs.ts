@@ -7,20 +7,9 @@ import type { Readable } from 'node:stream';
 
 import fg from 'fast-glob';
 
-import { FILE_CONSTRAINTS, maxFileSizeForMime } from '@open-ocr/engine/constants';
+import { EXTENSION_TO_MIME, FILE_CONSTRAINTS, maxFileSizeForMime } from '@open-ocr/engine/constants';
 import { CliExitError, type OcrErrorCode } from './errors';
 import type { ResolvedCliOptions, ResolvedInput } from './types';
-
-const EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
-  '.pdf': 'application/pdf',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-  '.heic': 'image/heic',
-  '.heif': 'image/heif',
-};
 
 const SUPPORTED_EXTENSIONS: ReadonlySet<string> = new Set(Object.keys(EXTENSION_TO_MIME));
 
@@ -490,15 +479,6 @@ export function describeDiscoverySkips(skipped: InputDiscoverySkips): string | u
     ),
   ].filter((clause): clause is string => clause !== undefined);
   return clauses.length > 0 ? clauses.join('; ') : undefined;
-}
-
-/** Resolve every requested input, discarding the discovery skip report. */
-export async function discoverInputs(
-  rawInputs: string[],
-  options: ResolvedCliOptions,
-  signal?: AbortSignal,
-): Promise<ResolvedInput[]> {
-  return (await discoverInputSet(rawInputs, options, signal)).inputs;
 }
 
 const HEIC_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx']);

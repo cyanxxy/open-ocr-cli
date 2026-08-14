@@ -340,7 +340,7 @@ export class ProviderExecutionContext {
   }
 }
 
-/** Shared context for UI and direct library consumers. */
+/** Shared context for hosts and direct library consumers. */
 export const defaultProviderExecutionContext = new ProviderExecutionContext();
 
 export function createProviderExecutionContext(

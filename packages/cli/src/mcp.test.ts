@@ -13,6 +13,7 @@ import {
   buildWebMcpRequest,
   createOcrMcpServer,
   mcpResult,
+  ModernMcpDiagnosticTransport,
 } from './mcp';
 import type { OcrMachineResult } from './protocol';
 
@@ -35,7 +36,7 @@ describe('Open OCR MCP server', () => {
 
   it('builds versioned requests through the shared semantic validator', () => {
     expect(buildExtractMcpRequest({
-      inputs: ['invoice.pdf'],
+      inputs: [{ type: 'path', path: 'invoice.pdf' }],
       mode: 'template',
       preset: 'invoice',
       contentFormat: 'json',
@@ -46,7 +47,7 @@ describe('Open OCR MCP server', () => {
       delivery: { mode: 'reference' },
     });
     expect(buildAgenticMcpRequest({
-      inputs: ['dense-scan.png'],
+      inputs: [{ type: 'path', path: 'dense-scan.png' }],
       progress: 'detailed',
     })).toMatchObject({ extraction: { mode: 'agentic', progress: 'detailed' } });
     expect(buildWebMcpRequest({
@@ -57,7 +58,7 @@ describe('Open OCR MCP server', () => {
       web: { analysis: 'combined' },
     });
     expect(() => buildExtractMcpRequest({
-      inputs: ['invoice.pdf'],
+      inputs: [{ type: 'path', path: 'invoice.pdf' }],
       mode: 'template',
     })).toThrow('extraction.preset');
   });
@@ -66,17 +67,17 @@ describe('Open OCR MCP server', () => {
     // The tool takes delivery and outputDirectory as independent arguments, so
     // the conflict has to be named rather than left to the schema's `not`.
     expect(() => buildExtractMcpRequest({
-      inputs: ['invoice.pdf'],
+      inputs: [{ type: 'path', path: 'invoice.pdf' }],
       delivery: 'inline',
       outputDirectory: 'out',
     })).toThrow(/delivery\.outputDirectory.*delivery\.mode inline/su);
     expect(() => buildAgenticMcpRequest({
-      inputs: ['scan.png'],
+      inputs: [{ type: 'path', path: 'scan.png' }],
       delivery: 'inline',
       resume: true,
     })).toThrow('delivery.resume');
     expect(buildExtractMcpRequest({
-      inputs: ['invoice.pdf'],
+      inputs: [{ type: 'path', path: 'invoice.pdf' }],
       delivery: 'reference',
       outputDirectory: 'out',
     })).toMatchObject({ delivery: { mode: 'reference', outputDirectory: 'out' } });
@@ -84,13 +85,13 @@ describe('Open OCR MCP server', () => {
     // csv from a preset that extracts one record per document can only fail
     // after the call is billed, so it is refused here.
     expect(() => buildExtractMcpRequest({
-      inputs: ['card.png'],
+      inputs: [{ type: 'path', path: 'card.png' }],
       mode: 'template',
       preset: 'business-card',
       contentFormat: 'csv',
     })).toThrow('cannot produce CSV rows');
     expect(buildExtractMcpRequest({
-      inputs: ['receipt.png'],
+      inputs: [{ type: 'path', path: 'receipt.png' }],
       mode: 'template',
       preset: 'receipt',
       contentFormat: 'csv',
@@ -162,7 +163,7 @@ describe('Open OCR MCP server', () => {
       } else {
         const handle = serveStdio(() => createOcrMcpServer('3.0.0', cwd), {
           legacy: 'reject',
-          transport: serverTransport,
+          transport: new ModernMcpDiagnosticTransport(serverTransport),
           onerror: () => { /* asserted through replies, not side channels */ },
         });
         closeCallbacks.push(async () => handle.close());
@@ -212,9 +213,17 @@ describe('Open OCR MCP server', () => {
 
       const tools = await request(2, 'tools/list', { _meta: modernMeta() });
       expect(tools.result).toMatchObject({ ttlMs: 3_600_000, cacheScope: 'public' });
-      const listed = tools.result?.tools as Array<{ name: string; outputSchema?: { type?: string } }>;
+      const listed = tools.result?.tools as Array<{
+        name: string;
+        inputSchema?: { properties?: { inputs?: { items?: { properties?: Record<string, unknown> } } } };
+        outputSchema?: { type?: string };
+      }>;
       expect(listed.map((tool) => tool.name)).toEqual(['ocr_extract', 'ocr_run_agentic', 'ocr_web']);
       expect(listed.every((tool) => tool.outputSchema?.type === 'object')).toBe(true);
+      expect(listed[0]?.inputSchema?.properties?.inputs?.items?.properties).toMatchObject({
+        type: { const: 'path' },
+        path: { type: 'string' },
+      });
 
       const read = await request(3, 'resources/read', {
         uri: 'open-ocr://capabilities',
@@ -251,7 +260,7 @@ describe('Open OCR MCP server', () => {
       // the advertised schema must say so rather than only the runtime.
       const dash = await request(1, 'tools/call', {
         name: 'ocr_extract',
-        arguments: { inputs: ['-'], dryRun: true, noConfig: true },
+        arguments: { inputs: [{ type: 'path', path: '-' }], dryRun: true, noConfig: true },
         _meta: modernMeta(),
       });
       expect(dash.result).toMatchObject({ isError: true });
@@ -270,7 +279,7 @@ describe('Open OCR MCP server', () => {
       // which is the whole reason the schemas are strict.
       const reply = await request(1, 'tools/call', {
         name: 'ocr_extract',
-        arguments: { inputs: ['invoice.pdf'], dryRunn: true },
+        arguments: { inputs: [{ type: 'path', path: 'invoice.pdf' }], dryRunn: true },
         _meta: modernMeta(),
       });
       expect(reply.result).toMatchObject({ isError: true });
@@ -285,7 +294,7 @@ describe('Open OCR MCP server', () => {
 
       const reply = await request(1, 'tools/call', {
         name: 'ocr_extract',
-        arguments: { inputs: ['scan.jpg'], dryRun: true, noConfig: true, delivery: 'inline' },
+        arguments: { inputs: [{ type: 'path', path: 'scan.jpg' }], dryRun: true, noConfig: true, delivery: 'inline' },
         _meta: { ...modernMeta(), progressToken: 'p1' },
       });
       expect(reply.error).toBeUndefined();
@@ -298,22 +307,27 @@ describe('Open OCR MCP server', () => {
       expect(values).toEqual([...values].sort((left, right) => left - right));
     });
 
-    it('rejects a 2025-11-25 opening', async () => {
+    it('diagnoses the removed initialize handshake instead of contradicting its revision', async () => {
       const { request } = await driveServer(process.cwd());
 
       const initialized = await request(1, 'initialize', {
-        protocolVersion: '2025-11-25',
+        protocolVersion: '2026-07-28',
         capabilities: {},
         clientInfo: { name: 'open-ocr-test', version: '1.0.0' },
       });
       expect(initialized.result).toBeUndefined();
+      expect(initialized.error?.message).toContain('initialize handshake removed');
       expect(initialized.error).toMatchObject({
-        code: -32022,
+        code: -32600,
         data: {
-          requested: '2025-11-25',
-          supported: ['2026-07-28'],
+          reason: 'legacy_initialize_removed',
+          protocolRevision: '2026-07-28',
         },
       });
+
+      const tools = await request(2, 'tools/list', { _meta: modernMeta() });
+      expect(tools.error).toBeUndefined();
+      expect((tools.result?.tools as unknown[]).length).toBe(3);
     });
 
     it('pins the reusable server factory to 2026-07-28', async () => {
@@ -356,7 +370,7 @@ describe('Open OCR MCP server', () => {
 
       const invalid = await request(2, 'tools/call', {
         name: 'ocr_extract',
-        arguments: { inputs: ['invoice.pdf'], mode: 'template', dryRun: true },
+        arguments: { inputs: [{ type: 'path', path: 'invoice.pdf' }], mode: 'template', dryRun: true },
         _meta: modernMeta(),
       });
       expect(invalid.result).toMatchObject({
@@ -379,7 +393,10 @@ describe('Open OCR MCP server', () => {
       const result = await request(1, 'tools/call', {
         name: 'ocr_extract',
         arguments: {
-          inputs: ['invoice.jpg', 'broken.png'],
+          inputs: [
+            { type: 'path', path: 'invoice.jpg' },
+            { type: 'path', path: 'broken.png' },
+          ],
           outputDirectory: path.join(directory, 'out'),
           dryRun: true,
           noConfig: true,

@@ -460,6 +460,7 @@ open-ocr-cli schema result
 open-ocr-cli schema event
 open-ocr-cli schema error
 open-ocr-cli schema capabilities
+open-ocr-cli schema jsonl-v1
 ```
 
 An unknown name exits 2 with a typed `CONFIG_INVALID` error whose `hint` lists
@@ -561,11 +562,14 @@ extraction results or instructions.
 When `delivery.outputDirectory` is omitted, agent runs use
 `.open-ocr-results/<runId>`. A fixed output directory with `resume: true`
 supports both single-document and batch resume. Partial documents use the
-dedicated `document.partial` JSONL event.
+dedicated `document.partial` JSONL event and always carry `partialReason` plus
+`nextAction`, so automation can distinguish reviewing useful output from
+raising an iteration, time, tool, or cost limit.
 
-The npm package ships the Draft 2020-12 request, result, event, error, and
-capabilities schemas under `schemas/`. Schema `$id` URLs are stable identifiers,
-not network endpoints; use `open-ocr-cli schema <name>` or the bundled files.
+The npm package ships the Draft 2020-12 request, result, event, error,
+capabilities, and direct `extract --jsonl` v1 schemas under `schemas/`. Schema
+`$id` URLs are stable identifiers, not network endpoints; use
+`open-ocr-cli schema <name>` or the bundled files.
 The shared Open OCR skill ships under `skills/open-ocr/` in npm and lives at
 `integrations/open-ocr/skills/open-ocr/SKILL.md` in the repository.
 
@@ -579,10 +583,10 @@ progress notifications when the client requests progress.
 
 The host must support and explicitly open MCP revision `2026-07-28`, the
 stateless revision that replaced the `initialize` handshake with per-request
-`_meta`. A client that opens with the older handshake is answered with
-`-32022` naming the one supported revision, rather than being served a
-downgraded session. Once the host is configured for that revision, register the
-command:
+`_meta`. A client that sends the removed `initialize` handshake is answered
+with a typed `legacy_initialize_removed` diagnostic directing it to
+`server/discover` and the modern envelope, rather than being served a downgraded
+session. Once the host is configured for that revision, register the command:
 
 ```json
 {
@@ -604,6 +608,10 @@ dropped, so a misspelled `dryRun` cannot turn a validation pass into a billed
 run. Every argument carries a description in `tools/list`, and the batch
 envelope (`maxFiles`, `maxTotalMb`, `maxCostUsd`, `requestsPerMinute`,
 `timeoutSeconds`) is settable per call.
+
+Local MCP inputs use the same typed objects as the run protocol:
+`{"type":"path","path":"invoice.pdf"}`. Plain path strings are rejected, and
+stdin inputs remain unavailable because stdin is the MCP transport channel.
 
 Tools advertise an `outputSchema` (`result-v2.schema.json`), so the full result
 envelope always arrives in `structuredContent`, and written artifacts come back

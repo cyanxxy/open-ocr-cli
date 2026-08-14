@@ -106,6 +106,8 @@
         "durationMs": { "type": "number", "minimum": 0 },
         "attempts": { "type": "integer", "minimum": 0 },
         "skipReason": { "enum": ["validated", "resumed", "cancelled", "cost-limit", "fail-fast"] },
+        "partialReason": { "enum": ["readiness_not_met", "max_iterations", "tool_limit_reached", "time_budget_reached", "cost_limit_reached"] },
+        "nextAction": { "enum": ["review_partial_output", "increase_max_iterations", "retry_document", "increase_timeout", "increase_max_cost"] },
         "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
         "plannedArtifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
         "content": { "$ref": "#/$defs/content" },
@@ -115,6 +117,10 @@
         {
           "if": { "properties": { "status": { "const": "failed" } }, "required": ["status"] },
           "then": { "required": ["error"] }
+        },
+        {
+          "if": { "properties": { "status": { "const": "partial" } }, "required": ["status"] },
+          "then": { "required": ["partialReason", "nextAction"] }
         }
       ]
     },

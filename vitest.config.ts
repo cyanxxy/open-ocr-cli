@@ -1,8 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Test-runner config only. This repo ships a Node engine (packages/engine),
-// a CLI/MCP package (packages/cli) and an evals harness — there is no web app and
-// therefore no Vite build, dev server or React plugin here.
+// Test-runner config for the Node engine and CLI/MCP package.
 export default defineConfig({
   test: {
     globals: true,
@@ -43,11 +41,9 @@ export default defineConfig({
         '**/*.config.ts',
       ],
       thresholds: {
-        // Measured on the engine + CLI surface after the web app was removed
-        // (2026-08): statements 84.8 / branches 75.2 / functions 90.2 / lines 88.1.
-        // These are well above the pre-removal numbers, which were dragged down
-        // by the React UI. A ~1pt buffer below the measured values avoids flaky
-        // gate failures; ratchet up as coverage improves.
+        // Measured in 2026-08: statements 84.8 / branches 75.2 /
+        // functions 90.2 / lines 88.1. A ~1pt buffer below those values avoids
+        // flaky gate failures; ratchet up as coverage improves.
         branches: 74,
         functions: 89,
         lines: 87,

@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./client', () => ({
-  isGemini3Model: vi.fn(() => true),
   normalizeThinkingLevel: vi.fn(() => 'high'),
 }));
 

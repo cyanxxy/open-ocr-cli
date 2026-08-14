@@ -5,9 +5,7 @@
 
 import { GoogleGenAI, ThinkingLevel as GoogleThinkingLevel } from '@google/genai';
 import { logger } from '../logger';
-import { waitForGeminiRequestSlot } from './requestPolicy';
 import { GeminiModel, OcrError, OcrErrorType, ThinkingLevel } from './types';
-import { recordGeminiUsage } from './usage';
 
 /**
  * Cache for GoogleGenAI instances to avoid recreating them
@@ -17,72 +15,6 @@ const clientCache = new Map<string, GoogleGenAI>();
 export interface GeminiTransportOptions {
   baseUrl?: string;
   headers?: Record<string, string>;
-}
-
-/**
- * Content part type for the SDK
- */
-interface ContentPart {
-  text?: string;
-  inlineData?: { mimeType: string; data: string };
-}
-
-/**
- * Content type for the SDK
- */
-interface Content {
-  role: 'user' | 'model';
-  parts: ContentPart[];
-}
-
-/**
- * Content list union - matches SDK's ContentListUnion
- */
-type ContentListUnion = Content | Content[] | ContentPart | ContentPart[] | string | string[];
-
-/**
- * Content generation parameters
- */
-export interface GenerationParams {
-  contents?: ContentListUnion;
-  prompt?: string;
-  generationConfig?: {
-    temperature?: number;
-    maxOutputTokens?: number;
-    maxTokens?: number;
-    topP?: number;
-    topK?: number;
-  };
-  config?: Record<string, unknown>;
-  safetySettings?: Array<{
-    category: string;
-    threshold: string;
-  }>;
-}
-
-/**
- * Generation response
- */
-export interface GenerationResponse {
-  response: {
-    text: () => string;
-    candidates?: Array<unknown>;
-  };
-}
-
-/**
- * Stream chunk
- */
-export interface StreamChunk {
-  text: () => string;
-}
-
-/**
- * GenerativeModel interface for the application
- */
-export interface GenerativeModel {
-  generateContent: (params: GenerationParams) => Promise<GenerationResponse>;
-  generateContentStream: (params: GenerationParams) => Promise<{ stream: AsyncGenerator<StreamChunk> }>;
 }
 
 /**
@@ -129,14 +61,6 @@ export function getGenAIClient(apiKey: string, transport: GeminiTransportOptions
       error
     );
   }
-}
-
-/**
- * Drop any cached GoogleGenAI client. Call this on API-key change/logout so a
- * rotated or removed credential is not retained in memory (audit H-14).
- */
-export function clearGeminiClientCache(): void {
-  clientCache.clear();
 }
 
 interface GeminiResponseStatus {
@@ -214,132 +138,6 @@ export function createGeminiStreamCompletionTracker(
       }
     },
   };
-}
-
-/**
- * Get or create a Gemini model client
- * @param apiKey - The Google AI API key
- * @param modelName - The model name to use
- * @returns The configured GenerativeModel instance
- */
-export function getModelClient(
-  apiKey: string,
-  modelName: GeminiModel = 'gemini-3.5-flash'
-): GenerativeModel {
-  const genAI = getGenAIClient(apiKey);
-
-  return {
-    generateContent: async (params: GenerationParams) => {
-      let contents: ContentListUnion = params.contents || '';
-      if (params.prompt) {
-        contents = params.prompt;
-      }
-
-      const rawGenerationConfig = params.generationConfig || {};
-      const { maxTokens, maxOutputTokens, ...restGenerationConfig } = rawGenerationConfig;
-      const mappedGenerationConfig = {
-        ...restGenerationConfig,
-        ...(maxTokens !== undefined || maxOutputTokens !== undefined
-          ? { maxOutputTokens: maxOutputTokens ?? maxTokens }
-          : {})
-      };
-
-      const config: Record<string, unknown> = {
-        ...mappedGenerationConfig,
-        ...(params.config || {})
-      };
-
-      if (params.safetySettings && !('safetySettings' in config)) {
-        config.safetySettings = params.safetySettings;
-      }
-
-      // Use the new SDK's API
-      await waitForGeminiRequestSlot();
-      const response = await genAI.models.generateContent({
-        model: modelName,
-        contents,
-        ...(Object.keys(config).length > 0 ? { config } : {})
-      });
-      recordGeminiUsage(response, modelName);
-      assertCompleteGeminiResponse(response);
-
-      return {
-        response: {
-          text: () => response.text || '',
-          candidates: response.candidates || []
-        }
-      };
-    },
-
-    generateContentStream: async (params: GenerationParams) => {
-      // Handle streaming with new SDK
-      let contents: ContentListUnion = params.contents || '';
-
-      if (params.prompt) {
-        contents = params.prompt;
-      }
-
-      const rawGenerationConfig = params.generationConfig || {};
-      const { maxTokens, maxOutputTokens, ...restGenerationConfig } = rawGenerationConfig;
-      const mappedGenerationConfig = {
-        ...restGenerationConfig,
-        ...(maxTokens !== undefined || maxOutputTokens !== undefined
-          ? { maxOutputTokens: maxOutputTokens ?? maxTokens }
-          : {})
-      };
-
-      const config: Record<string, unknown> = {
-        ...mappedGenerationConfig,
-        ...(params.config || {})
-      };
-
-      if (params.safetySettings && !('safetySettings' in config)) {
-        config.safetySettings = params.safetySettings;
-      }
-
-      await waitForGeminiRequestSlot();
-      const stream = await genAI.models.generateContentStream({
-        model: modelName,
-        contents,
-        ...(Object.keys(config).length > 0 ? { config } : {})
-      });
-
-      // Create and return the generator immediately (not a function)
-      async function* createStreamGenerator() {
-        const completion = createGeminiStreamCompletionTracker();
-        let lastChunk: unknown;
-        for await (const chunk of stream) {
-          lastChunk = chunk;
-          try {
-            completion.observe(chunk);
-          } catch (error) {
-            recordGeminiUsage(chunk, modelName);
-            throw error;
-          }
-          yield {
-            text: () => chunk.text || ''
-          };
-        }
-        recordGeminiUsage(lastChunk, modelName);
-        completion.assertComplete();
-      }
-
-      return {
-        stream: createStreamGenerator()
-      };
-    }
-  };
-}
-
-
-/**
- * Check if a model is a Gemini 3.x model
- */
-export function isGemini3Model(modelName: GeminiModel): boolean {
-  return modelName === 'gemini-3.1-pro-preview'
-    || modelName === 'gemini-3-flash-preview'
-    || modelName === 'gemini-3.5-flash'
-    || modelName === 'gemini-3.1-flash-lite';
 }
 
 /** Flash-family models that support MINIMAL thinking. */
@@ -474,7 +272,7 @@ export function isRetryableGeminiError(error: unknown): boolean {
 }
 
 /**
- * Model-aware default thinking level when the UI has not set one.
+ * Model-aware default thinking level when the host has not set one.
  * - 3.1 Flash-Lite: minimal (API default; cheap/high-volume)
  * - 3.5 Flash: medium
  * - 3 Flash Preview: high
@@ -487,7 +285,7 @@ export function defaultThinkingLevelForModel(modelName: GeminiModel): ThinkingLe
 }
 
 /**
- * Resolve a UI `ThinkingLevel` to the lowercase Gemini wire value, validated
+ * Resolve a host `ThinkingLevel` to the lowercase Gemini wire value, validated
  * against the selected model. Unsupported levels fail locally; they are never
  * silently rewritten.
  */

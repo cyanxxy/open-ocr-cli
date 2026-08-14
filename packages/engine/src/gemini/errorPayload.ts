@@ -200,11 +200,10 @@ export function providerErrorMessage(text: string): string {
 /**
  * Restate a thrown provider error with the sentence the provider wrote.
  *
- * Consumers render `error.message`: CLI stderr, the `error` field of every JSONL
- * document record, and the browser app all show it verbatim. Left alone, a
- * Gemini failure puts a 500-byte JSON blob in each of them, so the adapter
- * normalizes the message before the error escapes rather than asking every
- * renderer to know the body format.
+ * Consumers render `error.message` in CLI stderr and the `error` field of every
+ * JSONL document record. Left alone, a Gemini failure puts a 500-byte JSON blob
+ * in each of them, so the adapter normalizes the message before the error
+ * escapes rather than asking every renderer to know the body format.
  *
  * The original error becomes `cause`, keeping the untouched body — and the
  * `status` own-property classifiers key on — reachable. Errors whose message is

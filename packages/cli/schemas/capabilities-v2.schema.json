@@ -186,13 +186,14 @@
     "schemas": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["request","result","event","error","capabilities"],
+      "required": ["request","result","event","error","capabilities","extractJsonl"],
       "properties": {
         "request": {"type":"string"},
         "result": {"type":"string"},
         "event": {"type":"string"},
         "error": {"type":"string"},
-        "capabilities": {"type":"string"}
+        "capabilities": {"type":"string"},
+        "extractJsonl": {"type":"string"}
       }
     },
     "schemaAccess": {

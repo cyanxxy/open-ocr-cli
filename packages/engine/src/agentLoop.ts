@@ -21,6 +21,7 @@ import { evaluateAgentCompletion } from './agentSchema';
 import type { InteractionStep } from './gemini/interactions';
 import { isFatalGeminiError, isRetryableGeminiError } from './gemini/client';
 import { isGeminiCostLimitError } from './gemini/requestPolicy';
+import { transientRetryDelayMs } from './providers/retry';
 import { streamAgentOperation, waitForAbortableAgentDelay } from './agentStepStream';
 
 /**
@@ -89,7 +90,6 @@ export async function* agentLoop(
   const memory = createInitialMemory(sessionId, file.name);
 
   let iteration = 0;
-  let isComplete = false;
   let stopReason: AgentStopReason | null = null;
   let transientRetries = 0;
   const deadline = Date.now() + (agentConfig.maxDurationMs ?? DEFAULT_AGENT_CONFIG.maxDurationMs!);
@@ -267,9 +267,7 @@ export async function* agentLoop(
         if (isRetryableGeminiError(error) && transientRetries < MAX_TRANSIENT_RETRIES) {
           transientRetries++;
           const baseDelay = agentConfig.retryBaseDelayMs ?? RETRY_BASE_DELAY_MS;
-          const backoff = baseDelay > 0
-            ? baseDelay * 2 ** (transientRetries - 1) + Math.floor(Math.random() * 250)
-            : 0;
+          const backoff = transientRetryDelayMs(transientRetries - 1, baseDelay);
           yield {
             type: 'thinking',
             source: 'runtime',
@@ -314,7 +312,7 @@ export async function* agentLoop(
     }
 
     memory.stopReason = stopReason;
-    isComplete = stopReason === 'succeeded';
+    const isComplete = stopReason === 'succeeded';
     yield {
       type: 'result',
       source: 'runtime',

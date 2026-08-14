@@ -1,9 +1,28 @@
 # Changelog
 
-## Unreleased
+## 3.0.1 - 2026-08-14
 
-Repository restructure. No change to the CLI's behavior, machine protocol, MCP
-revision, or published package contents.
+This patch completes the CLI-only repository restructure and tightens its
+machine-facing output, MCP, retry, packaging, and release contracts.
+
+### Fixed
+
+- Closed stdout pipelines now exit cleanly without swallowing unrelated
+  provider or filesystem `EPIPE` failures.
+- Agentic partial results now carry a typed `partialReason` and `nextAction` in
+  direct JSONL, protocol v2, and MCP results.
+- Provider and agent retries share one bounded exponential-backoff calculation,
+  including delay-free test runs.
+- Atomic-write cleanup failures preserve both the original write error and the
+  cleanup error through `AggregateError`.
+
+### Added
+
+- A published Draft 2020-12 schema for the direct `extract --jsonl` v1 stream,
+  available through `open-ocr-cli schema jsonl-v1` and npm package assets.
+- Modern MCP clients use the same typed `{ "type": "path", "path": "…" }`
+  local-input objects as protocol v2, and removed `initialize` handshakes receive
+  an actionable modern-revision diagnostic.
 
 ### Removed
 
@@ -36,6 +55,8 @@ revision, or published package contents.
   browser `localStorage` key storage it previously described belonged to the
   removed web app; rotate any key entered into a deployment built from an older
   revision.
+
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v3.0.0...v3.0.1)
 
 ## 3.0.0 - 2026-08-11
 

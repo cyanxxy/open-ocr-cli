@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import * as constants from './index';
 import { FILE_CONSTRAINTS, maxFileSizeForMime } from './index';
 
 describe('constants', () => {
@@ -20,21 +19,5 @@ describe('constants', () => {
       bytes: FILE_CONSTRAINTS.MAX_IMAGE_SIZE,
       label: '70MB',
     });
-  });
-
-  it('drops the dead OCR_OPTIONS / AGENT_CONFIG / ROUTES exports (audit M-06)', () => {
-    expect('OCR_OPTIONS' in constants).toBe(false);
-    expect('AGENT_CONFIG' in constants).toBe(false);
-    expect('ROUTES' in constants).toBe(false);
-  });
-
-  it('drops the browser-only constants left behind by the web app removal', () => {
-    expect('UI_TIMING' in constants).toBe(false);
-    expect('STORAGE_KEYS' in constants).toBe(false);
-    expect('MAX_SIZE' in FILE_CONSTRAINTS).toBe(false);
-    expect('MAX_SIZE_LABEL' in FILE_CONSTRAINTS).toBe(false);
-    expect('ACCEPTED_IMAGE_TYPES' in FILE_CONSTRAINTS).toBe(false);
-    expect('ACCEPTED_DOCUMENT_TYPES' in FILE_CONSTRAINTS).toBe(false);
-    expect('ACCEPTED_MIME_TYPES' in FILE_CONSTRAINTS).toBe(false);
   });
 });

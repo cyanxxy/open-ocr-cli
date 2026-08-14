@@ -501,7 +501,7 @@ then CLI flags. Later sources win.
 
   program.command('schema')
     .description('print one bundled machine-protocol JSON Schema')
-    .argument('<name>', 'request/result/event/error/capabilities, optionally suffixed with -v2; also accepts the $id URL capabilities publishes')
+    .argument('<name>', 'request/result/event/error/capabilities or jsonl; versioned names and published $id URLs also work')
     .action((name: string) => {
       // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so `constructor`
       // and `toString` resolved to functions that `JSON.stringify` renders as the

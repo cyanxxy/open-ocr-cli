@@ -616,7 +616,7 @@ export async function extractTextFromFile(
     // function notified onError and then RESOLVED with an empty `{ sections: [] }`,
     // so callers could not distinguish a real failure (or a cancellation) from a
     // genuinely empty document (audit H-03 / G-07). The onError callback is still
-    // invoked for UI handling, and the rejection preserves the original error
+    // invoked for host handling, and the rejection preserves the original error
     // (including an AbortError's name) so cancellation stays distinguishable.
     callbacks?.onError?.(normalizedError);
     throw normalizedError;

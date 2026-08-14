@@ -59,9 +59,7 @@ record, an artifact, or a log line. Consider:
 - Running `open-ocr-cli doctor` to confirm which variable is being read, without
   printing its value
 
-There is no browser storage of any kind. The React web app that stored a key in
-`localStorage` was removed from this repository; if you deployed that app from an
-older revision, rotate any key you entered into it.
+The CLI does not persist credentials locally.
 
 ### Content Security
 

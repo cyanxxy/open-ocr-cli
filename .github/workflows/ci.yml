@@ -61,7 +61,7 @@ jobs:
 
       - name: Run tests
         if: ${{ matrix.node-version != '24.x' }}
-        run: npm run test:run
+        run: npm test
 
       - name: Validate AI eval fixtures
         if: ${{ matrix.node-version == '24.x' }}
@@ -84,7 +84,8 @@ jobs:
 
   # Packaging smokes (separate runner, so it installs once for the smoke steps).
   build:
-    name: Package Smoke Tests
+    # Keep this check name stable: main branch protection requires it.
+    name: Build Application
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [quality]

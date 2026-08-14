@@ -82,7 +82,7 @@ async function firstExistingFile(candidates: string[]): Promise<string | null> {
 async function resolveRelativeSpecifier(importer: string, specifier: string): Promise<string | null> {
   const base = path.resolve(path.dirname(importer), specifier);
   return firstExistingFile(
-    base.endsWith('.ts') ? [base] : [`${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts')],
+    base.endsWith('.ts') ? [base] : [`${base}.ts`, path.join(base, 'index.ts')],
   );
 }
 

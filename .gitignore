@@ -9,7 +9,6 @@ lerna-debug.log*
 
 node_modules
 dist
-dist-ssr
 *.local
 
 # Coverage reports
@@ -33,8 +32,11 @@ AGENTS.md
 # Internal notes and local benchmark artifacts
 ROADMAP.md
 docs/2026-agentic-ocr-evals-plan.md
-evals/reports/ocrbench-v2-subset/
+docs/launch-playbook.md
 evals/reports/runs/
+evals/reports/matrix/
+evals/reports/matrix-latest.json
+evals/reports/matrix-latest.md
 evals/cache/
 
 # Editor directories and files
@@ -56,7 +58,6 @@ Thumbs.db
 # Build artifacts
 build/
 out/
-dist-cli/
 *.tsbuildinfo
 
 # Runtime data

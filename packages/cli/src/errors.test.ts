@@ -10,12 +10,20 @@ import {
   cliExitCode,
   cliRunStatusExitCode,
   cliSignalExitCode,
+  isBrokenPipeError,
   OCR_ERROR_CODES,
   ocrErrorPayload,
   renderCliError,
 } from './errors';
 
 describe('CLI exit errors', () => {
+  it('recognizes only a direct closed-pipe stream error', () => {
+    const brokenPipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    expect(isBrokenPipeError(brokenPipe)).toBe(true);
+    expect(isBrokenPipeError(new Error('provider write failed', { cause: brokenPipe }))).toBe(false);
+    expect(isBrokenPipeError(new Error('ordinary failure'))).toBe(false);
+  });
+
   it('classifies expected runtime failures without changing their message', () => {
     const cause = new Error('Gemini request timed out');
     const error = asCliExitError(cause, 1);
@@ -399,8 +407,8 @@ describe('CLI exit errors', () => {
     });
 
     it('still types a real page-limit rejection as an input failure', () => {
-      // The narrowed rule has to keep catching what it was written for: both
-      // producers of the page-limit message, CLI and browser.
+      // The narrowed rule has to keep catching what it was written for: the
+      // page-limit message `inputs.ts` produces.
       expect(ocrErrorPayload(new Error('scan.pdf has 1200 pages; the maximum is 1000'), 2))
         .toMatchObject({ code: 'INPUT_INVALID', category: 'input' });
       expect(ocrErrorPayload(new Error('PDF "scan.pdf" has 1200 pages; the maximum is 1000.'), 2))

@@ -89,8 +89,8 @@ If Discussions are enabled, use:
 Some files are excluded from the repo on purpose via `.gitignore`, so don't be surprised if you can't find them:
 
 - `AGENTS.md` and `CLAUDE.md` — local AI-agent context, kept per-developer.
-- `ROADMAP.md` and `docs/2026-agentic-ocr-evals-plan.md` — internal planning notes that are not maintained as public docs.
-- `evals/reports/ocrbench-v2-subset/` — local benchmark artifacts.
+- `ROADMAP.md`, `docs/2026-agentic-ocr-evals-plan.md`, and `docs/launch-playbook.md` — internal planning notes that are not maintained as public docs.
+- `evals/reports/runs/` and `evals/reports/matrix*` — local benchmark artifacts.
 
 You can keep your own copies of these locally, but they will never be committed. Use GitHub Issues and Discussions (not a tracked `ROADMAP.md`) for roadmap and planning conversations.
 
@@ -105,6 +105,5 @@ git push origin v3.0.0
 ```
 
 The release workflow repeats the quality and security gates, publishes the npm
-tarball with provenance, builds the container, attaches the Homebrew formula
-and the CLI `dist` archive, creates the GitHub Release, and updates the
-matching major GitHub Action tag.
+tarball with provenance, builds the container, attaches the Homebrew formula,
+creates the GitHub Release, and updates the matching major GitHub Action tag.

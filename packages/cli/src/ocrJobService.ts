@@ -45,6 +45,8 @@ import type {
   ManifestEntry,
   OcrArtifacts,
   OcrJobResult,
+  OcrNextAction,
+  OcrPartialReason,
   ResolvedCliOptions,
   ResolvedInput,
 } from './types';
@@ -215,6 +217,26 @@ function errorAttempts(error: unknown): number {
     return error.attempts;
   }
   return 1;
+}
+
+function agentPartialResolution(stopReason: string): {
+  partialReason: OcrPartialReason;
+  nextAction: OcrNextAction;
+} {
+  switch (stopReason) {
+    case 'partial':
+      return { partialReason: 'readiness_not_met', nextAction: 'review_partial_output' };
+    case 'max_iterations':
+      return { partialReason: 'max_iterations', nextAction: 'increase_max_iterations' };
+    case 'tool_limit_reached':
+      return { partialReason: 'tool_limit_reached', nextAction: 'retry_document' };
+    case 'budget_exhausted':
+      return { partialReason: 'time_budget_reached', nextAction: 'increase_timeout' };
+    case 'cost_limit_reached':
+      return { partialReason: 'cost_limit_reached', nextAction: 'increase_max_cost' };
+    default:
+      throw new Error(`Agentic OCR returned unsupported partial stop reason: ${stopReason}`);
+  }
 }
 
 function terminalEventType(result: OcrJobResult): OcrJobEvent['type'] {
@@ -629,11 +651,14 @@ export class OcrJobService {
               ? 'partial'
               : 'succeeded';
             if (agentMemory?.stopReason === 'cost_limit_reached') costLimitReached = true;
+            const partialResolution = agentMemory?.stopReason && agentMemory.stopReason !== 'succeeded'
+              ? agentPartialResolution(agentMemory.stopReason)
+              : undefined;
             result = {
               status: jobStatus, input, provider: options.provider, gateway: options.gateway,
               mode: options.mode, model: options.model, startedAt: jobStartedAt,
               completedAt: new Date().toISOString(), durationMs: performance.now() - jobStart,
-              artifacts, outputFiles, outputArtifacts, attempts,
+              artifacts, outputFiles, outputArtifacts, attempts, ...partialResolution,
             };
             await manifest?.update(key, {
               fingerprint,
