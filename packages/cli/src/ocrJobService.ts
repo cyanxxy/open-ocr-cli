@@ -1,8 +1,8 @@
-import type { AgentStep } from '../../../src/lib/agentTypes';
+import type { AgentStep } from '@open-ocr/engine/agentTypes';
 import {
   createProviderExecutionContext,
   type ProviderExecutionContext,
-} from '../../../src/lib/providers';
+} from '@open-ocr/engine/providers';
 import {
   asCliExitError,
   CliExitError,

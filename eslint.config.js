@@ -7,7 +7,8 @@ export default tseslint.config(
   { ignores: ['dist', 'dist-cli', '**/dist/**', 'coverage', '**/coverage/**', 'node_modules', '.claude/**', '*.config.js'] },
 
   // Base configuration for all JS/TS files. Everything in this repo runs in
-  // Node (the OCR engine in src/, the CLI in packages/cli, the evals harness),
+  // Node (the OCR engine in packages/engine, the CLI in packages/cli, the evals
+  // harness),
   // so `globals.node` is the baseline. Type-aware linting is enabled via
   // `projectService` + `recommendedTypeChecked` (audit M-08). Newly-surfaced
   // type-checked rules are set to 'warn' below as a ratchet so lint stays green

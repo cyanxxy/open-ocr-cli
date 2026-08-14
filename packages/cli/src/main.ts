@@ -7,14 +7,14 @@ import process from 'node:process';
 import { Command, CommanderError, Option } from 'commander';
 import cliPackageJson from '../package.json';
 
-import { listExtractionPresets } from '../../../src/lib/templates';
+import { listExtractionPresets } from '@open-ocr/engine/templates';
 import {
   PROVIDER_IDS,
   PROVIDER_PROFILES,
   isLocalBaseUrl,
   providerDefaultApiKeyEnv,
   type ProviderId,
-} from '../../../src/lib/providers';
+} from '@open-ocr/engine/providers';
 import {
   assertCredentialsAvailable,
   cliConfigDisabled,

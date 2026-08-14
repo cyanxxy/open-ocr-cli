@@ -1,12 +1,12 @@
 import process from 'node:process';
 
-import { listExtractionPresets } from '../../../src/lib/templates';
+import { listExtractionPresets } from '@open-ocr/engine/templates';
 import {
   PROVIDER_IDS,
   PROVIDER_PROFILES,
   type GatewayId,
   type ProviderId,
-} from '../../../src/lib/providers';
+} from '@open-ocr/engine/providers';
 import { asCliExitError } from './errors';
 import {
   cliThinkingLevels,

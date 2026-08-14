@@ -4,7 +4,7 @@ import { resolveCliOptions } from './config';
 import { CliExitError } from './errors';
 import { runWithProviderRetries } from './providerRetries';
 
-vi.mock('../../../src/lib/agentStepStream', () => ({
+vi.mock('@open-ocr/engine/agentStepStream', () => ({
   waitForAbortableAgentDelay: vi.fn(() => Promise.resolve()),
 }));
 

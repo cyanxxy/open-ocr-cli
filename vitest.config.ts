@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Test-runner config only. This repo ships a Node engine (src/lib, src/constants),
+// Test-runner config only. This repo ships a Node engine (packages/engine),
 // a CLI/MCP package (packages/cli) and an evals harness — there is no web app and
 // therefore no Vite build, dev server or React plugin here.
 export default defineConfig({
@@ -8,9 +8,9 @@ export default defineConfig({
     globals: true,
     // The engine and the CLI both run in Node; a DOM environment would hide a
     // browser-API dependency instead of failing on it (mirrors the no-DOM
-    // tsconfig boundary in tsconfig.src.json / packages/cli/tsconfig.json).
+    // tsconfig boundary in packages/engine/tsconfig.json / packages/cli/tsconfig.json).
     environment: 'node',
-    include: ['src/**/*.{test,spec}.ts', 'packages/cli/src/**/*.{test,spec}.ts'],
+    include: ['packages/engine/src/**/*.{test,spec}.ts', 'packages/cli/src/**/*.{test,spec}.ts'],
     exclude: [
       'node_modules',
       'dist',
@@ -31,9 +31,9 @@ export default defineConfig({
       exclude: [
         'node_modules/',
         // Pure re-export barrels (no executable logic of their own).
-        'src/lib/templates/index.ts',
-        'src/lib/providers/index.ts',
-        'src/lib/gemini/index.ts',
+        'packages/engine/src/templates/index.ts',
+        'packages/engine/src/providers/index.ts',
+        'packages/engine/src/gemini/index.ts',
         // Not unit-tested here: the evals harness has its own gate
         // (`npm run evals:validate`) and the build/tooling scripts are covered
         // by the smoke targets.

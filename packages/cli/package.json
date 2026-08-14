@@ -54,10 +54,12 @@
   },
   "openOcrBuild": {
     "bundledDependencies": [
-      "@google/genai"
+      "@google/genai",
+      "@open-ocr/engine"
     ]
   },
   "devDependencies": {
+    "@open-ocr/engine": "3.0.0",
     "tsup": "^8.5.1",
     "typescript": "^5.8.3"
   },

@@ -8,8 +8,8 @@ import {
   extractTextFromUrls,
   parseIndividualResults,
   type UrlResult,
-} from '../../../src/lib/gemini/operations';
-import type { GeminiModel, JsonValue } from '../../../src/lib/gemini/types';
+} from '@open-ocr/engine/gemini/operations';
+import type { GeminiModel, JsonValue } from '@open-ocr/engine/gemini/types';
 import {
   createChatCompletion,
   documentContentParts,
@@ -17,9 +17,9 @@ import {
   providerRequestHeaders,
   type OpenAIContentPart,
   type ProviderExecutionContext,
-} from '../../../src/lib/providers';
-import { getUnsupportedUrls } from '../../../src/lib/urlValidation';
-import { FILE_CONSTRAINTS } from '../../../src/constants';
+} from '@open-ocr/engine/providers';
+import { getUnsupportedUrls } from '@open-ocr/engine/urlValidation';
+import { FILE_CONSTRAINTS } from '@open-ocr/engine/constants';
 import { CliExitError } from './errors';
 import { sniffDocumentMimeType } from './inputs';
 import {

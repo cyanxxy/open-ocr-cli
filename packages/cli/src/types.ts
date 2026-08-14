@@ -1,16 +1,16 @@
-import type { AgentMemory, AgentStep } from '../../../src/lib/agentTypes';
+import type { AgentMemory, AgentStep } from '@open-ocr/engine/agentTypes';
 import type {
   ExtractedContent,
   JsonValue,
   PresetStructuredOutput,
   ThinkingLevel,
-} from '../../../src/lib/gemini';
+} from '@open-ocr/engine/gemini';
 import {
   GEMINI_MODELS,
   type GatewayId,
   type ProviderId,
   type ProviderUsageSnapshot,
-} from '../../../src/lib/providers';
+} from '@open-ocr/engine/providers';
 import type { OcrErrorPayload } from './errors';
 import type { ArtifactTarget } from './output';
 

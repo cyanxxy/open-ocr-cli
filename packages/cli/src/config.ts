@@ -8,7 +8,7 @@ import {
   defaultThinkingLevelForModel,
   type GeminiModel,
   type ThinkingLevel,
-} from '../../../src/lib/gemini';
+} from '@open-ocr/engine/gemini';
 import {
   GATEWAY_IDS,
   GEMINI_MODELS,
@@ -21,8 +21,8 @@ import {
   resolveProviderBaseUrl,
   type GatewayId,
   type ProviderId,
-} from '../../../src/lib/providers';
-import { getExtractionPreset, listExtractionPresets } from '../../../src/lib/templates';
+} from '@open-ocr/engine/providers';
+import { getExtractionPreset, listExtractionPresets } from '@open-ocr/engine/templates';
 import { CliExitError } from './errors';
 import { asRecord } from './jsonValidation';
 import {

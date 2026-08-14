@@ -5,7 +5,7 @@ import { isIP } from 'node:net';
 import type { Readable } from 'node:stream';
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 
-import { isPublicIpAddress, parseSupportedHttpUrl } from '../../../src/lib/urlValidation';
+import { isPublicIpAddress, parseSupportedHttpUrl } from '@open-ocr/engine/urlValidation';
 import { CliExitError } from './errors';
 
 /**

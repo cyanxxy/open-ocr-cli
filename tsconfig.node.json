@@ -26,7 +26,7 @@
     "noFallthroughCasesInSwitch": true
   },
   /* `evals` is included deliberately: it is the only other first-party TypeScript
-     outside `src` and `packages/cli`, and while it sat in no project the CI and
+     outside `packages/engine` and `packages/cli`, and while it sat in no project the CI and
      release typecheck gate never saw it. */
   "include": ["vitest.config.ts", "packages/cli/tsup.config.ts", "evals/**/*.ts"]
 }

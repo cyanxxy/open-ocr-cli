@@ -7,7 +7,7 @@ import type { Readable } from 'node:stream';
 
 import fg from 'fast-glob';
 
-import { FILE_CONSTRAINTS, maxFileSizeForMime } from '../../../src/constants';
+import { FILE_CONSTRAINTS, maxFileSizeForMime } from '@open-ocr/engine/constants';
 import { CliExitError, type OcrErrorCode } from './errors';
 import type { ResolvedCliOptions, ResolvedInput } from './types';
 

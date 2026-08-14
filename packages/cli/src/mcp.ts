@@ -17,7 +17,7 @@ import {
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod/v4';
 
-import { GATEWAY_IDS, PROVIDER_IDS } from '../../../src/lib/providers';
+import { GATEWAY_IDS, PROVIDER_IDS } from '@open-ocr/engine/providers';
 import errorV2Schema from '../schemas/error-v2.schema.json';
 import resultV2Schema from '../schemas/result-v2.schema.json';
 import { CliExitError, cliExitCode, cliSignalExitCode, ocrErrorPayload } from './errors';

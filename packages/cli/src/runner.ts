@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import process from 'node:process';
 
-import { agentLoop } from '../../../src/lib/agentLoop';
-import type { AgentMemory, AgentStep } from '../../../src/lib/agentTypes';
-import type { ExtractedContent, ExtractionInstruction } from '../../../src/lib/gemini/types';
+import { agentLoop } from '@open-ocr/engine/agentLoop';
+import type { AgentMemory, AgentStep } from '@open-ocr/engine/agentTypes';
+import type { ExtractedContent, ExtractionInstruction } from '@open-ocr/engine/gemini/types';
 import {
   extractPresetWithProvider,
   extractStructuredWithProvider,
@@ -13,8 +13,8 @@ import {
   providerDefaultBaseUrl,
   providerRequestHeaders,
   type ProviderExecutionContext,
-} from '../../../src/lib/providers';
-import { getExtractionPreset } from '../../../src/lib/templates';
+} from '@open-ocr/engine/providers';
+import { getExtractionPreset } from '@open-ocr/engine/templates';
 import { readAndValidateInput, type InputDiscoverySkips } from './inputs';
 import { nodeRegionCropper } from './nodeRegionCropper';
 import { agentProgressMessage, OcrJobService, modeFingerprint } from './ocrJobService';

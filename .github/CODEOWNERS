@@ -5,8 +5,7 @@
 /.github/ @cyanxxy
 
 # Core library code (the shared OCR engine)
-/src/lib/ @cyanxxy
-/src/constants/ @cyanxxy
+/packages/engine/ @cyanxxy
 
 # Published CLI / MCP package
 /packages/cli/ @cyanxxy

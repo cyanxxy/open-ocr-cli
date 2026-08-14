@@ -32,7 +32,7 @@ try {
       throw new Error(`Packed CLI has unreviewed install scripts: ${pendingScripts.allowScripts.join(', ')}`);
     }
   }
-  for (const packageName of ['@google/genai', 'protobufjs']) {
+  for (const packageName of ['@google/genai', '@open-ocr/engine', 'protobufjs']) {
     if (existsSync(path.join(installDirectory, 'node_modules', ...packageName.split('/')))) {
       throw new Error(`Packed CLI unexpectedly installed bundled dependency ${packageName}`);
     }

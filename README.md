@@ -187,7 +187,7 @@ One repository, two entry points over a shared extraction engine:
 
 | Path | What it is |
 | --- | --- |
-| `src/lib`, `src/constants` | The engine: providers, extraction modes, agent loop, protocol types. Node-only — typechecked without DOM libs, so a browser API cannot reach it. Region cropping is supplied by the host through an adapter such as `packages/cli/src/nodeRegionCropper.ts`. |
+| `packages/engine` | The `@open-ocr/engine` workspace package: providers, extraction modes, agent loop, protocol types. Private and never published — the CLI bundles it at build time. Node-only — typechecked without DOM libs, so a browser API cannot reach it. Region cropping is supplied by the host through an adapter such as `packages/cli/src/nodeRegionCropper.ts`. |
 | `packages/cli` | The published `open-ocr-cli` npm package. Owns its own source, build, and protocol schemas. |
 | `integrations/open-ocr/skills` | Agent skill definitions. Source of truth; `packages/cli/skills` is a generated copy. |
 | `evals/` | The evaluation corpus and runner. |
@@ -196,7 +196,7 @@ One repository, two entry points over a shared extraction engine:
 the CLI, alongside `extract` (human-facing) and `run` (versioned protocol), all
 routed through the same job service.
 
-Both the engine (`tsconfig.src.json`) and the CLI (`packages/cli/tsconfig.json`)
+Both the engine (`packages/engine/tsconfig.json`) and the CLI (`packages/cli/tsconfig.json`)
 are typechecked without DOM libraries on purpose: a browser API reaching this
 code fails the build rather than failing at runtime.
 

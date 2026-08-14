@@ -1,4 +1,4 @@
-import { providerProfile } from '../../../src/lib/providers';
+import { providerProfile } from '@open-ocr/engine/providers';
 import { CliExitError } from './errors';
 import type { ResolvedCliOptions } from './types';
 

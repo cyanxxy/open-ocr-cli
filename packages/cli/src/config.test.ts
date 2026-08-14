@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { listExtractionPresets } from '../../../src/lib/templates';
+import { listExtractionPresets } from '@open-ocr/engine/templates';
 import {
   assertCredentialsAvailable,
   credentialSetupGuidance,

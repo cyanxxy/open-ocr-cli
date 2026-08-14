@@ -4,13 +4,13 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AgentMemory, AgentStep } from '../../../src/lib/agentTypes';
+import type { AgentMemory, AgentStep } from '@open-ocr/engine/agentTypes';
 
 const { mockAgentLoop } = vi.hoisted(() => ({
   mockAgentLoop: vi.fn(),
 }));
 
-vi.mock('../../../src/lib/agentLoop', () => ({
+vi.mock('@open-ocr/engine/agentLoop', () => ({
   agentLoop: mockAgentLoop,
 }));
 

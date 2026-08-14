@@ -36,6 +36,7 @@
   },
   "packageManager": "npm@11.14.1",
   "workspaces": [
+    "packages/engine",
     "packages/cli"
   ],
   "overrides": {
@@ -44,7 +45,7 @@
   },
   "scripts": {
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit -p tsconfig.src.json && tsc --noEmit -p tsconfig.node.json && npm run typecheck -w open-ocr-cli",
+    "typecheck": "npm run typecheck -w @open-ocr/engine && tsc --noEmit -p tsconfig.node.json && npm run typecheck -w open-ocr-cli",
     "cli": "tsx packages/cli/src/index.ts",
     "cli:build": "npm run build -w open-ocr-cli",
     "cli:smoke": "npm run cli:build && node packages/cli/dist/index.js --help",
@@ -66,12 +67,6 @@
     "evals:fixtures": "python3 evals/generate_corpus.py && python3 evals/build_fixtures.py",
     "evals:report": "tsx evals/render-report.ts",
     "evals:validate": "tsx evals/validate.ts"
-  },
-  "dependencies": {
-    "@google/genai": "^2.17.1",
-    "html-to-text": "^10.0.0",
-    "ipaddr.js": "^2.4.0",
-    "pdfjs-dist": "^6.2.108"
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",

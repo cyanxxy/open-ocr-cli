@@ -4,17 +4,17 @@ import path from 'node:path';
 import Ajv2020, { type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
-import { FILE_CONSTRAINTS } from '../../../src/constants';
-import type { AgentStep } from '../../../src/lib/agentTypes';
-import type { ThinkingLevel } from '../../../src/lib/gemini';
+import { FILE_CONSTRAINTS } from '@open-ocr/engine/constants';
+import type { AgentStep } from '@open-ocr/engine/agentTypes';
+import type { ThinkingLevel } from '@open-ocr/engine/gemini';
 import {
   PROVIDER_PROFILES,
   type GatewayId,
   type ProviderCapabilities,
   type ProviderId,
   type ProviderUsageSnapshot,
-} from '../../../src/lib/providers';
-import { listExtractionPresets } from '../../../src/lib/templates';
+} from '@open-ocr/engine/providers';
+import { listExtractionPresets } from '@open-ocr/engine/templates';
 import capabilitiesV2Schema from '../schemas/capabilities-v2.schema.json';
 import errorV2Schema from '../schemas/error-v2.schema.json';
 import eventV2Schema from '../schemas/event-v2.schema.json';

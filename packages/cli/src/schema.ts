@@ -5,8 +5,8 @@ import path from 'node:path';
 import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
-import { findSchemaCompatibilityIssues } from '../../../src/lib/gemini/schemaCompat';
-import type { JsonValue } from '../../../src/lib/gemini/types';
+import { findSchemaCompatibilityIssues } from '@open-ocr/engine/gemini/schemaCompat';
+import type { JsonValue } from '@open-ocr/engine/gemini/types';
 import { CliExitError } from './errors';
 
 const MAX_SCHEMA_BYTES = 1024 * 1024;
