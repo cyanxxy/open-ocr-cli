@@ -6,7 +6,7 @@ import {
   renderProviderErrorPayload,
   type ProviderErrorPayload,
   type ProviderErrorSubject,
-} from '../../../src/lib/gemini/errorPayload';
+} from '@open-ocr/engine/gemini/errorPayload';
 
 /**
  * Redaction is defined beside the provider-body reader so the engine renders
@@ -50,6 +50,11 @@ export type OcrErrorCategory =
   | 'cancelled'
   | 'execution'
   | 'internal';
+
+/** Whether an output stream directly reported that its downstream pipe closed. */
+export function isBrokenPipeError(error: unknown): boolean {
+  return recordValue(error, 'code') === 'EPIPE';
+}
 
 export interface OcrErrorDetails {
   code: OcrErrorCode;
@@ -102,8 +107,8 @@ function defaultErrorDetails(exitCode: CliExitCode): OcrErrorDetails {
 }
 
 /**
- * The document page-limit rejection, matched on the clause both producers write
- * (`inputs.ts` for the CLI, `fileUtils.ts` for the browser) rather than on the
+ * The document page-limit rejection, matched on the exact clause `inputs.ts`
+ * writes rather than on the
  * words "page" and "maximum" appearing anywhere in the message. Those two are
  * ordinary English and ordinary property names: a schema with properties called
  * `page` and `maximum` used to be classified as a bad document.

@@ -4,8 +4,8 @@
     "lib": ["ES2023"],
     "module": "ESNext",
     /* audit M-07: skipLibCheck:false surfaces unfixable TS2307 errors from
-       streamdown/@google/genai .d.ts importing optional peers (mermaid, shiki,
-       @modelcontextprotocol/sdk) we do not install. Kept true. */
+       @google/genai .d.ts importing optional peers (@modelcontextprotocol/sdk)
+       we do not install. Kept true. */
     "skipLibCheck": true,
 
     /* Bundler mode */
@@ -26,7 +26,7 @@
     "noFallthroughCasesInSwitch": true
   },
   /* `evals` is included deliberately: it is the only other first-party TypeScript
-     outside `src` and `packages/cli`, and while it sat in no project the CI and
+     outside `packages/engine` and `packages/cli`, and while it sat in no project the CI and
      release typecheck gate never saw it. */
-  "include": ["vite.config.ts", "packages/cli/tsup.config.ts", "evals/**/*.ts"]
+  "include": ["vitest.config.ts", "packages/cli/tsup.config.ts", "evals/**/*.ts"]
 }

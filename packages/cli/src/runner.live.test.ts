@@ -14,26 +14,29 @@ const {
   mockExtractTextFromFile: vi.fn(),
 }));
 
-vi.mock('../../../src/lib/gemini/extraction', () => ({
+vi.mock('@open-ocr/engine/gemini/extraction', () => ({
   extractStructuredDataFromFile: mockExtractStructuredDataFromFile,
   extractTextFromFile: mockExtractTextFromFile,
 }));
 
 // Partial mock: runner.ts pulls six other symbols out of this module, so a bare
 // factory would break every neighbouring test in this file.
-vi.mock('../../../src/lib/providers', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../../src/lib/providers')>()),
+vi.mock('@open-ocr/engine/providers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@open-ocr/engine/providers')>()),
   extractPresetWithProvider: mockExtractPresetWithProvider,
 }));
 
 import { resolveCliOptions } from './config';
-import { discoverInputs } from './inputs';
+import { discoverInputSet } from './inputs';
 import { runBatch } from './runner';
 import { BatchOutputLock } from './output';
 import { cliExitCode } from './errors';
 import { toOcrRunResult } from './protocol';
-import { recordGeminiUsage } from '../../../src/lib/gemini/usage';
-import type { GeminiClientConfig } from '../../../src/lib/gemini/types';
+import { recordGeminiUsage } from '@open-ocr/engine/gemini/usage';
+import type { GeminiClientConfig } from '@open-ocr/engine/gemini/types';
+
+const discoverInputs = async (...args: Parameters<typeof discoverInputSet>) =>
+  (await discoverInputSet(...args)).inputs;
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 let directory: string;

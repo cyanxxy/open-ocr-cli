@@ -23,9 +23,14 @@ open-ocr-cli schema result
 open-ocr-cli schema event
 open-ocr-cli schema error
 open-ocr-cli schema capabilities
+open-ocr-cli schema jsonl-v1
 ```
 
 An unknown name exits 2 with a typed error listing every accepted name.
+
+When a document status is `partial`, read its required `partialReason` and
+`nextAction` before deciding whether to accept useful output or rerun with a
+higher limit. Do not infer recovery from exit code 1 alone.
 
 Check the provider's `inputImageMimeTypes` before choosing a document: the profiles differ and the differences are not intuitive. The default `gemini` profile accepts HEIC/HEIF but **not** GIF; `kimi`, `muse`, and `openrouter` accept GIF but not HEIC/HEIF; `openai-compatible` refuses PDFs outright. A rejected type fails locally as `INPUT_INVALID` before any billed request.
 

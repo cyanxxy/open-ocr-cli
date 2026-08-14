@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 
+import Ajv2020 from 'ajv/dist/2020.js';
+import addFormats from 'ajv-formats';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveCliOptions } from './config';
@@ -579,6 +581,24 @@ describe('extract --jsonl stream dialect', () => {
     // that field to the stream version rather than letting the two drift.
     expect(stream().map((record) => record.type)).toEqual(['document', 'summary', 'error']);
     for (const record of stream()) expect(record.version).toBe(JSONL_STREAM_VERSION);
+  });
+
+  it('publishes a schema that validates every direct JSONL record shape', () => {
+    const ajv = new Ajv2020({ strict: true, strictRequired: false });
+    addFormats(ajv);
+    ajv.addSchema(OCR_PROTOCOL_SCHEMAS.error);
+    const validate = ajv.compile(OCR_PROTOCOL_SCHEMAS['jsonl-v1']);
+    for (const record of stream()) expect(validate(record), JSON.stringify(validate.errors)).toBe(true);
+
+    const partial = JSON.parse(jsonlResult({
+      ...jobResult,
+      status: 'partial',
+      partialReason: 'max_iterations',
+      nextAction: 'increase_max_iterations',
+    })) as Record<string, unknown>;
+    expect(validate(partial), JSON.stringify(validate.errors)).toBe(true);
+    delete partial.partialReason;
+    expect(validate(partial)).toBe(false);
   });
 
   it('carries no protocol envelope on any record', () => {

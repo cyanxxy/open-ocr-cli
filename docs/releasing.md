@@ -20,7 +20,9 @@ file, GitHub Release, container tag, Homebrew formula, and GitHub Action tag.
 ## Release checklist
 
 1. Update `CHANGELOG.md` and keep the version identical in `package.json`,
-   `package-lock.json`, and `packages/cli/package.json`.
+   `package-lock.json`, `packages/cli/package.json`, and
+   `packages/engine/package.json`. `scripts/assert-release-version.mjs` checks
+   every one of them, including their workspace entries in the lockfile.
 2. Run the local gates:
 
    ```bash
@@ -30,7 +32,7 @@ file, GitHub Release, container tag, Homebrew formula, and GitHub Action tag.
    npm run test:coverage
    npm run evals:validate
    npm run evals:matrix:check
-   npm run build
+   npm run cli:smoke
    npm run cli:install-smoke
    npm run action:smoke
    npx audit-ci --config audit-ci.json

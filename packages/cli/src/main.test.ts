@@ -74,6 +74,12 @@ describe('CLI identity', () => {
     expect(cliVersion()).toMatch(/^\d+\.\d+\.\d+/);
     expect(cliVersion()).not.toBe('0.0.0');
   });
+
+  it('lists the machine surface before the human conveniences', () => {
+    const names = createProgram().commands.map((command) => command.name());
+    expect(names.slice(0, 5)).toEqual(['extract', 'run', 'capabilities', 'schema', 'mcp']);
+    expect(names.slice(-2)).toEqual(['init', 'interactive']);
+  });
 });
 
 describe('CLI command exit contracts', () => {
@@ -152,7 +158,7 @@ describe('CLI command exit contracts', () => {
   it('ends a failed extract --jsonl stream with exactly one CLI-native error record', async () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     let thrown: unknown;
-    let output = '';
+    let output: string;
     try {
       await createProgram().parseAsync([
         'node', 'open-ocr-cli', 'extract', path.join(directory, 'missing.png'),
@@ -196,7 +202,7 @@ describe('CLI command exit contracts', () => {
     }));
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     let thrown: unknown;
-    let output = '';
+    let output: string;
     try {
       await createProgram().parseAsync([
         'node', 'open-ocr-cli', 'extract', input, '--jsonl', '--quiet',
@@ -233,7 +239,7 @@ describe('CLI command exit contracts', () => {
       return Promise.reject(new Error('Interrupted by SIGINT'));
     });
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    let output = '';
+    let output: string;
     try {
       await createProgram().parseAsync([
         'node', 'open-ocr-cli', 'extract', input, '--jsonl', '--quiet',
@@ -255,7 +261,7 @@ describe('CLI command exit contracts', () => {
       return Promise.reject(new Error('Interrupted by SIGINT'));
     });
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    let output = '';
+    let output: string;
     try {
       await createProgram().parseAsync([
         'node', 'open-ocr-cli', 'extract', input, '--jsonl', '--quiet',
@@ -287,7 +293,7 @@ describe('CLI command exit contracts', () => {
     });
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     let thrown: unknown;
-    let output = '';
+    let output: string;
     try {
       await createProgram().parseAsync([
         'node', 'open-ocr-cli', 'extract', path.join(directory, 'document.jpg'), '--jsonl', '--quiet',
@@ -314,7 +320,7 @@ describe('CLI command exit contracts', () => {
 
   it('leaves stdout untouched on failure when --jsonl was not requested', async () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    let output = '';
+    let output: string;
     try {
       await createProgram().parseAsync([
         'node', 'open-ocr-cli', 'extract', path.join(directory, 'missing.png'), '--quiet',
@@ -342,7 +348,7 @@ describe('CLI command exit contracts', () => {
   ) => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    let output = '';
+    let output: string;
     try {
       await main(['node', 'open-ocr-cli', ...args]);
     } finally {
@@ -372,7 +378,7 @@ describe('CLI command exit contracts', () => {
   it('keeps parser failures off stdout when --jsonl was not requested', async () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    let output = '';
+    let output: string;
     try {
       await main(['node', 'open-ocr-cli', 'extract', 'document.jpg', '--totally-bogus']);
     } finally {
@@ -418,7 +424,7 @@ describe('CLI command exit contracts', () => {
     ] as const) {
       process.exitCode = undefined;
       const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-      let output = '';
+      let output: string;
       try {
         await main(['node', 'open-ocr-cli', ...args]);
       } finally {
@@ -436,7 +442,7 @@ describe('CLI command exit contracts', () => {
 
   it('leaves stdout untouched when the parser exits successfully', async () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    let output = '';
+    let output: string;
     try {
       // --help and --version are CommanderError throws too, but successful ones.
       // Emitting a failure record for them would report a run that never failed.
@@ -577,7 +583,7 @@ describe('CLI command exit contracts', () => {
       usage: { totalTokens: 10, requests: 1, estimatedCostUsd: 0 },
     });
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    let output = '';
+    let output: string;
 
     try {
       await createProgram().parseAsync([
@@ -603,7 +609,7 @@ describe('CLI command exit contracts', () => {
       usage: { totalTokens: 10, requests: 1, estimatedCostUsd: 0 },
     });
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    let output = '';
+    let output: string;
 
     try {
       // --mode agentic leaves --detect-images/--detect-math unused, but neither
@@ -786,6 +792,11 @@ describe('agent machine commands', () => {
       const schema = JSON.parse(stdout.mock.calls.flat().join('')) as { $id: string };
       expect(schema.$id).toContain('request-v2.schema.json');
 
+      stdout.mockClear();
+      await createProgram().parseAsync(['node', 'open-ocr-cli', 'schema', 'jsonl-v1']);
+      const jsonlSchema = JSON.parse(stdout.mock.calls.flat().join('')) as { $id: string };
+      expect(jsonlSchema.$id).toContain('jsonl-v1.schema.json');
+
     } finally {
       stdout.mockRestore();
     }
@@ -838,7 +849,7 @@ describe('agent machine commands', () => {
         inputs: [input],
       });
       const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-      let output = '';
+      let output: string;
       try {
         await createProgram().parseAsync([
           'node', 'open-ocr-cli', 'run', '--request', '-', '--response-format', 'json',

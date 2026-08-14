@@ -4,20 +4,21 @@ import path from 'node:path';
 import Ajv2020, { type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
-import { FILE_CONSTRAINTS } from '../../../src/constants';
-import type { AgentStep } from '../../../src/lib/agentTypes';
-import type { ThinkingLevel } from '../../../src/lib/gemini';
+import { FILE_CONSTRAINTS } from '@open-ocr/engine/constants';
+import type { AgentStep } from '@open-ocr/engine/agentTypes';
+import type { ThinkingLevel } from '@open-ocr/engine/gemini';
 import {
   PROVIDER_PROFILES,
   type GatewayId,
   type ProviderCapabilities,
   type ProviderId,
   type ProviderUsageSnapshot,
-} from '../../../src/lib/providers';
-import { listExtractionPresets } from '../../../src/lib/templates';
+} from '@open-ocr/engine/providers';
+import { listExtractionPresets } from '@open-ocr/engine/templates';
 import capabilitiesV2Schema from '../schemas/capabilities-v2.schema.json';
 import errorV2Schema from '../schemas/error-v2.schema.json';
 import eventV2Schema from '../schemas/event-v2.schema.json';
+import jsonlV1Schema from '../schemas/jsonl-v1.schema.json';
 import requestV2Schema from '../schemas/request-v2.schema.json';
 import resultV2Schema from '../schemas/result-v2.schema.json';
 import { cliThinkingLevels, defaultCliThinkingLevel } from './config';
@@ -33,6 +34,7 @@ export const OCR_PROTOCOL_SCHEMA_IDS = {
   event: eventV2Schema.$id,
   error: errorV2Schema.$id,
   capabilities: capabilitiesV2Schema.$id,
+  extractJsonl: jsonlV1Schema.$id,
 } as const;
 
 /**
@@ -53,6 +55,8 @@ export const OCR_PROTOCOL_SCHEMAS = {
   event: eventV2Schema,
   error: errorV2Schema,
   capabilities: capabilitiesV2Schema,
+  jsonl: jsonlV1Schema,
+  'jsonl-v1': jsonlV1Schema,
   'request-v2': requestV2Schema,
   'result-v2': resultV2Schema,
   'event-v2': eventV2Schema,
@@ -63,6 +67,7 @@ export const OCR_PROTOCOL_SCHEMAS = {
   'https://open-ocr.dev/schemas/event-v2.schema.json': eventV2Schema,
   'https://open-ocr.dev/schemas/error-v2.schema.json': errorV2Schema,
   'https://open-ocr.dev/schemas/capabilities-v2.schema.json': capabilitiesV2Schema,
+  'https://open-ocr.dev/schemas/jsonl-v1.schema.json': jsonlV1Schema,
 } as const;
 
 /**
@@ -184,6 +189,8 @@ export interface OcrProtocolDocument {
   durationMs: number;
   attempts: number;
   skipReason?: OcrJobResult['skipReason'];
+  partialReason?: OcrJobResult['partialReason'];
+  nextAction?: OcrJobResult['nextAction'];
   artifacts: OcrArtifactReference[];
   plannedArtifacts: OcrArtifactReference[];
   content?: {
@@ -376,6 +383,7 @@ const ajv = new Ajv2020({
 addFormats(ajv);
 ajv.addSchema(errorV2Schema);
 ajv.addSchema(resultV2Schema);
+ajv.addSchema(jsonlV1Schema);
 function requireValidator<T>(validator: ValidateFunction<T> | undefined, label: string): ValidateFunction<T> {
   if (!validator) throw new Error(`Could not compile the ${label} schema`);
   return validator;
@@ -1090,6 +1098,8 @@ export function toProtocolDocument(
     durationMs: result.durationMs,
     attempts: result.attempts,
     ...(result.skipReason ? { skipReason: result.skipReason } : {}),
+    ...(result.partialReason ? { partialReason: result.partialReason } : {}),
+    ...(result.nextAction ? { nextAction: result.nextAction } : {}),
     artifacts: (result.outputArtifacts ?? []).map(artifactReference),
     plannedArtifacts: (result.plannedOutputArtifacts ?? []).map(artifactReference),
     ...(content

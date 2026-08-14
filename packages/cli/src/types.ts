@@ -1,16 +1,16 @@
-import type { AgentMemory, AgentStep } from '../../../src/lib/agentTypes';
+import type { AgentMemory, AgentStep } from '@open-ocr/engine/agentTypes';
 import type {
   ExtractedContent,
   JsonValue,
   PresetStructuredOutput,
   ThinkingLevel,
-} from '../../../src/lib/gemini';
+} from '@open-ocr/engine/gemini';
 import {
   GEMINI_MODELS,
   type GatewayId,
   type ProviderId,
   type ProviderUsageSnapshot,
-} from '../../../src/lib/providers';
+} from '@open-ocr/engine/providers';
 import type { OcrErrorPayload } from './errors';
 import type { ArtifactTarget } from './output';
 
@@ -199,6 +199,20 @@ export interface OcrArtifacts {
   agentSteps?: AgentStep[];
 }
 
+export type OcrPartialReason =
+  | 'readiness_not_met'
+  | 'max_iterations'
+  | 'tool_limit_reached'
+  | 'time_budget_reached'
+  | 'cost_limit_reached';
+
+export type OcrNextAction =
+  | 'review_partial_output'
+  | 'increase_max_iterations'
+  | 'retry_document'
+  | 'increase_timeout'
+  | 'increase_max_cost';
+
 export interface OcrJobResult {
   status: 'succeeded' | 'partial' | 'failed' | 'skipped';
   input: ResolvedInput;
@@ -222,6 +236,8 @@ export interface OcrJobResult {
   outputArtifacts?: ArtifactTarget[];
   plannedOutputArtifacts?: ArtifactTarget[];
   skipReason?: 'validated' | 'resumed' | 'cancelled' | 'cost-limit' | 'fail-fast';
+  partialReason?: OcrPartialReason;
+  nextAction?: OcrNextAction;
   error?: string;
   errorDetails?: OcrErrorPayload;
   attempts: number;

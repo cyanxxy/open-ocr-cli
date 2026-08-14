@@ -1,9 +1,9 @@
 import process from 'node:process';
 import path from 'node:path';
 
-import { type ExtractedContent, type ThinkingLevel } from '../src/lib/gemini';
-import { agentLoop } from '../src/lib/agentLoop';
-import { getAgentReadiness, normalizeAgentDocumentType, normalizeAgentFieldName } from '../src/lib/agentSchema';
+import { type ExtractedContent, type ThinkingLevel } from '@open-ocr/engine/gemini';
+import { agentLoop } from '@open-ocr/engine/agentLoop';
+import { getAgentReadiness, normalizeAgentDocumentType, normalizeAgentFieldName } from '@open-ocr/engine/agentSchema';
 import {
   buildEvalSummary,
   evaluateEvalCase,
@@ -12,8 +12,8 @@ import {
   type EvalExecutionMetadata,
   type EvalRunOutput,
   toEvalRunOutput,
-} from '../src/lib/evals';
-import type { AgentMemory } from '../src/lib/agentTypes';
+} from '@open-ocr/engine/evals';
+import type { AgentMemory } from '@open-ocr/engine/agentTypes';
 import {
   GATEWAY_IDS,
   PROVIDER_IDS,
@@ -33,8 +33,8 @@ import {
   type ProviderId,
   type ProviderRuntimeConfig,
   type ProviderUsageSnapshot,
-} from '../src/lib/providers';
-import { getExtractionPreset } from '../src/lib/templates';
+} from '@open-ocr/engine/providers';
+import { getExtractionPreset } from '@open-ocr/engine/templates';
 import { nodeRegionCropper } from '../packages/cli/src/nodeRegionCropper';
 import { cliThinkingLevels, defaultCliThinkingLevel } from '../packages/cli/src/config';
 import {

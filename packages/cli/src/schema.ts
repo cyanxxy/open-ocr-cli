@@ -5,8 +5,8 @@ import path from 'node:path';
 import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
-import { findSchemaCompatibilityIssues } from '../../../src/lib/gemini/schemaCompat';
-import type { JsonValue } from '../../../src/lib/gemini/types';
+import { findSchemaCompatibilityIssues } from '@open-ocr/engine/gemini/schemaCompat';
+import type { JsonValue } from '@open-ocr/engine/gemini/types';
 import { CliExitError } from './errors';
 
 const MAX_SCHEMA_BYTES = 1024 * 1024;
@@ -83,7 +83,10 @@ export function validateCustomSchema(value: unknown): Record<string, unknown> {
   try {
     serialized = JSON.stringify(value);
   } catch (error) {
-    throw new Error(`Custom schema must be JSON-serializable: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Custom schema must be JSON-serializable: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
   if (Buffer.byteLength(serialized, 'utf8') > MAX_SCHEMA_BYTES) {
     throw new Error('Schema exceeds the 1 MB safety limit');
@@ -95,7 +98,10 @@ export function validateCustomSchema(value: unknown): Record<string, unknown> {
   try {
     compileSchema(schema);
   } catch (error) {
-    throw new Error(`Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
   return schema;
 }
@@ -169,7 +175,9 @@ export async function loadCustomSchema(schemaPath: string, cwd: string): Promise
     try {
       parsed = JSON.parse(await handle.readFile('utf8')) as unknown;
     } catch (error) {
-      if (error instanceof SyntaxError) throw new Error(`Invalid JSON in schema ${schemaPath}: ${error.message}`);
+      if (error instanceof SyntaxError) {
+        throw new Error(`Invalid JSON in schema ${schemaPath}: ${error.message}`, { cause: error });
+      }
       throw unreadableSchemaError(error, schemaPath) ?? error;
     }
     return validateCustomSchema(parsed);

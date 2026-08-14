@@ -8,7 +8,7 @@ import {
   defaultThinkingLevelForModel,
   type GeminiModel,
   type ThinkingLevel,
-} from '../../../src/lib/gemini';
+} from '@open-ocr/engine/gemini';
 import {
   GATEWAY_IDS,
   GEMINI_MODELS,
@@ -21,8 +21,8 @@ import {
   resolveProviderBaseUrl,
   type GatewayId,
   type ProviderId,
-} from '../../../src/lib/providers';
-import { getExtractionPreset, listExtractionPresets } from '../../../src/lib/templates';
+} from '@open-ocr/engine/providers';
+import { getExtractionPreset, listExtractionPresets } from '@open-ocr/engine/templates';
 import { CliExitError } from './errors';
 import { asRecord } from './jsonValidation';
 import {
@@ -289,7 +289,7 @@ export function credentialSetupGuidance(apiKeyEnv: string, cwd: string, provider
     `  macOS/Linux: export ${apiKeyEnv}="your-key"`,
     `  PowerShell:   $env:${apiKeyEnv}="your-key"`,
     `  Project:      add ${apiKeyEnv}=your-key to ${path.join(cwd, '.env')} (keep it out of version control)`,
-    'Then run: open-ocr-cli doctor',
+    'Then run: open-ocr-cli doctor (agents: doctor --json emits the same checks machine-readably)',
   ].join('\n');
 }
 

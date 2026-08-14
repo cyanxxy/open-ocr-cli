@@ -3,8 +3,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
-import type { EvalRunSummary } from '../src/lib/evals';
-import { GATEWAY_IDS, PROVIDER_IDS } from '../src/lib/providers';
+import type { EvalRunSummary } from '@open-ocr/engine/evals';
+import { GATEWAY_IDS, PROVIDER_IDS } from '@open-ocr/engine/providers';
 import { repoRoot, reportsDir, resolveSuiteName } from './shared';
 
 interface MatrixEntry {

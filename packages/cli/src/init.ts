@@ -3,10 +3,10 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 
-import { applyThinkingConfig, getGenAIClient } from '../../../src/lib/gemini/client';
-import { waitForGeminiRequestSlot } from '../../../src/lib/gemini/requestPolicy';
-import type { GeminiModel, ThinkingLevel } from '../../../src/lib/gemini/types';
-import { recordGeminiUsage } from '../../../src/lib/gemini/usage';
+import { applyThinkingConfig, getGenAIClient } from '@open-ocr/engine/gemini/client';
+import { waitForGeminiRequestSlot } from '@open-ocr/engine/gemini/requestPolicy';
+import type { GeminiModel, ThinkingLevel } from '@open-ocr/engine/gemini/types';
+import { recordGeminiUsage } from '@open-ocr/engine/gemini/usage';
 import {
   GATEWAY_IDS,
   GEMINI_MODELS,
@@ -22,7 +22,7 @@ import {
   type GatewayId,
   type ProviderId,
   type ProviderRuntimeConfig,
-} from '../../../src/lib/providers';
+} from '@open-ocr/engine/providers';
 import type { CliConfigFile } from './types';
 import {
   cliThinkingLevels,
@@ -169,21 +169,6 @@ function optionalPositiveNumber(value: string, label: string, max: number): numb
     throw new Error(`${label} must be greater than zero and at most ${max}`);
   }
   return parsed;
-}
-
-export async function validateGeminiCredentials(apiKey: string, model: GeminiModel): Promise<void> {
-  const client = getGenAIClient(apiKey);
-  await waitForGeminiRequestSlot();
-  const response = await client.models.generateContent({
-    model,
-    contents: 'Reply with OK.',
-    config: applyThinkingConfig(
-      { maxOutputTokens: 1024 },
-      model,
-      { level: 'LOW' },
-    ),
-  });
-  recordGeminiUsage(response, model);
 }
 
 async function writeConfig(configPath: string, config: CliConfigFile): Promise<void> {
