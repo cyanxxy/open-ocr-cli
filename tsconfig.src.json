@@ -1,6 +1,13 @@
 {
   "compilerOptions": {
+    /* ES2022 so the standard `Error(message, { cause })` form type-checks. */
     "target": "ES2022",
+    "useDefineForClassFields": true,
+    /* DOM libs are deliberately excluded. `src/lib` + `src/constants` are the
+       shared OCR engine consumed by the Node CLI (packages/cli) and the evals
+       harness; there is no browser consumer left in this repo, so any browser
+       API reaching the engine must fail typecheck instead of crashing at
+       runtime. This mirrors packages/cli/tsconfig.json — do not add "DOM". */
     "lib": ["ES2023"],
     "module": "ESNext",
     /* audit M-07: skipLibCheck:false surfaces unfixable TS2307 errors from
@@ -10,14 +17,18 @@
 
     /* Bundler mode */
     "moduleResolution": "bundler",
+    "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "moduleDetection": "force",
     "noEmit": true,
 
+    /* Node is the only runtime for this code. */
+    "types": ["node"],
+
     /* Incremental typecheck; build info is cached outside the working tree. */
     "incremental": true,
-    "tsBuildInfoFile": "node_modules/.cache/tsbuildinfo.node",
+    "tsBuildInfoFile": "node_modules/.cache/tsbuildinfo.src",
 
     /* Linting */
     "strict": true,
@@ -25,8 +36,5 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  /* `evals` is included deliberately: it is the only other first-party TypeScript
-     outside `src` and `packages/cli`, and while it sat in no project the CI and
-     release typecheck gate never saw it. */
-  "include": ["vitest.config.ts", "packages/cli/tsup.config.ts", "evals/**/*.ts"]
+  "include": ["src"]
 }

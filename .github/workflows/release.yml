@@ -91,9 +91,6 @@ jobs:
       - name: Security audit
         run: npx audit-ci --config audit-ci.json
 
-      - name: Build application
-        run: npm run build
-
       - name: Prepare GitHub release notes
         run: node scripts/extract-release-notes.mjs "${GITHUB_REF_NAME}" release-notes.md
 

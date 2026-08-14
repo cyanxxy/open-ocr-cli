@@ -82,9 +82,9 @@ jobs:
           name: codecov-umbrella
           fail_ci_if_error: false
 
-  # Build application (separate runner, so it installs once for the build step).
+  # Packaging smokes (separate runner, so it installs once for the smoke steps).
   build:
-    name: Build Application
+    name: Package Smoke Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [quality]
@@ -104,22 +104,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build application
-        run: npm run build
-
       - name: Smoke-test packed CLI installation
         run: npm run cli:install-smoke
 
       - name: Smoke-test GitHub Action wrapper
         run: npm run action:smoke
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dist-files
-          path: dist/
-          if-no-files-found: error
-          retention-days: 7
 
   # Release workflows publish a multi-architecture image. CI performs the
   # cheaper single-platform smoke on protected main pushes, not on every PR.

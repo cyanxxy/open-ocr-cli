@@ -4,11 +4,9 @@
 # CI/CD and GitHub configuration
 /.github/ @cyanxxy
 
-# Core library code
+# Core library code (the shared OCR engine)
 /src/lib/ @cyanxxy
+/src/constants/ @cyanxxy
 
-# State management
-/src/store/ @cyanxxy
-
-# Security-sensitive files
-/src/lib/crypto.ts @cyanxxy
+# Published CLI / MCP package
+/packages/cli/ @cyanxxy

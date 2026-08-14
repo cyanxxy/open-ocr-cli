@@ -30,7 +30,7 @@ file, GitHub Release, container tag, Homebrew formula, and GitHub Action tag.
    npm run test:coverage
    npm run evals:validate
    npm run evals:matrix:check
-   npm run build
+   npm run cli:smoke
    npm run cli:install-smoke
    npm run action:smoke
    npx audit-ci --config audit-ci.json

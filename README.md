@@ -26,8 +26,6 @@ endpoint — behind one consistent extraction contract.
 
 > [!NOTE]
 > `open-ocr-cli` is the executable, npm package, and configuration namespace.
-> This repository also hosts the Gemini [web app](#web-application) —
-> provider-neutral support applies to the CLI.
 
 ## Quick start
 
@@ -183,28 +181,13 @@ gateway and nowhere else. Web OCR rejects credentials in URLs, localhost,
 private ranges, and tunnel hosts, and pins DNS across redirects. Report
 vulnerabilities privately via [SECURITY.md](SECURITY.md).
 
-## Web application
-
-The repository also contains the original Gemini-powered React app with the same
-five workflows and light/dark/AMOLED themes:
-
-```bash
-npm ci && npm run dev   # http://localhost:5173 — add your key under Settings
-```
-
-> [!IMPORTANT]
-> The browser stores the API key in `localStorage` with light obfuscation, not
-> strong encryption. Anyone with access to that browser profile can recover it.
-> Prefer a backend proxy for organization-owned credentials.
-
 ## Repository layout
 
-One repository, three entry points over a shared extraction engine:
+One repository, two entry points over a shared extraction engine:
 
 | Path | What it is |
 | --- | --- |
-| `src/lib` | The engine: providers, extraction modes, agent loop, protocol types. Both front ends share it. The CLI-reachable subset is Node-safe; `regionRaster.ts` (canvas), `fileUtils.ts` (FileReader), and `crypto.ts` (localStorage) are browser-only, and the CLI substitutes Node adapters such as `packages/cli/src/nodeRegionCropper.ts`. |
-| `src/` (rest) | The React web app — the `npm run dev` target described above. |
+| `src/lib`, `src/constants` | The engine: providers, extraction modes, agent loop, protocol types. Node-only — typechecked without DOM libs, so a browser API cannot reach it. Region cropping is supplied by the host through an adapter such as `packages/cli/src/nodeRegionCropper.ts`. |
 | `packages/cli` | The published `open-ocr-cli` npm package. Owns its own source, build, and protocol schemas. |
 | `integrations/open-ocr/skills` | Agent skill definitions. Source of truth; `packages/cli/skills` is a generated copy. |
 | `evals/` | The evaluation corpus and runner. |
@@ -213,9 +196,9 @@ One repository, three entry points over a shared extraction engine:
 the CLI, alongside `extract` (human-facing) and `run` (versioned protocol), all
 routed through the same job service.
 
-The CLI is typechecked without DOM libraries on purpose: that is what keeps the
-browser-only modules above from being reachable from CLI code, and it fails the
-build rather than failing at runtime if one ever is.
+Both the engine (`tsconfig.src.json`) and the CLI (`packages/cli/tsconfig.json`)
+are typechecked without DOM libraries on purpose: a browser API reaching this
+code fails the build rather than failing at runtime.
 
 ## Contributing
 

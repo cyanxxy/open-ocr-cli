@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to Open OCR CLI and its companion Gemini web app.
+Thanks for contributing to Open OCR CLI.
 
 ## Good First Contributions
 
@@ -21,7 +21,7 @@ Look for issues labeled:
 git clone https://github.com/cyanxxy/open-ocr-cli.git
 cd open-ocr-cli
 npm ci
-npm run dev
+npm run cli -- --help
 ```
 
 Before opening a PR, run:
@@ -30,7 +30,7 @@ Before opening a PR, run:
 npm run typecheck
 npm run lint
 npm run test:coverage
-npm run build
+npm run cli:smoke
 npm run evals:validate
 npm run evals:matrix:check
 npm run cli:install-smoke
