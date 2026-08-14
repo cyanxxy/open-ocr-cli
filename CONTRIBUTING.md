@@ -15,6 +15,18 @@ Look for issues labeled:
 - `help wanted`
 - `docs`
 
+## Repository Layout
+
+This is an npm workspace with two packages and no web app:
+
+| Path | What it is |
+| --- | --- |
+| `packages/engine` | `@open-ocr/engine` — the shared extraction engine. Private, source-only, never published; the CLI bundles it at build time. Node-only: typechecked without DOM libs. |
+| `packages/cli` | The published `open-ocr-cli` package, including the stdio MCP server. Owns its own build and protocol schemas. |
+| `evals/` | Evaluation corpus and `tsx` runner. |
+| `integrations/open-ocr/skills` | Agent skill source of truth (`packages/cli/skills` is a generated copy). |
+| `scripts/` | Release, packaging, and smoke-test tooling. |
+
 ## Local Setup
 
 ```bash
@@ -23,6 +35,9 @@ cd open-ocr-cli
 npm ci
 npm run cli -- --help
 ```
+
+`npm ci` at the repository root installs every workspace; there is no separate
+install step inside `packages/`.
 
 Before opening a PR, run:
 
@@ -91,5 +106,5 @@ git push origin v3.0.0
 
 The release workflow repeats the quality and security gates, publishes the npm
 tarball with provenance, builds the container, attaches the Homebrew formula
-and web archive, creates the GitHub Release, and updates the matching major
-GitHub Action tag.
+and the CLI `dist` archive, creates the GitHub Release, and updates the
+matching major GitHub Action tag.

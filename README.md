@@ -191,6 +191,8 @@ One repository, two entry points over a shared extraction engine:
 | `packages/cli` | The published `open-ocr-cli` npm package. Owns its own source, build, and protocol schemas. |
 | `integrations/open-ocr/skills` | Agent skill definitions. Source of truth; `packages/cli/skills` is a generated copy. |
 | `evals/` | The evaluation corpus and runner. |
+| `examples/` · `.open-ocr-cli.example.json` | Copy-paste provider configs, a custom JSON Schema, a protocol request, and an annotated config file. |
+| `scripts/` | Release, packaging, skill-sync, and smoke-test tooling. |
 
 `open-ocr-cli mcp` is not a separate package — it is a third front end inside
 the CLI, alongside `extract` (human-facing) and `run` (versioned protocol), all

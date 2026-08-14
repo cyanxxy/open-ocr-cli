@@ -13,7 +13,7 @@ import type { ProviderRuntimeConfig } from './types';
 import { getProviderUsage, resetProviderUsage } from './usage';
 
 // Derived from the ambient `fetch` rather than the DOM `RequestInfo`: this
-// engine is typechecked without DOM libs (tsconfig.src.json).
+// engine is typechecked without DOM libs (packages/engine/tsconfig.json).
 type FetchInput = Parameters<typeof fetch>[0];
 
 function config(overrides: Partial<ProviderRuntimeConfig> = {}): ProviderRuntimeConfig {

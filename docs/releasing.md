@@ -20,7 +20,9 @@ file, GitHub Release, container tag, Homebrew formula, and GitHub Action tag.
 ## Release checklist
 
 1. Update `CHANGELOG.md` and keep the version identical in `package.json`,
-   `package-lock.json`, and `packages/cli/package.json`.
+   `package-lock.json`, `packages/cli/package.json`, and
+   `packages/engine/package.json`. `scripts/assert-release-version.mjs` checks
+   every one of those except the private engine package — bump it by hand.
 2. Run the local gates:
 
    ```bash

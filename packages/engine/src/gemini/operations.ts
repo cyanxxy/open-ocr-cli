@@ -14,9 +14,9 @@ import type { ProviderExecutionContext } from '../providers/runtime';
 /**
  * A single extracted URL result from grounded URL-context extraction.
  *
- * audit W-01: this type lives in the domain/library layer (not the Zustand
- * store) so that src/lib/** never imports from src/store/**. The store and the
- * URL-operations wrapper re-import it from here.
+ * audit W-01: this type lives in the engine's domain layer, so consumers
+ * (the CLI's web command, the evals harness) re-import it from here rather
+ * than the engine depending on any of them.
  */
 export interface UrlResult {
   /** The requested source URL this result corresponds to. */

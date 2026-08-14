@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+Repository restructure. No change to the CLI's behavior, machine protocol, MCP
+revision, or published package contents.
+
+### Removed
+
+- The React/Vite web application is gone from this repository and now lives in
+  its own codebase. With it went the Vite build, Tailwind, Zustand stores, the
+  React component tree, the browser file/crypto helpers, and the Netlify/Vercel
+  deployment configuration. `npm run dev`, `npm run build`, and `npm run preview`
+  no longer exist; the repository builds only the CLI.
+- Constants that only the web UI consumed: `UI_TIMING`, `STORAGE_KEYS` and its
+  `StorageKey` type, and `FILE_CONSTRAINTS.MAX_SIZE`, `MAX_SIZE_LABEL`,
+  `ACCEPTED_IMAGE_TYPES`, `ACCEPTED_DOCUMENT_TYPES`, and `ACCEPTED_MIME_TYPES`.
+  The size/page limits, the two supported-MIME-type lists, and
+  `maxFileSizeForMime` are unchanged.
+
+### Changed
+
+- The shared OCR engine moved from `src/lib` into `@open-ocr/engine`
+  (`packages/engine`), a private, source-only workspace package that is never
+  published. The CLI bundles it at build time, so the npm tarball is unaffected.
+  Consumers import it as `@open-ocr/engine/<subpath>`; `tsconfig.src.json` is
+  replaced by `packages/engine/tsconfig.json`, which still omits the DOM
+  libraries so a browser API cannot reach the engine.
+- The coverage gate was raised to the engine + CLI surface — 83% statements,
+  74% branches, 89% functions, 87% lines — now that the untested React UI no
+  longer drags the measurement down.
+- The `audit-ci` allowlist is empty. `GHSA-mh99-v99m-4gvg` was only reachable
+  through `eslint-plugin-react`, which left with the web app, so the security
+  gate passes with nothing suppressed.
+- `SECURITY.md` documents environment-variable-only credential handling. The
+  browser `localStorage` key storage it previously described belonged to the
+  removed web app; rotate any key entered into a deployment built from an older
+  revision.
+
 ## 3.0.0 - 2026-08-11
 
 `open-ocr-cli` 3.0 establishes the project contract.
