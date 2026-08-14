@@ -73,18 +73,18 @@
     "evals:validate": "tsx evals/validate.ts"
   },
   "dependencies": {
-    "@google/genai": "^2.11.0",
+    "@google/genai": "^2.17.1",
     "html-to-text": "^10.0.0",
     "ipaddr.js": "^2.4.0",
-    "katex": "^0.16.21",
-    "lucide-react": "^0.563.0",
+    "katex": "^0.18.4",
+    "lucide-react": "^1.31.0",
     "pdfjs-dist": "^6.2.108",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-dropzone": "^14.2.3",
     "react-router": "^8.3.0",
     "streamdown": "^2.1.0",
-    "zustand": "^4.5.2"
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",
@@ -97,7 +97,7 @@
     "@types/node": "^20.19.43",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^4.5.0",
+    "@vitejs/plugin-react": "^6.0.5",
     "@vitest/coverage-v8": "^4.0.18",
     "@vitest/ui": "^4.0.18",
     "ajv": "^8.20.0",
@@ -107,7 +107,7 @@
     "commander": "^14.0.3",
     "eslint": "^9.9.1",
     "eslint-plugin-react": "^7.37.5",
-    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.0",
     "fast-glob": "^3.3.3",
     "globals": "^17.3.0",
@@ -119,7 +119,13 @@
     "tsx": "^4.20.5",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.3.0",
-    "vite": "^7.0.0",
+    "vite": "^8.2.1",
     "vitest": "^4.0.18"
+  },
+  "allowScripts": {
+    "fsevents@2.3.3": true,
+    "protobufjs@7.6.5": true,
+    "@google/genai@2.17.1": true,
+    "esbuild@0.28.2": true
   }
 }

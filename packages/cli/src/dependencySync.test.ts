@@ -11,6 +11,9 @@ const cliManifestPath = path.resolve('packages/cli/package.json');
 interface PackageManifest {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  openOcrBuild?: {
+    bundledDependencies?: string[];
+  };
 }
 
 interface ImportedPackage {
@@ -123,20 +126,21 @@ async function collectImportedPackages(): Promise<ImportedPackage[]> {
 }
 
 describe('CLI dependency manifests', () => {
-  it('declares every runtime package the CLI imports', async () => {
+  it('declares or explicitly bundles every runtime package the CLI imports', async () => {
     const [imported, cliManifest] = await Promise.all([
       collectImportedPackages(),
       readManifest(cliManifestPath),
     ]);
     const declared = cliManifest.dependencies ?? {};
+    const bundled = new Set(cliManifest.openOcrBuild?.bundledDependencies ?? []);
 
     const undeclared = imported
-      .filter(({ packageName }) => !(packageName in declared))
+      .filter(({ packageName }) => !(packageName in declared) && !bundled.has(packageName))
       .map(
         ({ packageName, importer }) =>
           `${packageName} (imported by ${importer}) is missing from packages/cli/package.json "dependencies", ` +
-          `so tsup would silently bundle it into packages/cli/dist instead of leaving it external; ` +
-          `add "${packageName}" to packages/cli/package.json "dependencies"`,
+          `and from "openOcrBuild.bundledDependencies"; declare it as an external dependency or ` +
+          `explicitly allow it to be bundled`,
       );
 
     expect(undeclared).toEqual([]);

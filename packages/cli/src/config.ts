@@ -289,7 +289,7 @@ export function credentialSetupGuidance(apiKeyEnv: string, cwd: string, provider
     `  macOS/Linux: export ${apiKeyEnv}="your-key"`,
     `  PowerShell:   $env:${apiKeyEnv}="your-key"`,
     `  Project:      add ${apiKeyEnv}=your-key to ${path.join(cwd, '.env')} (keep it out of version control)`,
-    'Then run: open-ocr-cli doctor',
+    'Then run: open-ocr-cli doctor (agents: doctor --json emits the same checks machine-readably)',
   ].join('\n');
 }
 

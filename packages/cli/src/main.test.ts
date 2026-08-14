@@ -74,6 +74,12 @@ describe('CLI identity', () => {
     expect(cliVersion()).toMatch(/^\d+\.\d+\.\d+/);
     expect(cliVersion()).not.toBe('0.0.0');
   });
+
+  it('lists the machine surface before the human conveniences', () => {
+    const names = createProgram().commands.map((command) => command.name());
+    expect(names.slice(0, 5)).toEqual(['extract', 'run', 'capabilities', 'schema', 'mcp']);
+    expect(names.slice(-2)).toEqual(['init', 'interactive']);
+  });
 });
 
 describe('CLI command exit contracts', () => {

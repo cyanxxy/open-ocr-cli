@@ -11,9 +11,6 @@ export default defineConfig({
       'lucide-react',
       'streamdown'
     ],
-    esbuildOptions: {
-      target: 'esnext',
-    },
     exclude: ['fsevents'],
   },
   build: {
@@ -24,10 +21,22 @@ export default defineConfig({
         // JS chunk (katex is only used as a CSS side-effect) and the `lucide`/
         // `zustand` buckets fought Rollup's own tree-shaking — both dropped so
         // Rollup auto-splits the rest by import graph (audit O-01 / O-02).
-        manualChunks: {
-          react: ['react', 'react-dom', 'react-router'],
-          gemini: ['@google/genai'],
-          markdown: ['streamdown'],
+        manualChunks(id) {
+          const moduleId = id.replaceAll('\\', '/');
+          if (
+            moduleId.includes('/node_modules/react/')
+            || moduleId.includes('/node_modules/react-dom/')
+            || moduleId.includes('/node_modules/react-router/')
+          ) {
+            return 'react';
+          }
+          if (moduleId.includes('/node_modules/@google/genai/')) {
+            return 'gemini';
+          }
+          if (moduleId.includes('/node_modules/streamdown/')) {
+            return 'markdown';
+          }
+          return undefined;
         },
       },
     },
@@ -38,9 +47,6 @@ export default defineConfig({
     // Do not ship source maps with the production bundle (they expose full
     // readable source). Switch to 'hidden' if an error tracker needs them.
     sourcemap: false,
-    commonjsOptions: {
-      transformMixedEsModules: true,
-    },
   },
   test: {
     globals: true,
