@@ -26,8 +26,7 @@ endpoint — behind one consistent extraction contract.
 
 > [!NOTE]
 > `open-ocr-cli` is the executable, npm package, and configuration namespace.
-> This repository also hosts the Gemini [web app](#web-application) —
-> provider-neutral support applies to the CLI.
+> The shared engine, CLI, MCP server, and evaluation harness run in Node.js.
 
 ## Quick start
 
@@ -122,7 +121,7 @@ open-ocr-cli run --request request.json --response-format jsonl
 ```
 
 **MCP server** — `open-ocr-cli mcp` starts a stdio server exposing
-`ocr_extract`, `ocr_run_agentic`, and `ocr_web`, plus an
+`ocr_capabilities`, `ocr_extract`, `ocr_run_agentic`, and `ocr_web`, plus an
 `open-ocr://capabilities` resource. The host must open MCP revision
 `2026-07-28`; clients that use the earlier `initialize` handshake are rejected:
 
@@ -141,6 +140,9 @@ open-ocr-cli run --request request.json --response-format jsonl
 agents ships at
 [`integrations/open-ocr/skills/open-ocr/SKILL.md`](integrations/open-ocr/skills/open-ocr/SKILL.md)
 and in the npm package under `skills/open-ocr/`.
+
+See [agent integration guidance](docs/agent-integrations.md) for Pi, Codex,
+Claude Agent SDK, and custom harnesses.
 
 All three are reference-first: large bodies land in `.open-ocr-results/<runId>`
 artifacts instead of flooding an agent's context, cancellation is honored, and
@@ -183,28 +185,13 @@ gateway and nowhere else. Web OCR rejects credentials in URLs, localhost,
 private ranges, and tunnel hosts, and pins DNS across redirects. Report
 vulnerabilities privately via [SECURITY.md](SECURITY.md).
 
-## Web application
-
-The repository also contains the original Gemini-powered React app with the same
-five workflows and light/dark/AMOLED themes:
-
-```bash
-npm ci && npm run dev   # http://localhost:5173 — add your key under Settings
-```
-
-> [!IMPORTANT]
-> The browser stores the API key in `localStorage` with light obfuscation, not
-> strong encryption. Anyone with access to that browser profile can recover it.
-> Prefer a backend proxy for organization-owned credentials.
-
 ## Repository layout
 
-One repository, three entry points over a shared extraction engine:
+The CLI and evaluation harness consume a shared extraction engine:
 
 | Path | What it is |
 | --- | --- |
-| `src/lib` | The engine: providers, extraction modes, agent loop, protocol types. Both front ends share it. The CLI-reachable subset is Node-safe; `regionRaster.ts` (canvas), `fileUtils.ts` (FileReader), and `crypto.ts` (localStorage) are browser-only, and the CLI substitutes Node adapters such as `packages/cli/src/nodeRegionCropper.ts`. |
-| `src/` (rest) | The React web app — the `npm run dev` target described above. |
+| `packages/engine` | Private Node-only engine: providers, extraction modes, agent loop, and shared limits. |
 | `packages/cli` | The published `open-ocr-cli` npm package. Owns its own source, build, and protocol schemas. |
 | `integrations/open-ocr/skills` | Agent skill definitions. Source of truth; `packages/cli/skills` is a generated copy. |
 | `evals/` | The evaluation corpus and runner. |
@@ -213,9 +200,9 @@ One repository, three entry points over a shared extraction engine:
 the CLI, alongside `extract` (human-facing) and `run` (versioned protocol), all
 routed through the same job service.
 
-The CLI is typechecked without DOM libraries on purpose: that is what keeps the
-browser-only modules above from being reachable from CLI code, and it fails the
-build rather than failing at runtime if one ever is.
+The engine and CLI are typechecked without DOM libraries, so browser APIs fail
+the build instead of failing at runtime. The private engine is bundled into the
+published CLI; consumers do not install it separately.
 
 ## Contributing
 

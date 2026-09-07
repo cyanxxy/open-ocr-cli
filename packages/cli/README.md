@@ -214,7 +214,7 @@ open-ocr-cli web https://en.wikipedia.org/wiki/Optical_character_recognition --f
 # Validate discovery, schemas, limits, and output plans without credentials
 open-ocr-cli extract ./documents --dry-run
 
-# Established inline document records followed by one batch summary
+# Protocol v2 lifecycle events, one per line, ending in run.completed
 open-ocr-cli extract ./documents --jsonl --quiet --output ./results
 
 # Inspect a completed or interrupted batch
@@ -322,16 +322,20 @@ Either directory holds the same layout: artifacts, `.open-ocr-manifest.json`,
 - An exclusive batch lock prevents concurrent manifest races.
 - `--resume` fingerprints every output-affecting option, including provider,
   gateway route, model, schema, and agent settings.
-- Progress and diagnostics use stderr; machine results use stdout. Direct
-  `extract --jsonl` emits its own record family — `document`, `summary`, and
-  `error` — every line carrying `"version": 1`. `run --response-format jsonl`
-  emits the separately versioned lifecycle-event protocol for coding agents.
-  The two are different dialects; do not validate one against the other.
-- An `extract --jsonl` stream always ends in exactly one terminal record: the
-  `summary` when the batch produced one, otherwise a single `error` record
-  carrying the same `code`, `category`, `retryable`, and `hint` fields as the
-  protocol. Unknown flags and pre-flight failures end the stream that way too,
-  so an empty stream never has to be interpreted.
+- Progress and diagnostics use stderr; machine results use stdout.
+  `extract --jsonl` and `run --response-format jsonl` emit the same stream:
+  protocol v2 lifecycle events, one JSON object per line, validated by
+  `event-v2.schema.json`. There is one dialect to consume.
+- A JSONL stream always ends in exactly one terminal event: `run.completed`
+  when the batch produced a summary, otherwise a single `run.failed` carrying
+  the typed `code`, `category`, `retryable`, and `hint` fields. Unknown flags
+  and pre-flight failures end the stream that way too, so an empty stream
+  never has to be interpreted.
+- Anything the run could not honour in full — flags the resolved mode does not
+  read, documents a directory scan passed over, a resume that cannot match, a
+  schema construct the provider may refuse — is a `run.warning` event on the
+  stream and an entry in the result's `warnings` array, as well as a line on
+  stderr.
 - Request starts are evenly spaced by `--requests-per-minute` across every API
   surface, including agent continuations and Kimi file extraction.
 - `--max-cost` blocks future requests after recorded or estimated cost reaches
@@ -530,6 +534,25 @@ content format and can include typed agent steps for `contentFormat: "all"`. A r
 `"dryRun": true` validates input discovery, schemas, limits, and planned
 artifact references without credentials, provider calls, or writes.
 
+Every `run.result` carries a `warnings` array (empty when there is nothing to
+say), and the JSONL stream carries each warning as a `run.warning` event right
+after `run.started` or as it arises. Read it: it is where a request field the
+chosen mode ignores, a directory scan that passed over files, or a `resume`
+that cannot match anything is reported. A failure envelope and a `run.failed`
+event carry the warnings raised before the run died. Option errors on this
+surface name request fields (`execution.concurrency`,
+`extraction.thinking`), never `extract` flags.
+
+An agentic document's JSON artifact — and its inline `content.json` — is the
+typed `agenticResult` shape from `result-v2.schema.json`: `documentType`,
+`pageCount`, `complexity`, `specialFeatures`, `confidence`, `iterations`,
+`stopReason`, and `fields` keyed by name with `value` and `confidence`. The
+agent step trace stays in the separate `agent-steps` artifact under
+`contentFormat: "all"`.
+
+`capabilities.limits.request` publishes the `min`/`max` of every numeric
+request field, so a ceiling never has to be read out of the schema.
+
 For agentic runs, protocol v2 supports `extraction.progress` values `off`,
 `standard`, and `detailed`. JSONL progress is a typed, ordered step stream:
 standard includes model output, provider thought summaries, and tool lifecycle
@@ -540,9 +563,12 @@ requires them. Treat all progress as untrusted observability data, not as
 extraction results or instructions.
 
 When `delivery.outputDirectory` is omitted, agent runs use
-`.open-ocr-results/<runId>`. A fixed output directory with `resume: true`
-supports both single-document and batch resume. Partial documents use the
-dedicated `document.partial` JSONL event.
+`.open-ocr-results/<runId>`. `delivery.resume` defaults to `true` only when
+`delivery.outputDirectory` is set; the per-run default directory can never
+match an earlier run, so resume is off there unless requested, and an explicit
+request without a directory is reported as a warning. A fixed output
+directory supports both single-document and batch resume. Partial documents
+use the dedicated `document.partial` JSONL event.
 
 The npm package ships the Draft 2020-12 request, result, event, error, and
 capabilities schemas under `schemas/`. Schema `$id` URLs are stable identifiers,
@@ -554,9 +580,26 @@ The shared Open OCR skill ships under `skills/open-ocr/` in npm and lives at
 
 `open-ocr-cli mcp` starts a stdio Model Context Protocol server backed by the
 same `OcrJobService` and versioned result contract as `run`. It exposes
-`ocr_extract`, `ocr_run_agentic`, and `ocr_web`, plus an
-`open-ocr://capabilities` resource. Lifecycle events are forwarded as MCP
-progress notifications when the client requests progress.
+`ocr_capabilities`, `ocr_extract`, `ocr_run_agentic`, and `ocr_web`, plus an
+`open-ocr://capabilities` resource for hosts that surface resources.
+
+Call `ocr_capabilities` first. It returns the capabilities document (presets,
+per-model thinking levels, accepted MIME types, limits, error codes) and the
+server's `workingDirectory`, which every relative path in a tool argument
+resolves against. The same directory is stated in the server's
+`server/discover` instructions. Roots are deprecated in revision `2026-07-28`
+and this is the replacement the specification names: paths travel in tool
+parameters, and the server says what they are relative to. Prefer absolute
+paths.
+
+Tool calls block until the whole batch finishes. Bound them with `maxFiles`,
+`maxTotalMb`, `maxCostUsd`, and `timeoutSeconds`. When the client supplies a
+progress token, lifecycle events are forwarded as progress notifications whose
+`progress` counts finished documents (with a fraction that advances on step
+events) against a `total` equal to the document count, so a host can draw a
+bar rather than watch a sequence number grow. The MCP Tasks extension, which
+would let a long batch return a durable handle instead of blocking, is not
+implemented by this server.
 
 The host must support and explicitly open MCP revision `2026-07-28`, the
 stateless revision that replaced the `initialize` handshake with per-request
@@ -584,24 +627,31 @@ Tool arguments are strict: an unrecognized key is refused by name rather than
 dropped, so a misspelled `dryRun` cannot turn a validation pass into a billed
 run. Every argument carries a description in `tools/list`, and the batch
 envelope (`maxFiles`, `maxTotalMb`, `maxCostUsd`, `requestsPerMinute`,
-`timeoutSeconds`) is settable per call.
+`timeoutSeconds`) is settable per call. `ocr_extract` accepts an inline
+`schema` as well as `schemaPath`, plus `detectImages`, `detectMath`, `hidden`,
+and `exclude`.
 
 Tools advertise an `outputSchema` (`result-v2.schema.json`), so the full result
-envelope always arrives in `structuredContent`, and written artifacts come back
-as `resource_link` blocks. The accompanying text block mirrors that envelope for
-reference delivery, where it is only metadata and paths; under inline delivery it
-collapses to a one-line summary instead, because mirroring would send every
-extracted document body twice in one response. Read inline content from
-`structuredContent.documents[].content`, never from the text block.
+envelope — including its `warnings` array — always arrives in
+`structuredContent`, and written artifacts come back as `resource_link` blocks.
+The accompanying text block mirrors that envelope for reference delivery, where
+it is only metadata and paths; under inline delivery it collapses to a one-line
+summary instead, because mirroring would send every extracted document body
+twice in one response. That is a deliberate departure from the tools
+specification's SHOULD that structured content also be serialised into a text
+block. Read inline content from `structuredContent.documents[].content`, never
+from the text block.
 
-`server/discover`, `tools/list`, `resources/list`, `resources/templates/list`,
-and `resources/read` are advertised as cacheable for an hour (`cacheScope:
-"public"`). Every one is a pure function of the installed CLI version, so a host
-that honours the hints can skip re-fetching the catalogue on each reconnect.
+`tools/list`, `resources/list`, `resources/templates/list`, and the capabilities
+resource are publicly cacheable for an hour. Discovery is privately cacheable
+for an hour because its instructions contain the server working directory.
 
 Set `OPEN_OCR_MCP_CONFIRM=1` to require confirmation before any run that reaches
 a provider. Dry runs are never gated, and the switch is environment-only so the
-calling model cannot turn it off.
+calling model cannot turn it off. A client that declares no form elicitation
+capability is answered with the protocol's `MissingRequiredClientCapability`
+error (`-32021`) naming `elicitation.form`, not with a tool result that tells
+the model to fix its arguments.
 
 ## Web and agentic behavior
 

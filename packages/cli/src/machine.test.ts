@@ -258,12 +258,68 @@ describe('machine request execution', () => {
       noConfig: true,
     });
 
-    // The v2 result schema is strict, so the information rides the warning
-    // channel rather than a new response field.
+    // Reported on the host channel as it happens, and carried in the result so
+    // a caller that only reads the machine payload still sees it.
     expect(warnings).toEqual([
       'ignoring option(s) that template mode does not use: extraction.detectMath, extraction.maxTokens',
     ]);
     expect(execution.result.status).toBe('validated');
+    expect(execution.result.warnings).toEqual(warnings);
+  });
+
+  it('replays pre-run warnings on the event stream after run.started', async () => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    const events: string[] = [];
+    let warningEvent: { message?: string } | undefined;
+
+    await executeOcrJobRequest({
+      protocolVersion: 2,
+      operation: 'extract',
+      inputs: [{ type: 'path', path: 'invoice.jpg' }],
+      extraction: { mode: 'template', preset: 'invoice', detectMath: true },
+      delivery: { mode: 'inline' },
+      dryRun: true,
+    }, {
+      cwd: directory,
+      runId: 'warning-event-run',
+      abortController: new AbortController(),
+      eventSink: (event) => {
+        events.push(event.type);
+        if (event.type === 'run.warning') warningEvent = event;
+      },
+      noConfig: true,
+    });
+
+    expect(events.slice(0, 2)).toEqual(['run.started', 'run.warning']);
+    expect(warningEvent?.message).toContain('extraction.detectMath');
+  });
+
+  it('names request fields, not extract flags, in option errors', async () => {
+    await writeFile(path.join(directory, 'invoice.jpg'), JPEG_BYTES);
+    let thrown: unknown;
+    try {
+      await executeOcrJobRequest({
+        protocolVersion: 2,
+        operation: 'extract',
+        inputs: [{ type: 'path', path: 'invoice.jpg' }],
+        // The schema allows `max`; only the resolver knows Gemini refuses it.
+        extraction: { thinking: 'max' },
+        delivery: { mode: 'inline' },
+        dryRun: true,
+      }, {
+        cwd: directory,
+        runId: 'field-vocabulary-run',
+        abortController: new AbortController(),
+        noConfig: true,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    const payload = ocrErrorPayload(thrown, 2);
+    expect(payload.code).toBe('CONFIG_INVALID');
+    expect(payload.message).toContain('extraction.thinking');
+    expect(payload.message).not.toContain('--thinking');
   });
 
   it('reports the documents a directory scan passed over', async () => {
@@ -406,8 +462,8 @@ describe('machine request execution', () => {
       noConfig: true,
     });
 
-    // `resume` defaults to true, so warning on every run would train callers to
-    // ignore the channel.
+    // Resume is only on by default with an output directory, so the default
+    // run has nothing to warn about, and an explicit off never does.
     expect(warnings).toEqual([]);
   });
 

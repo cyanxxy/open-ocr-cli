@@ -2,6 +2,7 @@ FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY packages/cli/package.json packages/cli/package.json
+COPY packages/engine/package.json packages/engine/package.json
 RUN npm ci --workspace=open-ocr-cli --include-workspace-root=false
 COPY . .
 RUN npm run cli:build
@@ -13,6 +14,7 @@ ENV NODE_ENV=production
 WORKDIR /opt/open-ocr
 COPY package.json package-lock.json ./
 COPY --from=build /src/packages/cli packages/cli
+COPY packages/engine/package.json packages/engine/package.json
 RUN npm ci --omit=dev --workspace=open-ocr-cli --include-workspace-root=false \
     && ln -s /opt/open-ocr/node_modules/.bin/open-ocr-cli /usr/local/bin/open-ocr-cli \
     && npm cache clean --force \

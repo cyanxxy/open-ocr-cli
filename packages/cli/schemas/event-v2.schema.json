@@ -7,10 +7,12 @@
   "required": ["protocolVersion", "type", "runId", "sequence", "timestamp"],
   "properties": {
     "protocolVersion": { "const": 2 },
-    "type": { "enum": ["run.started", "document.started", "document.progress", "document.completed", "document.partial", "document.failed", "document.skipped", "run.completed", "run.failed"] },
+    "type": { "enum": ["run.started", "run.warning", "document.started", "document.progress", "document.completed", "document.partial", "document.failed", "document.skipped", "run.completed", "run.failed"] },
     "runId": { "type": "string", "minLength": 1 },
     "sequence": { "type": "integer", "minimum": 0 },
     "timestamp": { "type": "string", "format": "date-time" },
+    "message": { "type": "string", "minLength": 1 },
+    "warnings": { "$ref": "result-v2.schema.json#/$defs/warnings" },
     "total": { "type": "integer", "minimum": 0 },
     "provider": { "enum": ["gemini", "kimi", "muse", "openrouter", "openai-compatible"] },
     "gateway": { "enum": ["direct", "cloudflare"] },
@@ -77,6 +79,10 @@
     {
       "if": { "properties": { "type": { "const": "run.started" } } },
       "then": { "required": ["total", "provider", "gateway", "model", "mode", "dryRun"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "run.warning" } } },
+      "then": { "required": ["message"] }
     },
     {
       "if": { "properties": { "type": { "enum": ["document.started", "document.progress"] } } },

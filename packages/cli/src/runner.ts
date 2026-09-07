@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import process from 'node:process';
 
-import { agentLoop } from '../../../src/lib/agentLoop';
-import type { AgentMemory, AgentStep } from '../../../src/lib/agentTypes';
-import type { ExtractedContent, ExtractionInstruction } from '../../../src/lib/gemini/types';
+import { agentLoop } from '@open-ocr/engine/agentLoop';
+import type { AgentMemory, AgentStep } from '@open-ocr/engine/agentTypes';
+import type { ExtractedContent, ExtractionInstruction } from '@open-ocr/engine/gemini/types';
 import {
   extractPresetWithProvider,
   extractStructuredWithProvider,
@@ -13,16 +13,18 @@ import {
   providerDefaultBaseUrl,
   providerRequestHeaders,
   type ProviderExecutionContext,
-} from '../../../src/lib/providers';
-import { getExtractionPreset } from '../../../src/lib/templates';
-import { readAndValidateInput, type InputDiscoverySkips } from './inputs';
+} from '@open-ocr/engine/providers';
+import { getExtractionPreset } from '@open-ocr/engine/templates';
+import { readAndValidateInput } from './inputs';
 import { nodeRegionCropper } from './nodeRegionCropper';
 import { agentProgressMessage, OcrJobService, modeFingerprint } from './ocrJobService';
 import { assertCustomSchemaOutput } from './schema';
-import { jsonlResult, jsonlSummary, primaryArtifact } from './output';
+import { primaryArtifact } from './output';
+import type { OcrJobEventSink } from './protocol';
 import { providerRuntimeConfig } from './providerRuntime';
 import { runWithProviderRetries } from './providerRetries';
 import type {
+  AgenticExtractionResult,
   BatchSummary,
   OcrArtifacts,
   OcrJobResult,
@@ -42,15 +44,53 @@ function extractedContentToMarkdown(result: ExtractedContent): string {
   return lines.join('\n').trim();
 }
 
-function agentMemoryToMarkdown(memory: AgentMemory): string {
-  const fields = Object.entries(memory.extractedFields);
+function unitInterval(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * Project the engine's memory onto the protocol's `agenticResult` shape.
+ *
+ * The memory is an engine-internal type: it carries session IDs, timestamps
+ * and the raw processing history, and it changes with the engine. Writing it
+ * verbatim made that internal type the JSON artifact contract. The trace is
+ * still available as the `agent-steps` artifact under `contentFormat: "all"`.
+ */
+export function agenticExtractionResult(memory: AgentMemory): AgenticExtractionResult {
+  const fields = Object.fromEntries(
+    Object.entries(memory.extractedFields).map(([name, field]) => [name, {
+      value: field.value,
+      confidence: unitInterval(field.confidence),
+      ...(field.isValid !== undefined ? { valid: field.isValid } : {}),
+      ...(field.validationMessage !== undefined ? { validationMessage: field.validationMessage } : {}),
+      ...(field.validation_rule !== undefined ? { validationRule: field.validation_rule } : {}),
+      ...(field.location !== undefined ? { location: field.location } : {}),
+    }]),
+  );
+  return {
+    documentType: memory.documentAnalysis.documentType,
+    pageCount: Math.max(0, Math.trunc(memory.documentAnalysis.pageCount)),
+    complexity: memory.documentAnalysis.complexity,
+    specialFeatures: [...memory.documentAnalysis.specialFeatures],
+    confidence: unitInterval(memory.confidence),
+    iterations: Math.max(0, Math.trunc(memory.currentIteration)),
+    // The loop sets a terminal reason on every exit; a missing one is treated
+    // as the loop always treated it, as a run that ran to completion.
+    stopReason: memory.stopReason ?? 'succeeded',
+    fields,
+  };
+}
+
+function agenticResultToMarkdown(result: AgenticExtractionResult): string {
+  const fields = Object.entries(result.fields);
   const lines = [
     '# Agentic OCR Extraction',
     '',
-    `- Document type: ${memory.documentAnalysis.documentType || 'unknown'}`,
-    `- Confidence: ${(memory.confidence * 100).toFixed(0)}%`,
-    `- Iterations: ${memory.currentIteration}`,
-    `- Stop reason: ${memory.stopReason ?? 'unknown'}`,
+    `- Document type: ${result.documentType || 'unknown'}`,
+    `- Confidence: ${(result.confidence * 100).toFixed(0)}%`,
+    `- Iterations: ${result.iterations}`,
+    `- Stop reason: ${result.stopReason}`,
     '',
     '## Fields',
     '',
@@ -148,9 +188,10 @@ async function runAgentic(
   if (memory.stopReason === 'failed' || memory.stopReason === 'cancelled') {
     throw new Error(`Agentic OCR ${memory.stopReason}`);
   }
+  const result = agenticExtractionResult(memory);
   return {
-    markdown: agentMemoryToMarkdown(memory),
-    json: memory,
+    markdown: agenticResultToMarkdown(result),
+    json: result,
     ...(steps ? { agentSteps: finalizeAgentTrace(steps) } : {}),
   };
 }
@@ -247,19 +288,16 @@ function statusLine(index: number, total: number, result: OcrJobResult): string 
 }
 
 interface BatchRuntime {
+  runId?: string;
   abortController: AbortController;
   /**
-   * What discovery dropped before these inputs were resolved. The summary's
-   * `skipped` counts documents that entered the pipeline, so without this the
-   * record would assert that nothing was passed over.
+   * Receives every protocol v2 lifecycle event. `extract --jsonl` supplies a
+   * sink that writes each event to stdout, so the direct CLI and `run` speak
+   * one dialect; the sink's owner also owns the stream's terminal record.
    */
-  discovery?: InputDiscoverySkips;
-  /**
-   * Called once the terminal `--jsonl` summary record has been written. The
-   * stream carries exactly one terminal record, so a caller that also owns the
-   * terminal `error` emitter must fall silent after this fires.
-   */
-  onTerminalRecord?: () => void;
+  eventSink?: OcrJobEventSink;
+  /** Warnings raised before the batch (ignored flags, discovery skips). */
+  priorWarnings?: readonly string[];
   writeStdout?: (text: string) => void | Promise<void>;
   writeStderr?: (text: string) => void;
 }
@@ -273,45 +311,30 @@ export async function runBatch(
   options: ResolvedCliOptions,
   runtime: BatchRuntime,
 ): Promise<BatchSummary> {
-  const rawWriteStdout = runtime.writeStdout ?? (async (text: string): Promise<void> => {
+  const writeStdout = runtime.writeStdout ?? (async (text: string): Promise<void> => {
     if (process.stdout.write(text)) return;
     await once(process.stdout, 'drain');
   });
-  // Documents can finish concurrently. Serialize result records so one slow
-  // pipe applies real backpressure instead of allowing every worker to keep
-  // buffering behind a full stdout stream.
-  let stdoutQueue: Promise<void> = Promise.resolve();
-  const writeStdout = (text: string): Promise<void> => {
-    const delivery = stdoutQueue.then(() => rawWriteStdout(text));
-    stdoutQueue = delivery;
-    return delivery;
-  };
   const writeStderr = runtime.writeStderr ?? ((text: string) => process.stderr.write(text));
   const service = createOcrJobService();
   const { summary } = await service.run(inputs, options, {
-    runId: randomUUID(),
+    runId: runtime.runId ?? randomUUID(),
     abortController: runtime.abortController,
+    eventSink: runtime.eventSink,
+    priorWarnings: runtime.priorWarnings,
     onWarning: (message) => writeStderr(`${message}\n`),
     onAgentStep: (input, step) => {
       if (options.verbose && !options.quiet) {
         writeStderr(`  ${input.displayPath}: ${step.type}: ${agentProgressMessage(step)}\n`);
       }
     },
-    onDocumentResult: async (index, total, result): Promise<void> => {
-      if (options.jsonl) await writeStdout(`${jsonlResult(result)}\n`);
+    onDocumentResult: (index, total, result): void => {
       if (!options.quiet) writeStderr(`${statusLine(index, total, result)}\n`);
     },
   });
   const shouldWriteFiles = inputs.length > 1 || Boolean(options.output) || options.format === 'all';
   if (inputs.length === 1 && !shouldWriteFiles && !options.jsonl && summary.results[0]?.artifacts) {
     await writeStdout(primaryArtifact(summary.results[0].artifacts, options.format));
-  }
-  if (options.jsonl) {
-    await writeStdout(`${jsonlSummary(summary, runtime.discovery)}\n`);
-    // A cancelled batch still returns a summary, so this is the terminal record
-    // even when the run was interrupted. Report it so the caller does not add a
-    // second one.
-    runtime.onTerminalRecord?.();
   }
   return summary;
 }

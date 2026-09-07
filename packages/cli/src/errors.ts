@@ -6,7 +6,7 @@ import {
   renderProviderErrorPayload,
   type ProviderErrorPayload,
   type ProviderErrorSubject,
-} from '../../../src/lib/gemini/errorPayload';
+} from '@open-ocr/engine/gemini/errorPayload';
 
 /**
  * Redaction is defined beside the provider-body reader so the engine renders

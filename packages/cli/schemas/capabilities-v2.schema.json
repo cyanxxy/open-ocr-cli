@@ -172,15 +172,31 @@
     "limits": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["imageBytes","pdfBytes","pdfPages","batchFiles","concurrency","customSchemaBytes","customSchemaDepth"],
+      "required": ["imageBytes","pdfBytes","pdfPages","customSchemaBytes","customSchemaDepth","request"],
       "properties": {
         "imageBytes": {"type":"integer","minimum":1},
         "pdfBytes": {"type":"integer","minimum":1},
         "pdfPages": {"type":"integer","minimum":1},
-        "batchFiles": {"type":"integer","minimum":1},
-        "concurrency": {"type":"integer","minimum":1},
         "customSchemaBytes": {"type":"integer","minimum":1},
-        "customSchemaDepth": {"type":"integer","minimum":1}
+        "customSchemaDepth": {"type":"integer","minimum":1},
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["concurrency","retries","timeoutSeconds","maxFiles","maxTotalMb","maxCostUsd","requestsPerMinute","maxTokens","maxIterations","confidenceThreshold","urlInputs"],
+          "properties": {
+            "concurrency": {"$ref":"#/$defs/range"},
+            "retries": {"$ref":"#/$defs/range"},
+            "timeoutSeconds": {"$ref":"#/$defs/range"},
+            "maxFiles": {"$ref":"#/$defs/range"},
+            "maxTotalMb": {"$ref":"#/$defs/range"},
+            "maxCostUsd": {"$ref":"#/$defs/range"},
+            "requestsPerMinute": {"$ref":"#/$defs/range"},
+            "maxTokens": {"$ref":"#/$defs/range"},
+            "maxIterations": {"$ref":"#/$defs/range"},
+            "confidenceThreshold": {"$ref":"#/$defs/range"},
+            "urlInputs": {"$ref":"#/$defs/range"}
+          }
+        }
       }
     },
     "schemas": {
@@ -203,6 +219,17 @@
         "command": {"const":"open-ocr-cli schema <name>"},
         "packageDirectory": {"const":"schemas"},
         "networkFetch": {"const":false}
+      }
+    }
+  },
+  "$defs": {
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min","max"],
+      "properties": {
+        "min": {"type":"number"},
+        "max": {"type":"number"}
       }
     }
   }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { findSchemaCompatibilityIssues } from '../../../src/lib/gemini/schemaCompat';
-import { OcrError, OcrErrorType } from '../../../src/lib/gemini/types';
-import { ProviderApiError } from '../../../src/lib/providers';
+import { findSchemaCompatibilityIssues } from '@open-ocr/engine/gemini/schemaCompat';
+import { OcrError, OcrErrorType } from '@open-ocr/engine/gemini/types';
+import { ProviderApiError } from '@open-ocr/engine/providers';
 import {
   asCliExitError,
   CliExitError,

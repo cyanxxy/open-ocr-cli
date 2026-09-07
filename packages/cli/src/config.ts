@@ -8,7 +8,7 @@ import {
   defaultThinkingLevelForModel,
   type GeminiModel,
   type ThinkingLevel,
-} from '../../../src/lib/gemini';
+} from '@open-ocr/engine/gemini';
 import {
   GATEWAY_IDS,
   GEMINI_MODELS,
@@ -21,10 +21,11 @@ import {
   resolveProviderBaseUrl,
   type GatewayId,
   type ProviderId,
-} from '../../../src/lib/providers';
-import { getExtractionPreset, listExtractionPresets } from '../../../src/lib/templates';
+} from '@open-ocr/engine/providers';
+import { getExtractionPreset, listExtractionPresets } from '@open-ocr/engine/templates';
 import { CliExitError } from './errors';
 import { asRecord } from './jsonValidation';
+import { OCR_REQUEST_LIMITS, PRICE_PER_MILLION_LIMIT } from './limits';
 import {
   CLI_FORMATS,
   CLI_MODES,
@@ -327,17 +328,55 @@ function oneOf<T extends string>(value: string | undefined, allowed: readonly T[
   return value as T;
 }
 
+/**
+ * Which vocabulary a configuration error names its option in.
+ *
+ * `flag` is the `extract` command's `--option` spelling. `field` is the
+ * machine-protocol request path (`execution.concurrency`), which `run` and MCP
+ * use so a caller that sent JSON is not told to fix a flag it never typed.
+ * Options with no request field name their configuration-file key instead.
+ */
+export type OptionVocabulary = 'flag' | 'field';
+
+const OPTION_NAMES = {
+  provider: ['--provider', 'provider.id'],
+  gateway: ['--gateway', 'provider.gateway'],
+  model: ['--model', 'provider.model'],
+  thinking: ['--thinking', 'extraction.thinking'],
+  mode: ['--mode', 'extraction.mode'],
+  format: ['--format', 'extraction.contentFormat'],
+  progress: ['--progress', 'extraction.progress'],
+  schema: ['--schema', 'extraction.schema'],
+  preset: ['--preset', 'extraction.preset'],
+  maxTokens: ['--max-tokens', 'extraction.maxTokens'],
+  maxIterations: ['--max-iterations', 'extraction.maxIterations'],
+  confidenceThreshold: ['--confidence-threshold', 'extraction.confidenceThreshold'],
+  concurrency: ['--concurrency', 'execution.concurrency'],
+  retries: ['--retries', 'execution.retries'],
+  timeout: ['--timeout', 'execution.timeoutSeconds'],
+  maxFiles: ['--max-files', 'execution.maxFiles'],
+  maxTotalMb: ['--max-total-mb', 'execution.maxTotalMb'],
+  maxCost: ['--max-cost', 'execution.maxCostUsd'],
+  requestsPerMinute: ['--requests-per-minute', 'execution.requestsPerMinute'],
+  inputPrice: ['--input-price', 'inputPricePerMillionUsd'],
+  outputPrice: ['--output-price', 'outputPricePerMillionUsd'],
+  cloudflareByok: ['--cloudflare-byok', 'cloudflareByok'],
+  cloudflareByokAlias: ['--cloudflare-byok-alias', 'cloudflareByokAlias'],
+} as const satisfies Record<string, readonly [flag: string, field: string]>;
+
 export function resolveCliOptions(
   flags: ExtractCommandFlags,
   fileConfig: CliConfigFile,
   cwd: string,
+  vocabulary: OptionVocabulary = 'flag',
 ): ResolvedCliOptions {
+  const name = (key: keyof typeof OPTION_NAMES): string => OPTION_NAMES[key][vocabulary === 'flag' ? 0 : 1];
   const configuredProvider = fileConfig.provider ?? DEFAULT_CONFIG.provider;
   const selectedProvider = flags.provider ?? process.env.OPEN_OCR_PROVIDER;
   const provider = oneOf<ProviderId>(
     selectedProvider ?? configuredProvider,
     PROVIDER_IDS,
-    '--provider',
+    name('provider'),
     DEFAULT_CONFIG.provider,
   );
   const providerContextMatches = selectedProvider === undefined || selectedProvider === configuredProvider;
@@ -346,7 +385,7 @@ export function resolveCliOptions(
   const gateway = oneOf<GatewayId>(
     selectedGateway ?? configuredGateway,
     GATEWAY_IDS,
-    '--gateway',
+    name('gateway'),
     DEFAULT_CONFIG.gateway,
   );
   const gatewayContextMatches = selectedGateway === undefined || selectedGateway === configuredGateway;
@@ -358,9 +397,9 @@ export function resolveCliOptions(
   const model = selectedModel
     ?? configuredModel
     ?? providerDefaultModel(provider);
-  if (!model) throw configurationError('--model is required for the openai-compatible provider');
+  if (!model) throw configurationError(`${name('model')} is required for the openai-compatible provider`);
   if (provider === 'gemini' && !GEMINI_MODELS.includes(model as (typeof GEMINI_MODELS)[number])) {
-    throw configurationError(`--model must be one of: ${SUPPORTED_MODELS.join(', ')}`);
+    throw configurationError(`${name('model')} must be one of: ${SUPPORTED_MODELS.join(', ')}`);
   }
   const modelContextMatches = providerContextMatches
     && (selectedModel === undefined || selectedModel === configuredModel);
@@ -371,17 +410,17 @@ export function resolveCliOptions(
   let thinking = oneOf<ThinkingLevel>(
     configuredThinking?.toUpperCase(),
     ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH', 'XHIGH', 'MAX'],
-    '--thinking',
+    name('thinking'),
     defaultCliThinkingLevel(provider, model),
   );
   const schemaPath = flags.schema ?? fileConfig.schema;
   const hasCustomSchema = flags.customSchema ?? false;
   const hasSchema = hasCustomSchema || Boolean(schemaPath);
-  const mode = oneOf<CliMode>(flags.mode ?? fileConfig.mode, CLI_MODES, '--mode', DEFAULT_CONFIG.mode);
+  const mode = oneOf<CliMode>(flags.mode ?? fileConfig.mode, CLI_MODES, name('mode'), DEFAULT_CONFIG.mode);
   const format = oneOf<CliFormat>(
     flags.format ?? fileConfig.format ?? (hasSchema ? 'json' : undefined),
     CLI_FORMATS,
-    '--format',
+    name('format'),
     DEFAULT_CONFIG.format,
   );
   const preset = flags.preset ?? fileConfig.preset;
@@ -389,43 +428,43 @@ export function resolveCliOptions(
   const progress = oneOf<ResolvedCliOptions['progress']>(
     flags.progress ?? fileConfig.progress,
     ['off', 'standard', 'detailed'],
-    '--progress',
+    name('progress'),
     DEFAULT_CONFIG.progress,
   );
 
   if (!isKimiK3 && provider !== 'openrouter' && thinking === 'MAX') {
-    throw configurationError('--thinking max is supported by Kimi K3 and model-dependent OpenRouter routes');
+    throw configurationError(`${name('thinking')} max is supported by Kimi K3 and model-dependent OpenRouter routes`);
   }
   if (provider !== 'openrouter' && provider !== 'muse' && thinking === 'XHIGH') {
-    throw configurationError('--thinking xhigh is supported by Muse and model-dependent OpenRouter routes');
+    throw configurationError(`${name('thinking')} xhigh is supported by Muse and model-dependent OpenRouter routes`);
   }
   if (provider === 'gemini' && model === 'gemini-3.1-pro-preview' && thinking === 'MINIMAL') {
-    throw configurationError('Gemini 3.1 Pro supports --thinking low, medium, or high; minimal is not supported');
+    throw configurationError(`Gemini 3.1 Pro supports ${name('thinking')} low, medium, or high; minimal is not supported`);
   }
   if (isKimiK3 && thinking === 'MEDIUM') {
-    throw configurationError('Kimi K3 supports --thinking low, high, or max; medium would be an ambiguous silent upgrade');
+    throw configurationError(`Kimi K3 supports ${name('thinking')} low, high, or max; medium would be an ambiguous silent upgrade`);
   }
   if (isKimiK3 && thinking === 'XHIGH') {
-    throw configurationError('Kimi K3 supports --thinking low, high, or max; xhigh is not a Kimi K3 effort');
+    throw configurationError(`Kimi K3 supports ${name('thinking')} low, high, or max; xhigh is not a Kimi K3 effort`);
   }
   if (isKimiK3 && thinking === 'MINIMAL') {
     thinking = 'LOW';
   }
   if (provider === 'kimi' && /^kimi-k2\.7-code/u.test(model) && thinking !== 'HIGH') {
-    throw configurationError('Kimi K2.7 Code always thinks and does not expose configurable reasoning effort; use --thinking high');
+    throw configurationError(`Kimi K2.7 Code always thinks and does not expose configurable reasoning effort; use ${name('thinking')} high`);
   }
   if (provider === 'kimi' && model === 'kimi-k2.6' && thinking !== 'MINIMAL' && thinking !== 'HIGH') {
-    throw configurationError('Direct Kimi K2.6 supports only instant mode (--thinking minimal) or thinking mode (--thinking high)');
+    throw configurationError(`Direct Kimi K2.6 supports only instant mode (${name('thinking')} minimal) or thinking mode (${name('thinking')} high)`);
   }
-  if (hasSchema && preset) throw configurationError('--schema cannot be combined with --preset');
-  if (effectiveMode === 'template' && !preset) throw configurationError('--preset is required when --mode template is selected');
+  if (hasSchema && preset) throw configurationError(`${name('schema')} cannot be combined with ${name('preset')}`);
+  if (effectiveMode === 'template' && !preset) throw configurationError(`${name('preset')} is required when ${name('mode')} template is selected`);
   // A preset only implies template mode when no mode is named. Without this the
   // converse rule, an explicit --mode (or a `mode` config key) would silently
   // demote the preset to an inert option, exactly as `run` and `mcp` already
   // refuse to do (see ocrExtractionSemanticError in protocol.ts).
-  if (preset && effectiveMode !== 'template') throw configurationError('--preset is only available in template mode');
+  if (preset && effectiveMode !== 'template') throw configurationError(`${name('preset')} is only available in template mode`);
   if (preset) getExtractionPreset(preset);
-  if (format === 'csv' && effectiveMode !== 'template') throw configurationError('--format csv is only available in template mode');
+  if (format === 'csv' && effectiveMode !== 'template') throw configurationError(`${name('format')} csv is only available in template mode`);
   // A record-shaped preset extracts one document's worth of fields and never
   // rows, so CSV cannot be built from it. Without this the run reaches the
   // provider, bills a call, and fails afterwards on the missing CSV artifact
@@ -436,12 +475,12 @@ export function resolveCliOptions(
       .map((candidate) => candidate.id)
       .join(', ');
     throw configurationError(
-      `--preset ${preset} extracts a single record per document, so it cannot produce CSV rows; `
-      + `use --format json or markdown, or a table preset: ${tablePresets}`,
+      `${name('preset')} ${preset} extracts a single record per document, so it cannot produce CSV rows; `
+      + `use ${name('format')} json or markdown, or a table preset: ${tablePresets}`,
     );
   }
-  if (hasSchema && effectiveMode !== 'simple') throw configurationError('--schema is only available in simple mode');
-  if (hasSchema && format !== 'json') throw configurationError('--schema requires --format json');
+  if (hasSchema && effectiveMode !== 'simple') throw configurationError(`${name('schema')} is only available in simple mode`);
+  if (hasSchema && format !== 'json') throw configurationError(`${name('schema')} requires ${name('format')} json`);
   const defaultMaxTokens = isKimiK3
     // Agentic K3 can issue many continuations; keep a safer default budget
     // unless the operator opts into the full protocol ceiling.
@@ -450,9 +489,9 @@ export function resolveCliOptions(
   const maxTokens = integer(
     flags.maxTokens ?? (modelContextMatches ? fileConfig.maxTokens : undefined),
     defaultMaxTokens,
-    '--max-tokens',
-    256,
-    provider === 'gemini' ? 65536 : 1048576,
+    name('maxTokens'),
+    OCR_REQUEST_LIMITS.maxTokens.min,
+    provider === 'gemini' ? 65536 : OCR_REQUEST_LIMITS.maxTokens.max,
   );
   if (
     effectiveMode === 'agentic'
@@ -460,7 +499,7 @@ export function resolveCliOptions(
     && model.includes('kimi-k2.6')
     && maxTokens < 16_000
   ) {
-    throw configurationError('--max-tokens must be at least 16000 for Kimi K2.6 agentic tool use with thinking enabled');
+    throw configurationError(`${name('maxTokens')} must be at least 16000 for Kimi K2.6 agentic tool use with thinking enabled`);
   }
 
   const cloudflareAccountId = flags.cloudflareAccountId
@@ -490,10 +529,10 @@ export function resolveCliOptions(
   const cloudflareByokAlias = flags.cloudflareByokAlias
     ?? (providerContextMatches && gatewayContextMatches ? fileConfig.cloudflareByokAlias : undefined);
   if (cloudflareByok && gateway !== 'cloudflare') {
-    throw configurationError('--cloudflare-byok requires --gateway cloudflare');
+    throw configurationError(`${name('cloudflareByok')} requires ${name('gateway')} cloudflare`);
   }
   if (cloudflareByokAlias && !cloudflareByok) {
-    throw configurationError('--cloudflare-byok-alias requires --cloudflare-byok');
+    throw configurationError(`${name('cloudflareByokAlias')} requires ${name('cloudflareByok')}`);
   }
   const gatewayTokenEnv = flags.cloudflareTokenEnv
     ?? fileConfig.cloudflareTokenEnv
@@ -504,26 +543,26 @@ export function resolveCliOptions(
     hasFlagPrice
       ? flags.inputPrice
       : modelContextMatches ? fileConfig.inputPricePerMillionUsd : undefined,
-    '--input-price',
-    0,
-    1_000_000,
+    name('inputPrice'),
+    PRICE_PER_MILLION_LIMIT.min,
+    PRICE_PER_MILLION_LIMIT.max,
   );
   const outputPricePerMillionUsd = optionalNumberInRange(
     hasFlagPrice
       ? flags.outputPrice
       : modelContextMatches ? fileConfig.outputPricePerMillionUsd : undefined,
-    '--output-price',
-    0,
-    1_000_000,
+    name('outputPrice'),
+    PRICE_PER_MILLION_LIMIT.min,
+    PRICE_PER_MILLION_LIMIT.max,
   );
   if ((inputPricePerMillionUsd === undefined) !== (outputPricePerMillionUsd === undefined)) {
-    throw configurationError('--input-price and --output-price must be supplied together');
+    throw configurationError(`${name('inputPrice')} and ${name('outputPrice')} must be supplied together`);
   }
   const maxCostUsd = optionalNumberInRange(
     flags.maxCost ?? fileConfig.maxCostUsd,
-    '--max-cost',
-    0.000001,
-    1_000_000,
+    name('maxCost'),
+    OCR_REQUEST_LIMITS.maxCostUsd.min,
+    OCR_REQUEST_LIMITS.maxCostUsd.max,
   );
   const canAccountCost = provider === 'openrouter' || providerTokenPrice({
     provider,
@@ -533,7 +572,7 @@ export function resolveCliOptions(
   }, 0) !== undefined;
   if (maxCostUsd !== undefined && !canAccountCost) {
     throw configurationError(
-      `--max-cost for ${provider}/${model} requires both --input-price and --output-price because the API does not report a portable cost`,
+      `${name('maxCost')} for ${provider}/${model} requires both ${name('inputPrice')} and ${name('outputPrice')} because the API does not report a portable cost`,
     );
   }
 
@@ -564,11 +603,41 @@ export function resolveCliOptions(
     format,
     output: flags.output ?? fileConfig.output,
     outputPathKind: flags.outputPathKind ?? 'auto',
-    concurrency: integer(flags.concurrency ?? fileConfig.concurrency, DEFAULT_CONFIG.concurrency, '--concurrency', 1, 16),
-    retries: integer(flags.retries ?? fileConfig.retries, DEFAULT_CONFIG.retries, '--retries', 0, 10),
-    timeoutSeconds: integer(flags.timeout ?? fileConfig.timeoutSeconds, DEFAULT_CONFIG.timeoutSeconds, '--timeout', 1, 3600),
-    maxFiles: integer(flags.maxFiles ?? fileConfig.maxFiles, DEFAULT_CONFIG.maxFiles, '--max-files', 1, 100000),
-    maxTotalMb: numberInRange(flags.maxTotalMb ?? fileConfig.maxTotalMb, DEFAULT_CONFIG.maxTotalMb, '--max-total-mb', 1, 1048576),
+    concurrency: integer(
+      flags.concurrency ?? fileConfig.concurrency,
+      DEFAULT_CONFIG.concurrency,
+      name('concurrency'),
+      OCR_REQUEST_LIMITS.concurrency.min,
+      OCR_REQUEST_LIMITS.concurrency.max,
+    ),
+    retries: integer(
+      flags.retries ?? fileConfig.retries,
+      DEFAULT_CONFIG.retries,
+      name('retries'),
+      OCR_REQUEST_LIMITS.retries.min,
+      OCR_REQUEST_LIMITS.retries.max,
+    ),
+    timeoutSeconds: integer(
+      flags.timeout ?? fileConfig.timeoutSeconds,
+      DEFAULT_CONFIG.timeoutSeconds,
+      name('timeout'),
+      OCR_REQUEST_LIMITS.timeoutSeconds.min,
+      OCR_REQUEST_LIMITS.timeoutSeconds.max,
+    ),
+    maxFiles: integer(
+      flags.maxFiles ?? fileConfig.maxFiles,
+      DEFAULT_CONFIG.maxFiles,
+      name('maxFiles'),
+      OCR_REQUEST_LIMITS.maxFiles.min,
+      OCR_REQUEST_LIMITS.maxFiles.max,
+    ),
+    maxTotalMb: numberInRange(
+      flags.maxTotalMb ?? fileConfig.maxTotalMb,
+      DEFAULT_CONFIG.maxTotalMb,
+      name('maxTotalMb'),
+      OCR_REQUEST_LIMITS.maxTotalMb.min,
+      OCR_REQUEST_LIMITS.maxTotalMb.max,
+    ),
     excludes: [...(fileConfig.exclude ?? []), ...(flags.exclude ?? [])],
     instructions: [...(fileConfig.instructions ?? []), ...(flags.instruction ?? [])],
     hidden: flags.hidden ?? fileConfig.hidden ?? DEFAULT_CONFIG.hidden,
@@ -586,22 +655,28 @@ export function resolveCliOptions(
     detectImages: flags.detectImages ?? fileConfig.detectImages ?? DEFAULT_CONFIG.detectImages,
     detectMath: flags.detectMath ?? fileConfig.detectMath ?? DEFAULT_CONFIG.detectMath,
     maxTokens,
-    maxIterations: integer(flags.maxIterations ?? fileConfig.maxIterations, DEFAULT_CONFIG.maxIterations, '--max-iterations', 1, 20),
+    maxIterations: integer(
+      flags.maxIterations ?? fileConfig.maxIterations,
+      DEFAULT_CONFIG.maxIterations,
+      name('maxIterations'),
+      OCR_REQUEST_LIMITS.maxIterations.min,
+      OCR_REQUEST_LIMITS.maxIterations.max,
+    ),
     confidenceThreshold: numberInRange(
       flags.confidenceThreshold ?? fileConfig.confidenceThreshold,
       DEFAULT_CONFIG.confidenceThreshold,
-      '--confidence-threshold',
-      0,
-      1,
+      name('confidenceThreshold'),
+      OCR_REQUEST_LIMITS.confidenceThreshold.min,
+      OCR_REQUEST_LIMITS.confidenceThreshold.max,
     ),
     schemaPath,
     maxCostUsd,
     requestsPerMinute: integer(
       flags.requestsPerMinute ?? fileConfig.requestsPerMinute,
       DEFAULT_CONFIG.requestsPerMinute,
-      '--requests-per-minute',
-      0,
-      60_000,
+      name('requestsPerMinute'),
+      OCR_REQUEST_LIMITS.requestsPerMinute.min,
+      OCR_REQUEST_LIMITS.requestsPerMinute.max,
     ),
     cwd,
   };

@@ -7,14 +7,14 @@ import process from 'node:process';
 import { Command, CommanderError, Option } from 'commander';
 import cliPackageJson from '../package.json';
 
-import { listExtractionPresets } from '../../../src/lib/templates';
+import { listExtractionPresets } from '@open-ocr/engine/templates';
 import {
   PROVIDER_IDS,
   PROVIDER_PROFILES,
   isLocalBaseUrl,
   providerDefaultApiKeyEnv,
   type ProviderId,
-} from '../../../src/lib/providers';
+} from '@open-ocr/engine/providers';
 import {
   assertCredentialsAvailable,
   cliConfigDisabled,
@@ -35,12 +35,13 @@ import {
   cliSignalExitCode,
   ocrErrorPayload,
   type CliExitCode,
+  type OcrErrorPayload,
 } from './errors';
 import { describeDiscoverySkips, discoverInputSet } from './inputs';
 import { isRecord } from './jsonValidation';
 import { runInit, validateProviderCredentials, type InitFlags } from './init';
 import { promptInteractiveArguments } from './interactive';
-import { jsonlRunError, primaryArtifact } from './output';
+import { primaryArtifact } from './output';
 import { customSchemaCompatibilityWarning, loadCustomSchema } from './schema';
 import { executeOcrJobRequest, readOcrJobRequest } from './machine';
 import {
@@ -52,6 +53,7 @@ import {
   OCR_PROTOCOL_VERSION,
   toOcrRunFailure,
   type OcrJobEvent,
+  type OcrJobEventSink,
 } from './protocol';
 import { runBatch } from './runner';
 import { providerRuntimeConfig } from './providerRuntime';
@@ -102,6 +104,29 @@ async function configFileExists(filePath: string): Promise<boolean> {
 async function writeMachineStdout(value: string): Promise<void> {
   if (process.stdout.write(value)) return;
   await once(process.stdout, 'drain');
+}
+
+/**
+ * The terminal `run.failed` event a machine stream owes its consumer when the
+ * run died before the job service could emit one itself.
+ */
+function runFailedEvent(
+  runId: string,
+  sequence: number,
+  error: OcrErrorPayload,
+  warnings: readonly string[] = [],
+): OcrJobEvent {
+  const event: OcrJobEvent = {
+    protocolVersion: OCR_PROTOCOL_VERSION,
+    type: 'run.failed',
+    runId,
+    sequence,
+    timestamp: new Date().toISOString(),
+    ...(warnings.length > 0 ? { warnings: [...warnings] } : {}),
+    error,
+  };
+  assertOcrJobEvent(event);
+  return event;
 }
 
 interface InterruptRuntime {
@@ -208,7 +233,7 @@ function addExtractOptions(command: Command): Command {
     .option('--overwrite', 'replace existing output artifacts')
     .option('--force-unlock', 'recover a same-host batch lock only when its owner process is dead')
     .option('--fail-fast', 'stop scheduling new documents after the first failure')
-    .option('--jsonl', 'emit the CLI-native JSONL stream on stdout: one {"type":"document"} record per document, then exactly one terminal record — {"type":"summary"} when the batch produced one, otherwise a typed {"type":"error"}. Every record carries version 1 and no protocol envelope; for the versioned lifecycle-event protocol use `run --response-format jsonl`')
+    .option('--jsonl', 'emit protocol v2 lifecycle events on stdout, one JSON object per line, ending in exactly one run.completed or run.failed event — the same stream as `run --response-format jsonl`')
     .option('--dry-run', 'resolve and validate the job without calling a provider or writing files')
     .option('--quiet', 'suppress progress output on stderr')
     .option('--verbose', 'show agent steps and detailed progress on stderr')
@@ -281,24 +306,35 @@ then CLI flags. Later sources win.
       // `--jsonl` has no config-file source, so the stream's existence is known
       // before any resolution step that could itself be the thing that fails.
       const jsonlRequested = flags.jsonl === true;
+      const runId = randomUUID();
+      let lastSequence = -1;
       /**
-       * The `--jsonl` stream ends in exactly one terminal record: the `summary`
-       * whenever the batch produced one — including a cancelled batch, whose
-       * documents carry `skipReason: "cancelled"` — and otherwise the `error`
-       * below. Never both, never neither.
+       * The `--jsonl` stream ends in exactly one terminal event: `run.completed`
+       * whenever the batch produced a summary — including a cancelled batch,
+       * whose documents carry `skipReason: "cancelled"` — and otherwise the
+       * `run.failed` below. Never both, never neither.
        */
       let emittedTerminalRecord = false;
+      /** Warnings raised before the batch, replayed on the stream by the service. */
+      const priorWarnings: string[] = [];
+      const eventSink: OcrJobEventSink | undefined = jsonlRequested
+        ? async (event: OcrJobEvent): Promise<void> => {
+            lastSequence = event.sequence;
+            if (event.type === 'run.completed' || event.type === 'run.failed') emittedTerminalRecord = true;
+            await writeMachineStdout(`${JSON.stringify(event)}\n`);
+          }
+        : undefined;
       /**
-       * Give the `--jsonl` stream its terminal record when the run dies before a
-       * summary exists. It is a CLI-native record from the same family as the
-       * `document` and `summary` lines, not a `run` protocol event: one stream
-       * carries one dialect, so a consumer validating this stream is not told
-       * that its only valid line is the one reporting failure.
+       * Give the `--jsonl` stream its terminal event when the run dies before
+       * the service could emit one. It is the same protocol event `run` emits:
+       * `extract --jsonl` and `run --response-format jsonl` speak one dialect.
        */
       const emitRunFailure = async (error: unknown, fallbackExitCode: CliExitCode): Promise<void> => {
         if (!jsonlRequested || emittedTerminalRecord) return;
         emittedTerminalRecord = true;
-        await writeMachineStdout(`${jsonlRunError(ocrErrorPayload(error, fallbackExitCode))}\n`);
+        await writeMachineStdout(`${JSON.stringify(
+          runFailedEvent(runId, lastSequence + 1, ocrErrorPayload(error, fallbackExitCode), priorWarnings),
+        )}\n`);
       };
       /**
        * The interrupt runtime, readable from the outer handler once installed.
@@ -346,7 +382,10 @@ then CLI flags. Later sources win.
           const ignoredWarning = ignoredModeScopedOptionWarning(ignoredFlags, options.mode, 'flag');
           // Written regardless of --quiet: this reports a request the CLI cannot
           // honour, not progress, and silence is the bug being fixed.
-          if (ignoredWarning) process.stderr.write(`${ignoredWarning}\n`);
+          if (ignoredWarning) {
+            priorWarnings.push(ignoredWarning);
+            process.stderr.write(`${ignoredWarning}\n`);
+          }
           // The signal reaches the stdin read, so a piped document that has not
           // finished arriving stops on interrupt instead of blocking until EOF.
           const discovery = await discoverInputSet(inputs, options, abortController.signal);
@@ -366,11 +405,15 @@ then CLI flags. Later sources win.
             // Written even under --quiet: a shrinking document set is a request
             // the CLI could not honour in full, not progress.
             const skipSummary = describeDiscoverySkips(discovery.skipped);
-            if (skipSummary) process.stderr.write(`Discovery: ${skipSummary}\n`);
+            if (skipSummary) {
+              priorWarnings.push(`Discovery: ${skipSummary}`);
+              process.stderr.write(`Discovery: ${skipSummary}\n`);
+            }
             const summary = await runBatch(resolvedInputs, options, {
+              runId,
               abortController,
-              discovery: discovery.skipped,
-              onTerminalRecord: () => { emittedTerminalRecord = true; },
+              eventSink,
+              priorWarnings,
             });
             if (!options.quiet) {
               process.stderr.write(
@@ -428,6 +471,9 @@ then CLI flags. Later sources win.
       const runId = randomUUID();
       let lastSequence = -1;
       let emittedFailure = false;
+      // Warnings raised before the run died travel in the failure envelope; a
+      // completed run carries them in its result already.
+      const warnings: string[] = [];
       const eventSink = flags.responseFormat === 'jsonl'
         ? async (event: OcrJobEvent): Promise<void> => {
             lastSequence = event.sequence;
@@ -459,7 +505,10 @@ then CLI flags. Later sources win.
             runId,
             abortController,
             eventSink,
-            onWarning: (message) => process.stderr.write(`${message}\n`),
+            onWarning: (message) => {
+              warnings.push(message);
+              process.stderr.write(`${message}\n`);
+            },
             noConfig: flags.config === false,
           });
           if (flags.responseFormat === 'json') {
@@ -474,18 +523,11 @@ then CLI flags. Later sources win.
           const signalExitCode = interruptedExitCode();
           const payload = ocrErrorPayload(error, signalExitCode ?? 2);
           if (flags.responseFormat === 'json') {
-            await writeMachineStdout(`${JSON.stringify(toOcrRunFailure(runId, payload))}\n`);
+            await writeMachineStdout(`${JSON.stringify(toOcrRunFailure(runId, payload, warnings))}\n`);
           } else if (!emittedFailure) {
-            const event: OcrJobEvent = {
-              protocolVersion: OCR_PROTOCOL_VERSION,
-              type: 'run.failed',
-              runId,
-              sequence: lastSequence + 1,
-              timestamp: new Date().toISOString(),
-              error: payload,
-            };
-            assertOcrJobEvent(event);
-            await writeMachineStdout(`${JSON.stringify(event)}\n`);
+            await writeMachineStdout(`${JSON.stringify(
+              runFailedEvent(runId, lastSequence + 1, payload, warnings),
+            )}\n`);
           }
           process.exitCode = signalExitCode ?? cliExitCode(asCliExitError(error, 2));
         }
@@ -826,8 +868,8 @@ then CLI flags. Later sources win.
 }
 
 /**
- * The machine channel this argv promised its caller, or `undefined` for a purely
- * human invocation.
+ * The machine response format this argv promised its caller, or `undefined`
+ * for a purely human invocation.
  *
  * Read from raw argv rather than resolved options because the only caller runs
  * after parsing has already failed: Commander rejects an unknown option — or a
@@ -836,25 +878,21 @@ then CLI flags. Later sources win.
  * zero records and a consumer has to special-case empty stdout as a parse
  * failure, while the neighbouring bad-option-*value* path correctly ends in one.
  *
- * Both machine commands are covered. `extract --jsonl` owes a CLI-native `error`
- * record; `run` owes a protocol payload in whichever `--response-format` it
- * asked for — and `run`'s dialect is the versioned one, so a parse failure there
- * cannot borrow `extract`'s record family.
+ * `extract --jsonl` and `run --response-format jsonl` owe a `run.failed` event;
+ * `run` in its default format owes a `run.result` failure envelope.
  *
  * No option before the subcommand takes a value, so the first non-flag token
  * names the command exactly. Tokens after `--` are operands, never flags.
  */
-export type MachineFailureChannel =
-  | { command: 'extract' }
-  | { command: 'run'; responseFormat: 'json' | 'jsonl' };
+export type MachineResponseFormat = 'json' | 'jsonl';
 
-export function machineFailureChannel(argv: string[]): MachineFailureChannel | undefined {
+export function machineFailureChannel(argv: string[]): MachineResponseFormat | undefined {
   const tokens = argv.slice(2);
   const operandsFrom = tokens.indexOf('--');
   const flags = operandsFrom === -1 ? tokens : tokens.slice(0, operandsFrom);
   const command = tokens.find((token) => !token.startsWith('-'));
   if (command === 'extract') {
-    return flags.includes('--jsonl') ? { command: 'extract' } : undefined;
+    return flags.includes('--jsonl') ? 'jsonl' : undefined;
   }
   if (command !== 'run') return undefined;
   // Accept both spellings Commander does. An unrecognised value falls back to
@@ -863,7 +901,7 @@ export function machineFailureChannel(argv: string[]): MachineFailureChannel | u
   const inline = flags.find((token) => token.startsWith('--response-format='));
   const separate = flags[flags.indexOf('--response-format') + 1];
   const value = inline ? inline.slice('--response-format='.length) : separate;
-  return { command: 'run', responseFormat: value === 'jsonl' ? 'jsonl' : 'json' };
+  return value === 'jsonl' ? 'jsonl' : 'json';
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {
@@ -886,30 +924,20 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       // already went to stderr; this is the machine-readable half.
       const channel = machineFailureChannel(argv);
       if (channel) {
+        const command = argv.slice(2).find((token) => !token.startsWith('-')) ?? 'run';
         const payload = ocrErrorPayload(
           new CliExitError(error.message.replace(/^error:\s*/, ''), 2, {
             code: 'CONFIG_INVALID',
             category: 'configuration',
             retryable: false,
-            hint: `Run \`${PRIMARY_CLI_NAME} ${channel.command} --help\` for the supported options.`,
+            hint: `Run \`${PRIMARY_CLI_NAME} ${command} --help\` for the supported options.`,
           }),
           2,
         );
-        if (channel.command === 'extract') {
-          await writeMachineStdout(`${jsonlRunError(payload)}\n`);
-        } else if (channel.responseFormat === 'json') {
+        if (channel === 'json') {
           await writeMachineStdout(`${JSON.stringify(toOcrRunFailure(randomUUID(), payload))}\n`);
         } else {
-          const event: OcrJobEvent = {
-            protocolVersion: OCR_PROTOCOL_VERSION,
-            type: 'run.failed',
-            runId: randomUUID(),
-            sequence: 0,
-            timestamp: new Date().toISOString(),
-            error: payload,
-          };
-          assertOcrJobEvent(event);
-          await writeMachineStdout(`${JSON.stringify(event)}\n`);
+          await writeMachineStdout(`${JSON.stringify(runFailedEvent(randomUUID(), 0, payload))}\n`);
         }
       }
       return;

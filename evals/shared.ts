@@ -13,7 +13,7 @@ import {
   type EvalRunSummary,
   type EvalSuiteConfig,
   type EvalSuiteName,
-} from '../src/lib/evals';
+} from '@open-ocr/engine/evals';
 
 const evalsDir = path.dirname(fileURLToPath(import.meta.url));
 export const repoRoot = path.resolve(evalsDir, '..');

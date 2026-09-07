@@ -89,7 +89,10 @@ async function readManifest(manifestPath: string): Promise<PackageManifest> {
 
 // Every non-test file is a graph root: `mcp.ts` is only reachable through a dynamic import.
 async function collectImportedPackages(): Promise<ImportedPackage[]> {
-  const queue = await collectSourceFiles(cliSourceDir);
+  const queue = [
+    ...await collectSourceFiles(cliSourceDir),
+    ...await collectSourceFiles(path.resolve('packages/engine/src')),
+  ];
   const visited = new Set(queue);
   const packages = new Map<string, string>();
 
@@ -106,7 +109,7 @@ async function collectImportedPackages(): Promise<ImportedPackage[]> {
         continue;
       }
       // Type-only imports are erased at build time and need no runtime dependency.
-      if (typeOnly || specifier.startsWith('node:')) {
+      if (typeOnly || specifier.startsWith('node:') || specifier.startsWith('@open-ocr/engine/')) {
         continue;
       }
       const packageName = packageNameOf(specifier);

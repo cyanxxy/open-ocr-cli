@@ -1,8 +1,8 @@
-import type { AgentStep } from '../../../src/lib/agentTypes';
+import type { AgentStep } from '@open-ocr/engine/agentTypes';
 import {
   createProviderExecutionContext,
   type ProviderExecutionContext,
-} from '../../../src/lib/providers';
+} from '@open-ocr/engine/providers';
 import {
   asCliExitError,
   CliExitError,
@@ -41,6 +41,7 @@ import {
   type OcrRunResult,
 } from './protocol';
 import type {
+  AgenticExtractionResult,
   BatchSummary,
   ManifestEntry,
   OcrArtifacts,
@@ -48,6 +49,18 @@ import type {
   ResolvedCliOptions,
   ResolvedInput,
 } from './types';
+
+/**
+ * The agentic JSON artifact is the protocol's `agenticResult` shape, written by
+ * the runner; this reads its `stopReason` back without casting into the engine
+ * type the service never sees.
+ */
+function isAgenticExtractionResult(value: unknown): value is AgenticExtractionResult {
+  return typeof value === 'object'
+    && value !== null
+    && typeof (value as { stopReason?: unknown }).stopReason === 'string'
+    && typeof (value as { fields?: unknown }).fields === 'object';
+}
 
 export interface OcrExtractionResult {
   artifacts: OcrArtifacts;
@@ -83,6 +96,14 @@ export interface OcrJobServiceRuntime {
   deliveryMode?: OcrDeliveryMode;
   /** Structured agent event detail. */
   progress?: OcrProgressLevel;
+  /**
+   * Warnings raised before the service was entered — option resolution,
+   * request fields the mode will not read, documents a directory scan passed
+   * over. Replayed as `run.warning` events after `run.started` and carried in
+   * the result's `warnings`, so the machine surfaces report them and not only
+   * the stderr diagnostics channel.
+   */
+  priorWarnings?: readonly string[];
 }
 
 export interface OcrJobServiceResult {
@@ -335,6 +356,16 @@ export class OcrJobService {
       requestsPerMinute: options.requestsPerMinute,
       maxCostUsd: options.maxCostUsd,
     });
+    const warnings: string[] = [...(runtime.priorWarnings ?? [])];
+    // A warning raised mid-run reaches three places at once: the host's
+    // diagnostic channel, the event stream, and the result. The event is not
+    // awaited because lock acquisition reports through a synchronous callback;
+    // the dispatcher still serialises it and retains a sink failure for flush().
+    const warn = (message: string): void => {
+      warnings.push(message);
+      runtime.onWarning?.(message);
+      void events.emit({ type: 'run.warning', message }).catch(() => undefined);
+    };
     let batchLock: BatchOutputLock | undefined;
     let summary: BatchSummary | undefined;
     let failure: unknown;
@@ -348,6 +379,9 @@ export class OcrJobService {
       mode: options.mode,
       dryRun: options.dryRun,
     });
+    for (const message of runtime.priorWarnings ?? []) {
+      await events.emit({ type: 'run.warning', message });
+    }
 
     try {
       // The lock guards the manifest, so both follow one plan: a run that keeps
@@ -358,7 +392,7 @@ export class OcrJobService {
         try {
           batchLock = await BatchOutputLock.acquire(defaultOutputDirectory(options), {
             forceUnlock: options.forceUnlock,
-            onWarning: runtime.onWarning,
+            onWarning: warn,
           });
         } catch (error) {
           throw asCliExitError(error, 2);
@@ -393,7 +427,11 @@ export class OcrJobService {
             category: 'internal',
             retryable: false,
           });
-      await events.emit({ type: 'run.failed', error: ocrErrorPayload(typedFailure) });
+      await events.emit({
+        type: 'run.failed',
+        error: ocrErrorPayload(typedFailure),
+        ...(warnings.length > 0 ? { warnings } : {}),
+      });
       await events.flush();
       throw typedFailure;
     }
@@ -405,6 +443,7 @@ export class OcrJobService {
       deliveryMode,
       options.format,
       runtime.progress ?? options.progress,
+      warnings,
     );
     await events.emit({ type: 'run.completed', result });
     await events.flush();
@@ -565,6 +604,7 @@ export class OcrJobService {
           const timeoutController = new AbortController();
           const relayAbort = (): void => timeoutController.abort(runtime.abortController.signal.reason);
           runtime.abortController.signal.addEventListener('abort', relayAbort, { once: true });
+          if (runtime.abortController.signal.aborted) relayAbort();
           let timedOut = false;
           const timeout = setTimeout(() => {
             timedOut = true;
@@ -572,6 +612,7 @@ export class OcrJobService {
           }, options.timeoutSeconds * 1000);
           let progressFailure: unknown;
           try {
+            timeoutController.signal.throwIfAborted();
             this.assertInputSupported(input, options);
             const { artifacts, attempts } = await this.dependencies.extractDocument(
               input,
@@ -622,13 +663,13 @@ export class OcrJobService {
               ? await writeArtifacts(input, artifacts, options, inputs.length, staleArtifacts.get(index))
               : undefined;
             const outputFiles = outputArtifacts?.map((target) => target.path);
-            const agentMemory = options.mode === 'agentic' && artifacts.json && typeof artifacts.json === 'object'
-              ? artifacts.json as { stopReason?: string }
+            const agentResult = options.mode === 'agentic' && isAgenticExtractionResult(artifacts.json)
+              ? artifacts.json
               : undefined;
-            const jobStatus: OcrJobResult['status'] = agentMemory?.stopReason && agentMemory.stopReason !== 'succeeded'
+            const jobStatus: OcrJobResult['status'] = agentResult && agentResult.stopReason !== 'succeeded'
               ? 'partial'
               : 'succeeded';
-            if (agentMemory?.stopReason === 'cost_limit_reached') costLimitReached = true;
+            if (agentResult?.stopReason === 'cost_limit_reached') costLimitReached = true;
             result = {
               status: jobStatus, input, provider: options.provider, gateway: options.gateway,
               mode: options.mode, model: options.model, startedAt: jobStartedAt,
@@ -688,7 +729,23 @@ export class OcrJobService {
       }
     };
 
-    await Promise.all(Array.from({ length: Math.min(options.concurrency, inputs.length) }, () => worker()));
+    // A failed event sink or persistence operation must stop sibling workers,
+    // then join them before releasing the output lock or returning to the host.
+    const workers = await Promise.allSettled(Array.from(
+      { length: Math.min(options.concurrency, inputs.length) },
+      async () => {
+        try {
+          await worker();
+        } catch (error) {
+          runtime.abortController.abort(error);
+          throw error;
+        }
+      },
+    ));
+    const rejected = workers.find((result) => result.status === 'rejected');
+    if (rejected?.status === 'rejected') {
+      throw rejected.reason instanceof Error ? rejected.reason : new Error(errorMessage(rejected.reason));
+    }
     const unscheduledReason = runtime.abortController.signal.aborted
       ? 'Not started because the batch was cancelled'
       : costLimitReached

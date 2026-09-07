@@ -1,0 +1,17 @@
+{
+  "name": "@open-ocr/engine",
+  "private": true,
+  "version": "3.0.0",
+  "type": "module",
+  "exports": {
+    "./gemini": "./src/gemini/index.ts",
+    "./constants": "./src/constants/index.ts",
+    "./providers": "./src/providers/index.ts",
+    "./templates": "./src/templates/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^2.11.0",
+    "ipaddr.js": "^2.4.0"
+  }
+}

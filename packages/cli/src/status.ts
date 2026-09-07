@@ -1,7 +1,7 @@
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { GATEWAY_IDS, GEMINI_MODELS, PROVIDER_IDS } from '../../../src/lib/providers';
+import { GATEWAY_IDS, GEMINI_MODELS, PROVIDER_IDS } from '@open-ocr/engine/providers';
 import { batchMetadataError, CliExitError } from './errors';
 import { asRecord, isIsoTimestamp, isOneOf, parseBatchLockOwner } from './jsonValidation';
 import { parseCliManifest } from './manifest';

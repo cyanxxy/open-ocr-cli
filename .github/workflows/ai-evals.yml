@@ -53,9 +53,11 @@ jobs:
           [[ -n "$GEMINI_API_KEY" ]] && gemini=true || gemini=false
           [[ -n "$MOONSHOT_API_KEY" ]] && kimi=true || kimi=false
           [[ -n "$OPENROUTER_API_KEY" ]] && openrouter=true || openrouter=false
-          echo "gemini=$gemini" >> "$GITHUB_OUTPUT"
-          echo "kimi=$kimi" >> "$GITHUB_OUTPUT"
-          echo "openrouter=$openrouter" >> "$GITHUB_OUTPUT"
+          {
+            echo "gemini=$gemini"
+            echo "kimi=$kimi"
+            echo "openrouter=$openrouter"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Skip live evals when no provider credentials are configured
         if: ${{ steps.credentials.outputs.gemini == 'false' && steps.credentials.outputs.kimi == 'false' && steps.credentials.outputs.openrouter == 'false' }}

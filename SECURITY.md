@@ -46,24 +46,21 @@ This application requires a Google Gemini API key. Please follow these best prac
 3. **Rotate keys regularly** if you suspect they may have been exposed
 4. **Use restricted API keys** with only the permissions needed
 
-### Local Storage
+### Local configuration and artifacts
 
-The application stores your API key in the browser's localStorage using XOR encryption. While this provides some obfuscation, it is not a substitute for proper secret management. Consider:
-
-- Clearing your browser data when using shared computers
-- Using a browser profile dedicated to this application
-- Not storing API keys on untrusted devices
+Configuration stores credential environment-variable names, never API keys.
+Treat extraction artifacts and detailed progress events as document data, and
+choose output directories with appropriate access controls.
 
 ### Content Security
 
-- The application processes images and PDFs locally before sending to the Gemini API
+- The application processes images and PDFs locally before sending to the selected provider
 - Agent mode requires Gemini's stored Interactions chaining (`previous_interaction_id`); its requests and responses are therefore subject to Google's Interactions data-retention policy. One-shot Web OCR sends `store: false`.
 - File size is limited by MIME type: 70MB raw for inline images (safe below the 100MB payload ceiling after base64), 50MB and 1,000 pages for PDFs
 - Only supported file types (images, PDFs) are accepted
 
 ## Security Features
 
-- **Content Security Policy (CSP)**: Comprehensive CSP headers to prevent XSS attacks
 - **Input Validation**: Strict file type and size validation
-- **Error Boundaries**: Graceful error handling to prevent information leakage
+- **Typed Errors**: Machine-readable failures with credential redaction
 - **Production Logging**: Sensitive data is sanitized in production logs

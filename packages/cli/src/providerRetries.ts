@@ -1,5 +1,5 @@
-import { waitForAbortableAgentDelay } from '../../../src/lib/agentStepStream';
-import { isProviderCostLimitError, isRetryableExtractionError } from '../../../src/lib/providers';
+import { waitForAbortableAgentDelay } from '@open-ocr/engine/agentStepStream';
+import { isProviderCostLimitError, isRetryableExtractionError } from '@open-ocr/engine/providers';
 import { CliExitError } from './errors';
 import type { ResolvedCliOptions } from './types';
 

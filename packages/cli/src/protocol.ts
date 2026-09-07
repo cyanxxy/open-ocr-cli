@@ -4,17 +4,17 @@ import path from 'node:path';
 import Ajv2020, { type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
-import { FILE_CONSTRAINTS } from '../../../src/constants';
-import type { AgentStep } from '../../../src/lib/agentTypes';
-import type { ThinkingLevel } from '../../../src/lib/gemini';
+import { FILE_CONSTRAINTS } from '@open-ocr/engine/constants';
+import type { AgentStep } from '@open-ocr/engine/agentTypes';
+import type { ThinkingLevel } from '@open-ocr/engine/gemini';
 import {
   PROVIDER_PROFILES,
   type GatewayId,
   type ProviderCapabilities,
   type ProviderId,
   type ProviderUsageSnapshot,
-} from '../../../src/lib/providers';
-import { listExtractionPresets } from '../../../src/lib/templates';
+} from '@open-ocr/engine/providers';
+import { listExtractionPresets } from '@open-ocr/engine/templates';
 import capabilitiesV2Schema from '../schemas/capabilities-v2.schema.json';
 import errorV2Schema from '../schemas/error-v2.schema.json';
 import eventV2Schema from '../schemas/event-v2.schema.json';
@@ -22,6 +22,7 @@ import requestV2Schema from '../schemas/request-v2.schema.json';
 import resultV2Schema from '../schemas/result-v2.schema.json';
 import { cliThinkingLevels, defaultCliThinkingLevel } from './config';
 import { CliExitError, OCR_ERROR_CODES, type OcrErrorCode, type OcrErrorPayload } from './errors';
+import { OCR_REQUEST_LIMITS, type NumericRange, type OcrRequestLimitKey } from './limits';
 import type { ArtifactExtension, ArtifactTarget } from './output';
 import type { BatchSummary, CliFormat, CliMode, OcrJobResult } from './types';
 
@@ -216,6 +217,15 @@ export interface OcrRunResult {
   usage: ProviderUsageSnapshot;
   costLimitUsd?: number;
   costLimitReached: boolean;
+  /**
+   * Everything the run could not honour in full, in the order it was noticed:
+   * request fields the resolved mode does not read, documents a directory scan
+   * passed over, a resume that cannot match, a schema construct the provider
+   * may refuse. Always present, often empty. It exists because the `run` and
+   * MCP surfaces have no other channel an agent reads — stderr is diagnostics
+   * that a host may not forward, and the skill tells agents not to parse it.
+   */
+  warnings: string[];
   documents: OcrProtocolDocument[];
 }
 
@@ -225,6 +235,8 @@ export interface OcrRunFailure {
   ok: false;
   runId: string;
   status: 'failed';
+  /** Warnings raised before the failure, when any were. */
+  warnings?: string[];
   error: OcrErrorPayload;
 }
 
@@ -232,6 +244,7 @@ export type OcrMachineResult = OcrRunResult | OcrRunFailure;
 
 export type OcrEventType =
   | 'run.started'
+  | 'run.warning'
   | 'document.started'
   | 'document.progress'
   | 'document.completed'
@@ -269,6 +282,10 @@ export interface OcrJobEvent {
   runId: string;
   sequence: number;
   timestamp: string;
+  /** `run.warning` only: the same text that lands in the result's `warnings`. */
+  message?: string;
+  /** `run.failed` only: warnings raised before the run died, when any were. */
+  warnings?: string[];
   total?: number;
   provider?: ProviderId;
   gateway?: GatewayId;
@@ -350,10 +367,14 @@ export interface OcrCapabilities {
     imageBytes: number;
     pdfBytes: number;
     pdfPages: number;
-    batchFiles: number;
-    concurrency: number;
     customSchemaBytes: number;
     customSchemaDepth: number;
+    /**
+     * Every numeric request bound, so an agent never has to read the request
+     * schema to learn a ceiling. Read from the same table the schema, the MCP
+     * tool schemas, and the option resolver enforce.
+     */
+    request: Record<OcrRequestLimitKey, NumericRange>;
   };
   schemas: typeof OCR_PROTOCOL_SCHEMA_IDS;
   schemaAccess: {
@@ -885,8 +906,8 @@ function requestSemanticError(value: unknown): string | undefined {
     if (urlInputs.length > 0 && urlInputs.length !== value.inputs.length) {
       return 'OCR URL inputs cannot be mixed with path or stdin inputs.';
     }
-    if (urlInputs.length > 20) {
-      return `Web OCR supports at most 20 URLs per request; received ${urlInputs.length}.`;
+    if (urlInputs.length > OCR_REQUEST_LIMITS.urlInputs.max) {
+      return `Web OCR supports at most ${OCR_REQUEST_LIMITS.urlInputs.max} URLs per request; received ${urlInputs.length}.`;
     }
     if (urlInputs.length === 0 && isRecord(value.web)) {
       return 'OCR request web options require URL inputs.';
@@ -1121,6 +1142,7 @@ export function toOcrRunResult(
   deliveryMode: OcrDeliveryMode = 'reference',
   contentFormat: CliFormat = 'all',
   progress: OcrProgressLevel = 'standard',
+  warnings: readonly string[] = [],
 ): OcrRunResult {
   if (!summary.provider || !summary.gateway) throw new Error('Protocol results require provider and gateway metadata');
   const status = runStatus(summary);
@@ -1145,6 +1167,7 @@ export function toOcrRunResult(
     usage: summary.usage,
     ...(summary.costLimitUsd !== undefined ? { costLimitUsd: summary.costLimitUsd } : {}),
     costLimitReached: summary.costLimitReached,
+    warnings: [...warnings],
     documents: summary.results.map((document) => (
       toProtocolDocument(document, deliveryMode, contentFormat, progress)
     )),
@@ -1156,6 +1179,7 @@ export function toOcrRunResult(
 export function toOcrRunFailure(
   runId: string,
   error: OcrErrorPayload,
+  warnings: readonly string[] = [],
 ): OcrRunFailure {
   const result: OcrRunFailure = {
     protocolVersion: OCR_PROTOCOL_VERSION,
@@ -1163,6 +1187,7 @@ export function toOcrRunFailure(
     ok: false,
     runId,
     status: 'failed',
+    ...(warnings.length > 0 ? { warnings: [...warnings] } : {}),
     error,
   };
   assertOcrMachineResult(result);
@@ -1206,6 +1231,7 @@ export function createOcrCapabilities(cliVersion: string): OcrCapabilities {
       'url-input',
       'hermetic-config',
       'mcp-stdio',
+      'result-warnings',
     ],
     errorCodes: [...OCR_ERROR_CODES],
     exitCodes: {
@@ -1249,10 +1275,11 @@ export function createOcrCapabilities(cliVersion: string): OcrCapabilities {
       imageBytes: FILE_CONSTRAINTS.MAX_IMAGE_SIZE,
       pdfBytes: FILE_CONSTRAINTS.MAX_PDF_SIZE,
       pdfPages: FILE_CONSTRAINTS.MAX_PDF_PAGES,
-      batchFiles: 100_000,
-      concurrency: 16,
       customSchemaBytes: 1024 * 1024,
       customSchemaDepth: 32,
+      request: Object.fromEntries(
+        Object.entries(OCR_REQUEST_LIMITS).map(([key, range]) => [key, { ...range }]),
+      ) as Record<OcrRequestLimitKey, NumericRange>,
     },
     schemas: OCR_PROTOCOL_SCHEMA_IDS,
     schemaAccess: {

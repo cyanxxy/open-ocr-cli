@@ -52,7 +52,8 @@
   },
   "devDependencies": {
     "tsup": "^8.5.1",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "@open-ocr/engine": "3.0.0"
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
@@ -63,7 +64,7 @@
     "ajv-formats": "^3.0.1",
     "commander": "^14.0.3",
     "fast-glob": "^3.3.3",
-    "html-to-text": "^10.0.0",
+    "html-to-text": "^10.0.1",
     "ipaddr.js": "^2.4.0",
     "pdfjs-dist": "^6.2.108",
     "sharp": "^0.35.3",

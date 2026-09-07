@@ -91,8 +91,8 @@ jobs:
       - name: Security audit
         run: npx audit-ci --config audit-ci.json
 
-      - name: Build application
-        run: npm run build
+      - name: Build CLI
+        run: npm run cli:smoke
 
       - name: Prepare GitHub release notes
         run: node scripts/extract-release-notes.mjs "${GITHUB_REF_NAME}" release-notes.md
@@ -130,7 +130,7 @@ jobs:
         shell: bash
         run: |
           node scripts/render-homebrew-formula.mjs "${{ steps.pack.outputs.tarball }}" open-ocr-cli.rb
-          tar -czf "open-ocr-cli-${GITHUB_REF_NAME}-dist.tar.gz" -C dist .
+          tar -czf "open-ocr-cli-${GITHUB_REF_NAME}-dist.tar.gz" -C packages/cli/dist .
           sha256sum \
             "${{ steps.pack.outputs.tarball }}" \
             open-ocr-cli.rb \
@@ -202,6 +202,8 @@ jobs:
         shell: bash
         run: |
           npm_version=$(npm --version)
+          # JavaScript template literals must not be expanded by the shell.
+          # shellcheck disable=SC2016
           node -e '
             const parse = (value) => value.split(".").map(Number);
             const actual = parse(process.argv[1]);
@@ -218,6 +220,7 @@ jobs:
         run: |
           tarball="${{ needs.prepare.outputs.tarball }}"
           expected_version="${GITHUB_REF_NAME#v}"
+          # shellcheck disable=SC2016
           local_integrity=$(node -e '
             const { createHash } = require("node:crypto");
             const { readFileSync } = require("node:fs");
@@ -231,6 +234,7 @@ jobs:
 
           published_latest=$(npm view open-ocr-cli dist-tags.latest 2>/dev/null || true)
           if [[ -n "$published_latest" ]]; then
+            # shellcheck disable=SC2016
             node -e '
               const parse = (value) => {
                 if (!/^\d+\.\d+\.\d+$/.test(value)) throw new Error(`Expected stable semver, received ${value}`);

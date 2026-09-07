@@ -2,9 +2,7 @@
   "moderate": true,
   "high": true,
   "critical": true,
-  "allowlist": [
-    "GHSA-mh99-v99m-4gvg"
-  ],
+  "allowlist": [],
   "report-type": "summary",
   "skip-dev": false,
   "show-found": true,
@@ -15,4 +13,4 @@
     "maxTimeout": 60000,
     "randomize": true
   }
-} 
+}

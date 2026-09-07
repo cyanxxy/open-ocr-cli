@@ -15,6 +15,7 @@ import {
   toOcrRunResult,
 } from './protocol';
 import { ocrErrorPayload } from './errors';
+import { OCR_REQUEST_LIMITS } from './limits';
 
 const input: ResolvedInput = {
   absolutePath: '/workspace/invoice.jpg',
@@ -313,6 +314,104 @@ describe('agent protocols', () => {
     })).toBe(false);
   });
 
+  it('keeps every numeric bound in one table', () => {
+    // The request schema is static JSON and cannot import the table, so this
+    // is what stops the two from drifting apart.
+    const request = OCR_PROTOCOL_SCHEMAS.request as {
+      properties: {
+        extraction: { properties: Record<string, { minimum?: number; maximum?: number }> };
+        execution: { properties: Record<string, { minimum?: number; maximum?: number }> };
+      };
+    };
+    const bounds = { ...request.properties.extraction.properties, ...request.properties.execution.properties };
+    for (const [key, range] of Object.entries(OCR_REQUEST_LIMITS)) {
+      if (key === 'urlInputs') continue;
+      expect({ key, minimum: bounds[key]?.minimum, maximum: bounds[key]?.maximum })
+        .toEqual({ key, minimum: range.min, maximum: range.max });
+    }
+    // And capabilities publishes the same table, so an agent never has to read
+    // the schema to learn a ceiling.
+    expect(createOcrCapabilities('3.0.0').limits.request).toEqual(OCR_REQUEST_LIMITS);
+  });
+
+  it('carries warnings in the result and as a typed event', () => {
+    const timestamp = new Date().toISOString();
+    const warned = toOcrRunResult('warned-run', summaryFor({
+      status: 'succeeded',
+      input,
+      provider: 'gemini',
+      gateway: 'direct',
+      mode: 'simple',
+      model: 'gemini-3.5-flash',
+      startedAt: timestamp,
+      completedAt: timestamp,
+      durationMs: 1,
+      attempts: 1,
+    }), 'reference', 'markdown', 'standard', ['Discovery: 1 unsupported file(s) skipped: notes.md']);
+    expect(warned.warnings).toEqual(['Discovery: 1 unsupported file(s) skipped: notes.md']);
+    expect(() => assertOcrMachineResult({ ...warned, warnings: undefined })).toThrow('Invalid OCR result');
+    expect(() => assertOcrJobEvent({
+      protocolVersion: 2,
+      type: 'run.warning',
+      runId: 'warned-run',
+      sequence: 1,
+      timestamp,
+      message: 'Discovery: 1 unsupported file(s) skipped: notes.md',
+    })).not.toThrow();
+    expect(() => assertOcrJobEvent({
+      protocolVersion: 2,
+      type: 'run.warning',
+      runId: 'warned-run',
+      sequence: 1,
+      timestamp,
+    })).toThrow(/message/u);
+    const failure = toOcrRunFailure('warned-run', {
+      code: 'AUTH_MISSING', category: 'authentication', message: 'no key', retryable: false, hint: 'set it',
+    }, ['ignoring option(s) that simple mode does not use: extraction.maxIterations']);
+    expect(failure.warnings).toHaveLength(1);
+  });
+
+  it('types the agentic JSON artifact instead of passing engine memory through', () => {
+    const timestamp = new Date().toISOString();
+    const agentic = (json: unknown): BatchSummary => ({
+      ...summaryFor({
+        status: 'succeeded',
+        input,
+        provider: 'gemini',
+        gateway: 'direct',
+        mode: 'agentic',
+        model: 'gemini-3.5-flash',
+        startedAt: timestamp,
+        completedAt: timestamp,
+        durationMs: 1,
+        attempts: 1,
+        artifacts: { markdown: '# fields', json: json as never },
+      }),
+      mode: 'agentic',
+    });
+    expect(() => toOcrRunResult('agentic-run', agentic({
+      documentType: 'invoice',
+      pageCount: 1,
+      complexity: 'low',
+      specialFeatures: [],
+      confidence: 0.9,
+      iterations: 2,
+      stopReason: 'succeeded',
+      fields: { total: { value: '12.00', confidence: 0.95, valid: true } },
+    }), 'inline', 'json')).not.toThrow();
+    // The raw engine memory carries fields the contract never promised.
+    expect(() => toOcrRunResult('agentic-run', agentic({
+      sessionId: 's1',
+      documentName: 'invoice.jpg',
+      currentIteration: 2,
+      extractedFields: {},
+      processingHistory: [],
+      documentAnalysis: { pageCount: 1, documentType: 'invoice', complexity: 'low', specialFeatures: [] },
+      confidence: 0.9,
+      lastUpdated: 1,
+    }), 'inline', 'json')).toThrow('Invalid OCR result');
+  });
+
   it('returns artifact references without embedding extracted document bodies', () => {
     const timestamp = new Date().toISOString();
     const summary = summaryFor({
@@ -488,6 +587,7 @@ describe('agent protocols', () => {
     expect(capabilities.features).toContain('typed-streaming-agent-progress');
     expect(capabilities.features).toContain('url-input');
     expect(capabilities.features).toContain('mcp-stdio');
+    expect(capabilities.features).toContain('result-warnings');
     expect(capabilities.progressStepKinds).toContain('tool_result');
     expect(capabilities.schemas.request).toContain('request-v2.schema.json');
     const geminiProvider = capabilities.providers.find((provider) => provider.id === 'gemini');

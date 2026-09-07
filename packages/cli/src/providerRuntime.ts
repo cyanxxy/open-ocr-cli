@@ -1,7 +1,7 @@
 import type {
   ProviderExecutionContext,
   ProviderRuntimeConfig,
-} from '../../../src/lib/providers';
+} from '@open-ocr/engine/providers';
 import type { ResolvedCliOptions } from './types';
 
 /** Build the provider-facing configuration once for every CLI execution path. */
