@@ -20,5 +20,4 @@ export * from './interactions';
 
 // Export opt-in usage telemetry helpers used by the eval runner.
 export * from './usage';
-export * from './pricing';
 export * from './requestPolicy';

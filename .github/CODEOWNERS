@@ -4,8 +4,8 @@
 # CI/CD and GitHub configuration
 /.github/ @cyanxxy
 
-# Core library code
-/packages/engine/src/ @cyanxxy
+# Core library code (the shared OCR engine)
+/packages/engine/ @cyanxxy
 
-/packages/cli/src/secureFetch.ts @cyanxxy
-/packages/cli/src/config.ts @cyanxxy
+# Published CLI / MCP package
+/packages/cli/ @cyanxxy

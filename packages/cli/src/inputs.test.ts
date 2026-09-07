@@ -11,13 +11,20 @@ import {
   describeDiscoverySkips,
   detectMimeType,
   discoverInputSet,
-  discoverInputs,
   inputFingerprint,
   readAndValidateInput,
   readStdin,
   stdinDisplayPath,
 } from './inputs';
 import type { ResolvedCliOptions, ResolvedInput } from './types';
+
+async function discoverInputs(
+  rawInputs: string[],
+  options: ResolvedCliOptions,
+  signal?: AbortSignal,
+): Promise<ResolvedInput[]> {
+  return (await discoverInputSet(rawInputs, options, signal)).inputs;
+}
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);

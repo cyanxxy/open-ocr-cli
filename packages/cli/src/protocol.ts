@@ -185,6 +185,8 @@ export interface OcrProtocolDocument {
   durationMs: number;
   attempts: number;
   skipReason?: OcrJobResult['skipReason'];
+  partialReason?: OcrJobResult['partialReason'];
+  nextAction?: OcrJobResult['nextAction'];
   artifacts: OcrArtifactReference[];
   plannedArtifacts: OcrArtifactReference[];
   content?: {
@@ -1111,6 +1113,8 @@ export function toProtocolDocument(
     durationMs: result.durationMs,
     attempts: result.attempts,
     ...(result.skipReason ? { skipReason: result.skipReason } : {}),
+    ...(result.partialReason ? { partialReason: result.partialReason } : {}),
+    ...(result.nextAction ? { nextAction: result.nextAction } : {}),
     artifacts: (result.outputArtifacts ?? []).map(artifactReference),
     plannedArtifacts: (result.plannedOutputArtifacts ?? []).map(artifactReference),
     ...(content

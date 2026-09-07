@@ -4,6 +4,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { EXTENSION_TO_MIME } from '@open-ocr/engine/constants';
 import {
   validateEvalCase,
   validateEvalSuiteConfig,
@@ -87,22 +88,11 @@ export async function loadEvalGroundTruth(evalCase: EvalCase): Promise<EvalGroun
 
 export function detectMimeType(filePath: string): string {
   const extension = path.extname(filePath).toLowerCase();
-
-  switch (extension) {
-    case '.pdf':
-      return 'application/pdf';
-    case '.png':
-      return 'image/png';
-    case '.jpg':
-    case '.jpeg':
-      return 'image/jpeg';
-    case '.webp':
-      return 'image/webp';
-    case '.svg':
-      return 'image/svg+xml';
-    default:
-      throw new Error(`Unsupported eval input extension: ${extension}`);
+  const mimeType = EXTENSION_TO_MIME[extension];
+  if (!mimeType) {
+    throw new Error(`Unsupported eval input extension: ${extension}`);
   }
+  return mimeType;
 }
 
 export async function fileToDataUrl(relativePath: string): Promise<{ dataUrl: string; mimeType: string }> {
@@ -141,10 +131,6 @@ export async function writeEvalArtifacts(summary: EvalRunSummary, artifacts: Eva
   }));
   await fs.writeFile(path.resolve(runDirectory, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
   return runDirectory;
-}
-
-export function resolveModelName(): string {
-  return process.env.OPEN_OCR_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 }
 
 export function resolveSuiteName(argv: string[] = process.argv.slice(2)): EvalSuiteName {

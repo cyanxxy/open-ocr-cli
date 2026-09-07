@@ -14,7 +14,9 @@ import type { ProviderExecutionContext } from '../providers/runtime';
 /**
  * A single extracted URL result from grounded URL-context extraction.
  *
- * Shared by the engine and its URL extraction hosts.
+ * audit W-01: this type lives in the engine's domain layer, so consumers
+ * (the CLI's web command, the evals harness) re-import it from here rather
+ * than the engine depending on any of them.
  */
 export interface UrlResult {
   /** The requested source URL this result corresponds to. */

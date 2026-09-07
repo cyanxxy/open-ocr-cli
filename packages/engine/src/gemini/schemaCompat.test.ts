@@ -123,7 +123,7 @@ describe('findSchemaCompatibilityIssues', () => {
     // Mirrors SUPPORTED_KEYWORDS in packages/cli/src/schema.ts. That module
     // validates user schemas before they reach the provider, so a keyword it
     // admits must not be flagged here — otherwise the CLI warns about a schema
-    // it just called supported. Kept as a literal because src/lib must not
+    // it just called supported. Kept as a literal because the engine must not
     // import from the package that depends on it.
     const portable = [
       '$schema', '$id', '$defs', '$ref', '$anchor',

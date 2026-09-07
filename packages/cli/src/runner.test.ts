@@ -5,9 +5,12 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { resolveCliOptions } from './config';
-import { describeDiscoverySkips, discoverInputSet, discoverInputs } from './inputs';
+import { describeDiscoverySkips, discoverInputSet } from './inputs';
 import type { OcrJobEvent } from './protocol';
 import { modeFingerprint, runBatch } from './runner';
+
+const discoverInputs = async (...args: Parameters<typeof discoverInputSet>) =>
+  (await discoverInputSet(...args)).inputs;
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 let directory: string;

@@ -24,10 +24,6 @@ endpoint — behind one consistent extraction contract.
 
 ---
 
-> [!NOTE]
-> `open-ocr-cli` is the executable, npm package, and configuration namespace.
-> The shared engine, CLI, MCP server, and evaluation harness run in Node.js.
-
 ## Quick start
 
 Requires Node.js **20.19+**, **22.13+**, or **24+** and one provider key
@@ -55,7 +51,7 @@ guided paths.
 
 Also available as a [Docker image](packages/cli/README.md#distribution)
 (`ghcr.io/cyanxxy/open-ocr-cli`), a [GitHub Action](action.yml)
-(`cyanxxy/open-ocr-cli@v3`), and a Homebrew formula.
+(`cyanxxy/open-ocr-cli@v4`), and a Homebrew formula.
 
 ## Extraction modes
 
@@ -108,12 +104,13 @@ to `stderr` — every command composes safely in a pipeline.
 
 ## Agents and MCP
 
-Three entry points wrap the same job engine.
+Three entry points wrap the same job engine: `extract` (human-facing), `run`
+(versioned protocol), and `mcp` (Model Context Protocol).
 
 **Machine protocol** — `run` executes a protocol v2 request validated against
-published Draft 2020-12 JSON Schemas, returning a
-typed result object or an ordered JSONL event stream with stable sequence
-numbers and typed error codes carrying recovery hints:
+published Draft 2020-12 JSON Schemas, returning a typed result object or an
+ordered JSONL event stream with stable sequence numbers and typed error codes
+carrying recovery hints:
 
 ```bash
 open-ocr-cli capabilities --json
@@ -135,6 +132,11 @@ open-ocr-cli run --request request.json --response-format jsonl
   }
 }
 ```
+
+MCP local inputs use the same typed `{ "type": "path", "path": "…" }` objects
+as the machine protocol. Partial document results carry a typed
+`partialReason` and `nextAction`. `extract --jsonl` and `run --response-format jsonl`
+share the protocol v2 lifecycle-event schema.
 
 **Agent skill** — a validated skill for Claude Code, Codex, and compatible
 agents ships at
@@ -187,22 +189,21 @@ vulnerabilities privately via [SECURITY.md](SECURITY.md).
 
 ## Repository layout
 
-The CLI and evaluation harness consume a shared extraction engine:
+One npm workspace, two packages over a shared extraction engine:
 
 | Path | What it is |
 | --- | --- |
-| `packages/engine` | Private Node-only engine: providers, extraction modes, agent loop, and shared limits. |
-| `packages/cli` | The published `open-ocr-cli` npm package. Owns its own source, build, and protocol schemas. |
-| `integrations/open-ocr/skills` | Agent skill definitions. Source of truth; `packages/cli/skills` is a generated copy. |
-| `evals/` | The evaluation corpus and runner. |
+| `packages/engine` | `@open-ocr/engine` — providers, extraction modes, agent loop, protocol types. Private, never published; the CLI bundles it at build time. |
+| `packages/cli` | The published `open-ocr-cli` npm package: CLI, machine protocol, and MCP server over one job service. |
+| `integrations/open-ocr/skills` | Agent skill source of truth (`packages/cli/skills` is a generated copy). |
+| `evals/` | Evaluation corpus and runner. |
+| `examples/` | A custom JSON Schema and a protocol request (`.open-ocr-cli.example.json` is the annotated config file). |
+| `scripts/` | Release, packaging, skill-sync, and smoke-test tooling. |
 
-`open-ocr-cli mcp` is not a separate package — it is a third front end inside
-the CLI, alongside `extract` (human-facing) and `run` (versioned protocol), all
-routed through the same job service.
-
-The engine and CLI are typechecked without DOM libraries, so browser APIs fail
-the build instead of failing at runtime. The private engine is bundled into the
-published CLI; consumers do not install it separately.
+Both packages are typechecked without DOM libraries on purpose: a browser API
+reaching this code fails the build rather than failing at runtime. Anything
+host-specific — such as region cropping — enters the engine through an adapter
+the host supplies (`packages/cli/src/nodeRegionCropper.ts`).
 
 ## Contributing
 

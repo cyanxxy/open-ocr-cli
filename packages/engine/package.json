@@ -1,17 +1,33 @@
 {
   "name": "@open-ocr/engine",
+  "version": "4.0.0",
+  "description": "Shared provider-neutral multimodal OCR engine consumed by the open-ocr-cli package and the evals harness.",
+  "license": "MIT",
   "private": true,
-  "version": "3.0.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cyanxxy/open-ocr-cli.git",
+    "directory": "packages/engine"
+  },
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
+  },
   "exports": {
     "./gemini": "./src/gemini/index.ts",
-    "./constants": "./src/constants/index.ts",
     "./providers": "./src/providers/index.ts",
     "./templates": "./src/templates/index.ts",
+    "./constants": "./src/constants/index.ts",
     "./*": "./src/*.ts"
   },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  },
   "dependencies": {
-    "@google/genai": "^2.11.0",
+    "@google/genai": "^2.17.1",
     "ipaddr.js": "^2.4.0"
   }
 }

@@ -7,17 +7,17 @@ if (!tag?.startsWith('v') || tag.length === 1) {
 
 const expected = tag.slice(1);
 const rootPackage = JSON.parse(readFileSync('package.json', 'utf8'));
-const enginePackage = JSON.parse(readFileSync('packages/engine/package.json', 'utf8'));
 const cliPackage = JSON.parse(readFileSync('packages/cli/package.json', 'utf8'));
+const enginePackage = JSON.parse(readFileSync('packages/engine/package.json', 'utf8'));
 const lockfile = JSON.parse(readFileSync('package-lock.json', 'utf8'));
 const versions = new Map([
   ['package.json', rootPackage.version],
-  ['packages/engine/package.json', enginePackage.version],
-  ['package-lock.json packages["packages/engine"]', lockfile.packages?.['packages/engine']?.version],
   ['packages/cli/package.json', cliPackage.version],
+  ['packages/engine/package.json', enginePackage.version],
   ['package-lock.json', lockfile.version],
   ['package-lock.json packages[""]', lockfile.packages?.['']?.version],
   ['package-lock.json packages["packages/cli"]', lockfile.packages?.['packages/cli']?.version],
+  ['package-lock.json packages["packages/engine"]', lockfile.packages?.['packages/engine']?.version],
 ]);
 
 for (const [source, version] of versions) {

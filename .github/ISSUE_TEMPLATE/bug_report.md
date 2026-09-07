@@ -11,28 +11,27 @@ assignees: ''
 A clear and concise description of what the bug is.
 
 **To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+The exact command that fails and how the input was produced:
+
+```bash
+open-ocr-cli extract ...
+```
 
 **Expected behavior**
 A clear and concise description of what you expected to happen.
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+**Output**
+The relevant stderr/stdout, including any typed error code (`code`,
+`category`, `hint`). Redact document contents you cannot share; never paste
+API keys.
 
-**Desktop (please complete the following information):**
-  - OS: [e.g. iOS]
-  - Browser [e.g. chrome, safari]
-  - Version [e.g. 22]
-
-**Smartphone (please complete the following information):**
-  - Device: [e.g. iPhone6]
-  - OS: [e.g. iOS8.1]
-  - Browser [e.g. stock browser, safari]
-  - Version [e.g. 22]
+**Environment**
+  - open-ocr-cli version: [e.g. `open-ocr-cli --version`]
+  - Node.js version: [e.g. 22.13.0]
+  - OS: [e.g. macOS 15, Ubuntu 24.04, Windows 11]
+  - Provider and model: [e.g. gemini / gemini-3.5-flash]
+  - Install method: [npm / Docker / GitHub Action / Homebrew]
 
 **Additional context**
-Add any other context about the problem here.
+Add any other context about the problem here — config file contents (redacted),
+whether `--dry-run` reproduces it, MCP host if using `open-ocr-cli mcp`.

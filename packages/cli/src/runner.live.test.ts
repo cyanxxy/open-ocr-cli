@@ -27,13 +27,16 @@ vi.mock('@open-ocr/engine/providers', async (importOriginal) => ({
 }));
 
 import { resolveCliOptions } from './config';
-import { discoverInputs } from './inputs';
+import { discoverInputSet } from './inputs';
 import { runBatch } from './runner';
 import { BatchOutputLock } from './output';
 import { cliExitCode } from './errors';
 import { toOcrRunResult } from './protocol';
 import { recordGeminiUsage } from '@open-ocr/engine/gemini/usage';
 import type { GeminiClientConfig } from '@open-ocr/engine/gemini/types';
+
+const discoverInputs = async (...args: Parameters<typeof discoverInputSet>) =>
+  (await discoverInputSet(...args)).inputs;
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 let directory: string;

@@ -12,6 +12,10 @@ import { createProviderExecutionContext, ProviderCostLimitError } from './runtim
 import type { ProviderRuntimeConfig } from './types';
 import { getProviderUsage, resetProviderUsage } from './usage';
 
+// Derived from the ambient `fetch` rather than the DOM `RequestInfo`: this
+// engine is typechecked without DOM libs (packages/engine/tsconfig.json).
+type FetchInput = Parameters<typeof fetch>[0];
+
 function config(overrides: Partial<ProviderRuntimeConfig> = {}): ProviderRuntimeConfig {
   return {
     provider: 'kimi',
@@ -34,7 +38,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe('OpenAI-compatible transport', () => {
   it('uses Kimi K3 current token and reasoning fields', async () => {
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'done' } }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }), { status: 200, headers: { 'content-type': 'application/json' } })));
@@ -61,7 +65,7 @@ describe('OpenAI-compatible transport', () => {
     ['HIGH', 'high'],
     ['MAX', 'max'],
   ] as const)('maps OpenRouter Kimi K3 %s to reasoning effort %s', async (level, effort) => {
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'done' } }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0 },
     }), { status: 200, headers: { 'content-type': 'application/json' } })));
@@ -131,7 +135,7 @@ describe('OpenAI-compatible transport', () => {
 
   it('deletes uploaded Kimi files even when extraction reaches the job cost ceiling', async () => {
     const runtime = createProviderExecutionContext({ maxCostUsd: 0.001 });
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const fetchMock = vi.fn((_input: FetchInput, init?: RequestInit) => {
       if (init?.method === 'POST') {
         return Promise.resolve(new Response(JSON.stringify({ id: 'file-1' }), {
           status: 200,
@@ -161,7 +165,7 @@ describe('OpenAI-compatible transport', () => {
   it('starts the Kimi DELETE timeout after waiting for a low-rate request slot', async () => {
     const runtime = createProviderExecutionContext({ requestsPerMinute: 6 });
     const waitForRequestSlot = vi.spyOn(runtime, 'waitForRequestSlot');
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const fetchMock = vi.fn((_input: FetchInput, init?: RequestInit) => {
       if (init?.method === 'POST') {
         return Promise.resolve(new Response(JSON.stringify({ id: 'file-slow-rate' }), {
           status: 200,
@@ -323,7 +327,7 @@ describe('OpenAI-compatible transport', () => {
   });
 
   it('requests terminal stream usage only from providers that still document the flag', async () => {
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => Promise.resolve(new Response([
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => Promise.resolve(new Response([
       `data: ${JSON.stringify({ choices: [{ delta: { content: 'done' }, finish_reason: 'stop' }] })}\n\n`,
       `data: ${JSON.stringify({ choices: [{ delta: {}, usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }] })}\n\n`,
       'data: [DONE]\n\n',
@@ -575,7 +579,7 @@ describe('OpenAI-compatible transport', () => {
   });
 
   it('preserves Kimi reasoning content and records OpenAI usage', async () => {
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{
         finish_reason: 'stop',
         message: { role: 'assistant', content: 'done', reasoning_content: 'checked the fields' },
@@ -614,7 +618,7 @@ describe('OpenAI-compatible transport', () => {
   });
 
   it('preserves Muse minimal effort instead of silently upgrading it', async () => {
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'done' } }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }), { status: 200, headers: { 'content-type': 'application/json' } })));
@@ -640,7 +644,7 @@ describe('OpenAI-compatible transport', () => {
   });
 
   it('uses the token field supported by the default local endpoint', async () => {
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'done' } }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }), { status: 200, headers: { 'content-type': 'application/json' } })));
@@ -665,7 +669,7 @@ describe('OpenAI-compatible transport', () => {
     ['kimi', 'kimi-k3', 'https://api.moonshot.ai/v1'],
     ['openrouter', 'google/gemini-3.5-flash', 'https://openrouter.ai/api/v1'],
   ] as const)('sends the output cap as max_completion_tokens on %s', async (provider, model, baseUrl) => {
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'done' } }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }), { status: 200, headers: { 'content-type': 'application/json' } })));
@@ -686,7 +690,7 @@ describe('OpenAI-compatible transport', () => {
   });
 
   it('uses Cloudflare gateway authentication and omits provider auth in BYOK mode', async () => {
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }), { status: 200, headers: { 'content-type': 'application/json' } })));
@@ -713,7 +717,7 @@ describe('OpenAI-compatible transport', () => {
 
   it('uses the current OpenRouter reasoning shape and preserves reasoning details', async () => {
     const reasoningDetails = [{ type: 'reasoning.text', text: 'inspect totals', id: 'reason-1' }];
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{
         finish_reason: 'tool_calls',
         message: {
@@ -757,7 +761,7 @@ describe('OpenAI-compatible transport', () => {
   });
 
   it('requires parameter-capable OpenRouter routes without mislabeling optional schemas as strict', async () => {
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => (
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => (
       Promise.resolve(new Response(JSON.stringify({
         choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{"value":"ok"}' } }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0 },
@@ -803,7 +807,7 @@ describe('OpenAI-compatible transport', () => {
   });
 
   it('does not claim strict-schema support for an unknown compatible endpoint', async () => {
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => (
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => (
       Promise.resolve(new Response(JSON.stringify({
         choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{"value":"ok"}' } }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
@@ -849,7 +853,7 @@ describe('OpenAI-compatible transport', () => {
   });
 
   it('keeps Kimi MFJS schemas strict while wiring Muse reasoning effort', async () => {
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{}' } }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }), { status: 200, headers: { 'content-type': 'application/json' } })));
@@ -883,7 +887,7 @@ describe('OpenAI-compatible transport', () => {
   });
 
   it('claims strict mode only for schemas that satisfy the narrow strict dialect', async () => {
-    const fetchMock = vi.fn((_input: Parameters<typeof fetch>[0], _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((_input: FetchInput, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
       choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{}' } }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }), { status: 200, headers: { 'content-type': 'application/json' } })));

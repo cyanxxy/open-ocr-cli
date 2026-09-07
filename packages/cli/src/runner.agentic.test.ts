@@ -15,10 +15,13 @@ vi.mock('@open-ocr/engine/agentLoop', () => ({
 }));
 
 import { resolveCliOptions } from './config';
-import { discoverInputs } from './inputs';
+import { discoverInputSet } from './inputs';
 import { runBatch } from './runner';
 import { cliBatchExitCode } from './errors';
 import { toOcrRunResult } from './protocol';
+
+const discoverInputs = async (...args: Parameters<typeof discoverInputSet>) =>
+  (await discoverInputSet(...args)).inputs;
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 let directory: string;
@@ -88,6 +91,13 @@ describe('CLI agentic batch orchestration', () => {
     });
     expect(mockAgentLoop.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ throwOnFailure: true }));
     expect(first).toMatchObject({ total: 2, succeeded: 0, partial: 2, failed: 0 });
+    expect(first.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        status: 'partial',
+        partialReason: 'max_iterations',
+        nextAction: 'increase_max_iterations',
+      }),
+    ]));
     expect(await readFile(path.join(output, 'one.md'), 'utf8')).toContain('INV-42');
     expect(await readFile(path.join(output, 'one.json'), 'utf8')).toContain('max_iterations');
     const trace = JSON.parse(await readFile(path.join(output, 'one.steps.json'), 'utf8')) as AgentStep[];
@@ -132,6 +142,10 @@ describe('CLI agentic batch orchestration', () => {
     // says so, rather than reporting the remainder as a retryable NOT_RUN.
     expect(summary.costLimitReached).toBe(true);
     expect(summary.partial).toBe(1);
+    expect(summary.results[0]).toMatchObject({
+      partialReason: 'cost_limit_reached',
+      nextAction: 'increase_max_cost',
+    });
     expect(mockAgentLoop).toHaveBeenCalledTimes(1);
     const unscheduled = summary.results.find((result) => result.skipReason === 'cost-limit');
     expect(unscheduled?.errorDetails).toMatchObject({ code: 'COST_LIMIT', retryable: false });

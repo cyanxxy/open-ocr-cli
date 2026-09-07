@@ -91,9 +91,6 @@ jobs:
       - name: Security audit
         run: npx audit-ci --config audit-ci.json
 
-      - name: Build CLI
-        run: npm run cli:smoke
-
       - name: Prepare GitHub release notes
         run: node scripts/extract-release-notes.mjs "${GITHUB_REF_NAME}" release-notes.md
 
@@ -125,16 +122,15 @@ jobs:
             });
           '
           "$binary" extract evals/corpus/raster/invoice.png --provider kimi --dry-run --quiet
+          node scripts/smoke-mcp.mjs "$binary"
 
       - name: Generate release artifacts
         shell: bash
         run: |
           node scripts/render-homebrew-formula.mjs "${{ steps.pack.outputs.tarball }}" open-ocr-cli.rb
-          tar -czf "open-ocr-cli-${GITHUB_REF_NAME}-dist.tar.gz" -C packages/cli/dist .
           sha256sum \
             "${{ steps.pack.outputs.tarball }}" \
             open-ocr-cli.rb \
-            "open-ocr-cli-${GITHUB_REF_NAME}-dist.tar.gz" \
             release-notes.md > SHA256SUMS
 
       - name: Set up QEMU
@@ -160,7 +156,6 @@ jobs:
           path: |
             ${{ steps.pack.outputs.tarball }}
             open-ocr-cli.rb
-            open-ocr-cli-${{ github.ref_name }}-dist.tar.gz
             release-notes.md
             SHA256SUMS
 
@@ -298,7 +293,6 @@ jobs:
         with:
           body_path: release-notes.md
           files: |
-            open-ocr-cli-*-dist.tar.gz
             open-ocr-cli-*.tgz
             open-ocr-cli.rb
             SHA256SUMS

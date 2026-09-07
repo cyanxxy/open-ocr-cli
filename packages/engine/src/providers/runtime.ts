@@ -340,7 +340,7 @@ export class ProviderExecutionContext {
   }
 }
 
-/** Default context for direct library consumers; batch hosts supply their own. */
+/** Shared context for hosts and direct library consumers. */
 export const defaultProviderExecutionContext = new ProviderExecutionContext();
 
 export function createProviderExecutionContext(

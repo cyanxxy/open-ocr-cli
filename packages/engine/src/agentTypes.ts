@@ -52,9 +52,7 @@ export interface RegionCropResult {
   height: number;
 }
 
-/**
- * Runtime adapter used by re-OCR. Hosts supply a native image/PDF cropper.
- */
+/** Runtime adapter supplied by a host that supports region re-OCR. */
 export type RegionCropper = (
   fileData: string,
   mimeType: string,
@@ -80,7 +78,7 @@ export interface AgentDocumentInput {
  */
 export interface AgentStep {
   type: 'thinking' | 'function_call' | 'result' | 'error';
-  /** Semantic origin; `type` is the browser UI presentation category. */
+  /** Semantic origin; `type` is the host-facing presentation category. */
   source?: 'runtime' | 'thought_summary' | 'reasoning' | 'model_output' | 'tool_call' | 'tool_result';
   /** Provider step identifier when one exists. */
   id?: string;
@@ -94,7 +92,7 @@ export interface AgentStep {
 
 /**
  * Runtime Gemini client configuration required by the agent.
- * This keeps the core agent loop independent from the UI settings store.
+ * This keeps the core agent loop independent from host configuration.
  */
 export interface AgentClientConfig {
   apiKey: string;
@@ -110,16 +108,6 @@ export interface AgentClientConfig {
   regionCropper?: RegionCropper;
   /** Optional provider-neutral structured extraction adapter for region re-OCR. */
   regionStructuredExtractor?: RegionStructuredExtractor;
-}
-
-/**
- * Represents the agent's response to a prompt
- */
-export interface AgentResponse {
-  content: string;
-  functionCalls?: AgentFunctionCall[];
-  steps: AgentStep[];
-  finished: boolean;
 }
 
 /**

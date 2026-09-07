@@ -234,6 +234,20 @@ export interface OcrArtifacts {
   agentSteps?: AgentStep[];
 }
 
+export type OcrPartialReason =
+  | 'readiness_not_met'
+  | 'max_iterations'
+  | 'tool_limit_reached'
+  | 'time_budget_reached'
+  | 'cost_limit_reached';
+
+export type OcrNextAction =
+  | 'review_partial_output'
+  | 'increase_max_iterations'
+  | 'retry_document'
+  | 'increase_timeout'
+  | 'increase_max_cost';
+
 export interface OcrJobResult {
   status: 'succeeded' | 'partial' | 'failed' | 'skipped';
   input: ResolvedInput;
@@ -257,6 +271,8 @@ export interface OcrJobResult {
   outputArtifacts?: ArtifactTarget[];
   plannedOutputArtifacts?: ArtifactTarget[];
   skipReason?: 'validated' | 'resumed' | 'cancelled' | 'cost-limit' | 'fail-fast';
+  partialReason?: OcrPartialReason;
+  nextAction?: OcrNextAction;
   error?: string;
   errorDetails?: OcrErrorPayload;
   attempts: number;

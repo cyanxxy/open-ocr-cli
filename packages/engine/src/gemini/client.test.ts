@@ -23,10 +23,10 @@ vi.mock('@google/genai', () => ({
 import { GoogleGenAI } from '@google/genai';
 import {
   applyThinkingConfig,
+  assertCompleteGeminiResponse,
+  createGeminiStreamCompletionTracker,
   getGenAIClient,
-  getModelClient,
   isFatalGeminiError,
-  isGemini3Model,
   isRetryableGeminiError,
 } from './client';
 import { OcrError, OcrErrorType } from './types';
@@ -55,112 +55,49 @@ describe('getGenAIClient', () => {
   });
 });
 
-describe('getModelClient', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+describe('assertCompleteGeminiResponse', () => {
+  it('rejects a response with no candidate instead of allowing an empty success', () => {
+    expect(() => assertCompleteGeminiResponse({ candidates: undefined }))
+      .toThrow(/no candidate/i);
   });
 
-  it('generates content from a prompt and maps maxTokens to maxOutputTokens', async () => {
-    mockGenerateContent.mockResolvedValueOnce({
-      text: 'extracted text',
-      candidates: [{ index: 0, finishReason: 'STOP' }],
-    });
-
-    const model = getModelClient('model-test-key', 'gemini-3-flash-preview');
-    const result = await model.generateContent({
-      prompt: 'Read this document',
-      generationConfig: { temperature: 0.1, maxTokens: 2048 },
-      safetySettings: [{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' }],
-    });
-
-    expect(mockGenerateContent).toHaveBeenCalledWith({
-      model: 'gemini-3-flash-preview',
-      contents: 'Read this document',
-      config: {
-        temperature: 0.1,
-        maxOutputTokens: 2048,
-        safetySettings: [{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' }],
-      },
-    });
-    expect(result.response.text()).toBe('extracted text');
-    expect(result.response.candidates).toEqual([{ index: 0, finishReason: 'STOP' }]);
+  it('rejects a blocked prompt and a MAX_TOKENS candidate, accepts STOP', () => {
+    expect(() => assertCompleteGeminiResponse({
+      candidates: [{ finishReason: 'STOP' }],
+      promptFeedback: { blockReason: 'SAFETY' },
+    })).toThrow(/blocked by safety filters/i);
+    expect(() => assertCompleteGeminiResponse({ candidates: [{ finishReason: 'MAX_TOKENS' }] }))
+      .toThrow(/incomplete output/i);
+    expect(() => assertCompleteGeminiResponse({ candidates: [{ finishReason: 'STOP' }] }))
+      .not.toThrow();
   });
 
-  it('rejects a response with no candidate instead of returning an empty success', async () => {
-    mockGenerateContent.mockResolvedValueOnce({ text: undefined, candidates: undefined });
-
-    const model = getModelClient('model-test-key');
-    await expect(model.generateContent({ contents: 'hello' })).rejects.toThrow(/no candidate/i);
-
-    expect(mockGenerateContent).toHaveBeenCalledWith({
-      model: 'gemini-3.5-flash',
-      contents: 'hello',
-    });
-  });
-
-  it('streams chunks that expose their text', async () => {
-    async function* fakeSdkStream() {
-      yield { text: 'first ', candidates: [{}] };
-      yield { text: 'second', candidates: [{ finishReason: 'STOP' }] };
-      yield { text: undefined, usageMetadata: { totalTokenCount: 3 } };
-    }
-    mockGenerateContentStream.mockResolvedValueOnce(fakeSdkStream());
-
-    const model = getModelClient('model-test-key', 'gemini-3-flash-preview');
-    const { stream } = await model.generateContentStream({
-      prompt: 'stream this',
-      generationConfig: { maxOutputTokens: 1024 },
-    });
-
-    const chunks: string[] = [];
-    for await (const chunk of stream) {
-      chunks.push(chunk.text());
-    }
-
-    expect(chunks).toEqual(['first ', 'second', '']);
-    expect(mockGenerateContentStream).toHaveBeenCalledWith({
-      model: 'gemini-3-flash-preview',
-      contents: 'stream this',
-      config: { maxOutputTokens: 1024 },
-    });
-  });
-
-  it('rejects a wrapped stream that reaches MAX_TOKENS', async () => {
-    async function* fakeSdkStream() {
-      yield { text: 'partial', candidates: [{}] };
-      yield { text: ' truncated', candidates: [{ finishReason: 'MAX_TOKENS' }] };
-    }
-    mockGenerateContentStream.mockResolvedValueOnce(fakeSdkStream());
-    const model = getModelClient('model-test-key');
-    const { stream } = await model.generateContentStream({ prompt: 'stream this' });
-
-    const consume = async (): Promise<void> => {
-      for await (const chunk of stream) chunk.text();
-    };
-    await expect(consume()).rejects.toThrow(/incomplete output/i);
-  });
-
-  it('rejects a wrapped stream that ends without terminal STOP', async () => {
-    async function* fakeSdkStream() {
-      yield { text: 'possibly truncated', candidates: [{}] };
-    }
-    mockGenerateContentStream.mockResolvedValueOnce(fakeSdkStream());
-    const model = getModelClient('model-test-key');
-    const { stream } = await model.generateContentStream({ prompt: 'stream this' });
-
-    const consume = async (): Promise<void> => {
-      for await (const chunk of stream) chunk.text();
-    };
-    await expect(consume()).rejects.toThrow(/without a terminal STOP/i);
+  it('rejects a candidate without a terminal finish reason', () => {
+    expect(() => assertCompleteGeminiResponse({ candidates: [{}] }))
+      .toThrow(/without a terminal finish reason/i);
   });
 });
 
-describe('isGemini3Model', () => {
-  it('recognizes Gemini 3 models', () => {
-    expect(isGemini3Model('gemini-3.1-pro-preview')).toBe(true);
-    expect(isGemini3Model('gemini-3-flash-preview')).toBe(true);
-    expect(isGemini3Model('gemini-3.5-flash')).toBe(true);
-    expect(isGemini3Model('gemini-3.1-flash-lite')).toBe(true);
+describe('createGeminiStreamCompletionTracker', () => {
+  it('rejects a stream that reaches MAX_TOKENS', () => {
+    const completion = createGeminiStreamCompletionTracker();
+    completion.observe({ candidates: [{}] });
+    expect(() => completion.observe({ candidates: [{ finishReason: 'MAX_TOKENS' }] }))
+      .toThrow(/incomplete output/i);
+  });
+
+  it('rejects a stream that ends without terminal STOP', () => {
+    const completion = createGeminiStreamCompletionTracker();
+    completion.observe({ candidates: [{}] });
+    expect(() => completion.assertComplete()).toThrow(/without a terminal STOP/i);
+  });
+
+  it('accepts a stream whose last candidate reports STOP, ignoring usage-only chunks', () => {
+    const completion = createGeminiStreamCompletionTracker();
+    completion.observe({ candidates: [{}] });
+    completion.observe({ candidates: [{ finishReason: 'STOP' }] });
+    completion.observe({});
+    expect(() => completion.assertComplete()).not.toThrow();
   });
 });
 

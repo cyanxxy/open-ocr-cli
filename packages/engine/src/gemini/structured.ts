@@ -27,6 +27,6 @@ export function parseJsonPayload<T>(rawText: string, contextLabel: string): T {
     return JSON.parse(extractJsonPayload(rawText, contextLabel)) as T;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${contextLabel} returned invalid JSON: ${message}`);
+    throw new Error(`${contextLabel} returned invalid JSON: ${message}`, { cause: error });
   }
 }

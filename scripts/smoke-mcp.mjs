@@ -78,7 +78,7 @@ try {
   const capabilities = await request('tools/call', { name: 'ocr_capabilities', arguments: {} });
   assert.equal(capabilities.result.structuredContent.capabilities.protocolVersion, 2);
   const invalid = await request('tools/call', {
-    name: 'ocr_extract', arguments: { inputs: ['-'], dryRun: true },
+    name: 'ocr_extract', arguments: { inputs: [{ type: 'path', path: '-' }], dryRun: true },
   });
   assert.ok(invalid.error || invalid.result?.isError);
   child.stdin.end();

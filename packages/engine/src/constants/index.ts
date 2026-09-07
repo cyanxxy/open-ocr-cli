@@ -1,8 +1,8 @@
 /**
- * Application-wide constants
+ * Engine-wide constants
  */
 
-// File upload constraints (MIME-specific Gemini inline limits).
+// File input constraints (MIME-specific Gemini inline limits).
 // Images: 70MB raw, leaving room for base64 expansion plus prompt/JSON overhead
 // under the current 100MB inline payload ceiling. PDFs: 50MB / 1,000 pages.
 export const FILE_CONSTRAINTS = {
@@ -13,12 +13,6 @@ export const FILE_CONSTRAINTS = {
   MAX_PDF_SIZE: 50 * 1024 * 1024,
   MAX_PDF_SIZE_LABEL: '50MB',
   MAX_PDF_PAGES: 1000,
-  /**
-   * Absolute max across MIME types (images). Prefer MAX_IMAGE_SIZE / MAX_PDF_SIZE
-   * for validation; kept for callers that need a single upper bound.
-   */
-  MAX_SIZE: 70 * 1024 * 1024,
-  MAX_SIZE_LABEL: '70MB',
   SUPPORTED_IMAGE_MIME_TYPES: [
     'image/png',
     'image/jpeg',
@@ -28,20 +22,21 @@ export const FILE_CONSTRAINTS = {
     'image/heif',
   ],
   SUPPORTED_DOCUMENT_MIME_TYPES: ['application/pdf'],
-  ACCEPTED_IMAGE_TYPES: ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.heic', '.heif'],
-  ACCEPTED_DOCUMENT_TYPES: ['.pdf'],
-  ACCEPTED_MIME_TYPES: {
-    'image/png': ['.png'],
-    'image/jpeg': ['.jpg', '.jpeg'],
-    'image/webp': ['.webp'],
-    'image/gif': ['.gif'],
-    'image/heic': ['.heic'],
-    'image/heif': ['.heif'],
-    'application/pdf': ['.pdf']
-  },
 } as const;
 
-/** Max upload size for a given MIME type (PDF vs image). */
+/** File-extension → MIME map shared by every host (CLI discovery, evals fixtures). */
+export const EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
+};
+
+/** Max input size for a given MIME type (PDF vs image). */
 export function maxFileSizeForMime(mimeType: string): { bytes: number; label: string } {
   if (mimeType === 'application/pdf') {
     return {
@@ -54,4 +49,3 @@ export function maxFileSizeForMime(mimeType: string): { bytes: number; label: st
     label: FILE_CONSTRAINTS.MAX_IMAGE_SIZE_LABEL,
   };
 }
-

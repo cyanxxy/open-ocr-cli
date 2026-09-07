@@ -40,7 +40,7 @@
  * Keywords the provider documents for `responseJsonSchema`. Mirrors
  * `SUPPORTED_KEYWORDS` in `packages/cli/src/schema.ts`, which is the gate a
  * user-supplied schema must already pass; the two are kept in sync by hand
- * because `packages/engine` cannot import from the package that depends on it. Anything
+ * because the engine cannot import from the package that depends on it. Anything
  * accepted there must be accepted here, or the CLI would warn about schemas it
  * just told the caller were supported.
  *

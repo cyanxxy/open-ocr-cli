@@ -3,7 +3,9 @@
 Scope: shared extraction engine, CLI and MCP adapters, request/result schemas,
 batch lifecycle and persistence, provider execution, agent progress, packaging,
 evaluation tooling, and public integration guidance. Existing uncommitted
-contract changes were preserved and used as the starting point.
+contract changes were preserved and used as the starting point. The release was
+then reconciled with upstream 3.0.1, retaining its engine restructure, retry,
+partial-result, packaging, and CLI fixes.
 
 ## Fixed
 
@@ -17,15 +19,15 @@ contract changes were preserved and used as the starting point.
 | Cancellation during a document-start event could still launch extraction | Relay an already-aborted parent signal and check before invoking the extractor. Regression test verifies no extraction call occurs. |
 | A worker failure could release the output lock while sibling workers remained active | Abort the pool and join all workers before propagating failure. Regression test checks lock lifetime while a sibling is finishing. |
 | An undefined rejection could appear to be successful agent completion | Track rejection independently of the rejection value; test undefined, null, and string reasons. |
-| Bundled engine packaging needed verification | Explicitly bundle the private engine and Gemini SDK, support bundled CommonJS dependencies in ESM, and exercise the installed tarball's lazy MCP entry point. |
+| Bundled engine packaging needed verification | Explicitly bundle the private engine and Gemini SDK, retain the upstream fetch-based Gemini bundle, and exercise the installed tarball's lazy MCP entry point. |
 | Build/release/docs still described a browser product | Update CI artifacts, Docker workspace manifests, release version checks, contributor/security guidance, and the distributed OCR skill. |
 
 ## Verification
 
 - Typecheck: engine, CLI, and evaluation/tooling projects passed.
-- Tests: 51 files, 687 tests passed. Browser-only suites were removed with their host.
-- Coverage gate passed: 84.93% statements, 75.09% branches, 90.17% functions, 87.91% lines.
-- Lint: zero errors; 87 warnings remain in the retained code/test surface. They are not represented as fixed by this audit.
+- Tests: 51 files, 698 tests passed. Browser-only suites were removed with their host.
+- Coverage gate passed: 84.93% statements, 75.16% branches, 89.97% functions, 88.06% lines.
+- Lint: zero errors; 84 warnings remain in the retained code/test surface. They are not represented as fixed by this audit.
 - CLI build/help and install-from-tarball smoke passed.
 - Packaged MCP stdio discovery, tool catalog, capabilities, invalid stdin input, and shutdown passed using protocol frames against the SDK-backed server.
 - GitHub Action wrapper smoke and npm pack dry run passed.

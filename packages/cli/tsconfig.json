@@ -2,8 +2,9 @@
   "compilerOptions": {
     "target": "ES2022",
     /* DOM libs are deliberately excluded: the CLI runs in Node, so any browser
-       API reaching its import graph (for example, canvas or FileReader) must fail typecheck instead of crashing
-       at runtime. Use the Node adapters (packages/cli/src/nodeRegionCropper.ts,
+       API reaching its import graph (its own source or the bundled
+       @open-ocr/engine package) must fail typecheck instead of crashing at
+       runtime. Use the Node adapters (packages/cli/src/nodeRegionCropper.ts,
        node:fs + Buffer) instead of adding "DOM" back here. */
     "lib": ["ES2023"],
     "module": "ESNext",

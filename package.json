@@ -1,8 +1,8 @@
 {
   "name": "open-ocr-workspace",
   "private": true,
-  "version": "3.0.0",
-  "description": "Provider-neutral multimodal OCR engine, CLI, and MCP server for agents.",
+  "version": "4.0.0",
+  "description": "Provider-neutral multimodal OCR engine, CLI, and MCP server for images, PDFs, URLs, JSON schemas, and agentic extraction.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -45,18 +45,15 @@
   },
   "scripts": {
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit -p packages/engine/tsconfig.json && tsc --noEmit -p tsconfig.node.json && npm run typecheck -w open-ocr-cli",
+    "typecheck": "npm run typecheck -w @open-ocr/engine && tsc --noEmit -p tsconfig.node.json && npm run typecheck -w open-ocr-cli",
     "cli": "tsx packages/cli/src/index.ts",
     "cli:build": "npm run build -w open-ocr-cli",
     "cli:smoke": "npm run cli:build && node packages/cli/dist/index.js --help",
     "cli:install-smoke": "node scripts/smoke-packed-cli.mjs",
     "action:smoke": "node scripts/smoke-github-action.mjs",
-    "cli:pack": "npm pack ./packages/cli",
     "test": "vitest run --maxWorkers=4",
-    "test:run": "vitest run --maxWorkers=4",
     "test:watch": "vitest --watch",
     "test:coverage": "vitest run --coverage --maxWorkers=4",
-    "test:ui": "vitest --ui",
     "evals": "tsx evals/run.ts --suite full",
     "evals:canary": "tsx evals/run.ts --suite canary",
     "evals:benchmark": "tsx evals/run.ts --suite benchmark",
@@ -68,32 +65,22 @@
     "evals:report": "tsx evals/render-report.ts",
     "evals:validate": "tsx evals/validate.ts"
   },
-  "dependencies": {
-    "@google/genai": "^2.11.0",
-    "html-to-text": "^10.0.1",
-    "ipaddr.js": "^2.4.0",
-    "pdfjs-dist": "^6.2.108"
-  },
   "devDependencies": {
-    "@eslint/js": "^9.9.1",
-    "@napi-rs/canvas": "^1.0.2",
-    "@types/html-to-text": "^9.0.4",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^20.19.43",
     "@vitest/coverage-v8": "^4.0.18",
-    "@vitest/ui": "^4.0.18",
-    "ajv": "^8.20.0",
-    "ajv-formats": "^3.0.1",
     "audit-ci": "^7.1.0",
-    "commander": "^14.0.3",
-    "eslint": "^9.9.1",
-    "fast-glob": "^3.3.3",
+    "eslint": "^10.8.1",
     "globals": "^17.3.0",
-    "sharp": "^0.35.3",
-    "tsup": "^8.5.1",
     "tsx": "^4.20.5",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.3.0",
-    "vitest": "^4.0.18",
-    "@open-ocr/engine": "3.0.0"
+    "vitest": "^4.0.18"
+  },
+  "allowScripts": {
+    "fsevents@2.3.3": true,
+    "protobufjs@7.6.5": true,
+    "@google/genai@2.17.1": true,
+    "esbuild@0.28.2": true
   }
 }

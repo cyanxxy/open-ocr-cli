@@ -669,6 +669,8 @@ describe('agent protocols', () => {
     const timestamp = new Date().toISOString();
     const partial = toOcrRunResult('partial-run', summaryFor({
       status: 'partial',
+      partialReason: 'max_iterations',
+      nextAction: 'increase_max_iterations',
       input,
       provider: 'gemini',
       gateway: 'direct',
@@ -681,6 +683,10 @@ describe('agent protocols', () => {
       outputFiles: ['/workspace/output/invoice.md'],
     }), 'reference');
     expect(partial.ok).toBe(false);
+    expect(partial.documents[0]).toMatchObject({
+      partialReason: 'max_iterations',
+      nextAction: 'increase_max_iterations',
+    });
     expect(() => assertOcrMachineResult({ ...partial, ok: true })).toThrow('Invalid OCR result');
     expect(() => assertOcrJobEvent({
       protocolVersion: 2,

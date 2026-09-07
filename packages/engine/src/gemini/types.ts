@@ -114,9 +114,9 @@ export interface ExtractionRule {
  * Structured extraction presets built on top of OCR rules.
  */
 export interface ExtractionPreset {
-  /** Stable preset identifier used across UI, evals, and reports. */
+  /** Stable preset identifier used across hosts, evals, and reports. */
   id: string;
-  /** Human-readable preset label shown in the UI. */
+  /** Human-readable preset label. */
   label: string;
   /** Short description of the preset's intended use case. */
   description: string;
@@ -205,7 +205,7 @@ export type GeminiModel =
   | 'gemini-3.1-flash-lite';
 
 /**
- * Provider-neutral reasoning effort (uppercase for UI/storage; lowercased at wire).
+ * Provider-neutral reasoning effort (uppercase in host config; lowercased at wire).
  * - MINIMAL: Lightest reasoning (Flash / Flash-Lite)
  * - LOW: Light reasoning, faster response
  * - MEDIUM: Balanced reasoning (3.5 Flash API default)

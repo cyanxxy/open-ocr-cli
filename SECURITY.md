@@ -39,28 +39,39 @@ Instead, use GitHub's private vulnerability reporting:
 
 ### API Key Handling
 
-This application requires a Google Gemini API key. Please follow these best practices:
+This tool requires a provider API key (Gemini, Moonshot, Meta, or OpenRouter).
+Please follow these best practices:
 
 1. **Never commit API keys** to version control
-2. **Use environment variables** when possible
-3. **Rotate keys regularly** if you suspect they may have been exposed
-4. **Use restricted API keys** with only the permissions needed
+2. **Rotate keys regularly** if you suspect they may have been exposed
+3. **Use restricted API keys** with only the permissions needed
 
-### Local configuration and artifacts
+### How the CLI Reads Credentials
 
-Configuration stores credential environment-variable names, never API keys.
-Treat extraction artifacts and detailed progress events as document data, and
-choose output directories with appropriate access controls.
+Keys are read **only** from an environment variable, named by the `apiKeyEnv`
+config setting (default `GEMINI_API_KEY`, `MOONSHOT_API_KEY`, `META_API_KEY`, or
+`OPENROUTER_API_KEY`). The CLI never accepts a raw key as a command-line
+argument or a config-file value, and never writes one to a config file, a run
+record, an artifact, or a log line. Consider:
+
+- Keeping keys in your shell profile or a secret manager, not in shell history
+- Using `--no-config` (or `OPEN_OCR_NO_CONFIG=1`) for a hermetic run
+- Running `open-ocr-cli doctor` to confirm which variable is being read, without
+  printing its value
+
+The CLI does not persist credentials locally.
 
 ### Content Security
 
-- The application processes images and PDFs locally before sending to the selected provider
+- Documents are read locally and sent directly to the configured provider API
 - Agent mode requires Gemini's stored Interactions chaining (`previous_interaction_id`); its requests and responses are therefore subject to Google's Interactions data-retention policy. One-shot Web OCR sends `store: false`.
 - File size is limited by MIME type: 70MB raw for inline images (safe below the 100MB payload ceiling after base64), 50MB and 1,000 pages for PDFs
 - Only supported file types (images, PDFs) are accepted
 
 ## Security Features
 
+- **Credential Isolation**: Keys are read from environment variables only, never serialized or echoed
 - **Input Validation**: Strict file type and size validation
-- **Typed Errors**: Machine-readable failures with credential redaction
+- **SSRF Protection**: URL extraction blocks private ranges, link-local, and tunnel hosts, and pins DNS across redirects
+- **Untrusted Output**: Extracted document text is treated as third-party content, never as instructions to the calling agent
 - **Production Logging**: Sensitive data is sanitized in production logs

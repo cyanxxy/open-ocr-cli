@@ -1,5 +1,5 @@
 import { waitForAbortableAgentDelay } from '@open-ocr/engine/agentStepStream';
-import { isProviderCostLimitError, isRetryableExtractionError } from '@open-ocr/engine/providers';
+import { isProviderCostLimitError, isRetryableExtractionError, transientRetryDelayMs } from '@open-ocr/engine/providers';
 import { CliExitError } from './errors';
 import type { ResolvedCliOptions } from './types';
 
@@ -42,7 +42,7 @@ export async function runWithProviderRetries<T>(
       ) {
         throw new ExtractionAttemptsError(error, attempt);
       }
-      const delayMs = 750 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
+      const delayMs = transientRetryDelayMs(attempt - 1);
       try {
         await waitForAbortableAgentDelay(delayMs, signal);
       } catch (waitError) {

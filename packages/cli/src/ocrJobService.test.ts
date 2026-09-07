@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveCliOptions } from './config';
-import { discoverInputs } from './inputs';
+import { discoverInputSet } from './inputs';
 import {
   agentProgressMessage,
   normalizeAgentProgressText,
@@ -14,6 +14,9 @@ import {
 } from './ocrJobService';
 import type { OcrJobEvent } from './protocol';
 import type { OcrJobResult } from './types';
+
+const discoverInputs = async (...args: Parameters<typeof discoverInputSet>) =>
+  (await discoverInputSet(...args)).inputs;
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]);
 const HEIC_BYTES = (() => {

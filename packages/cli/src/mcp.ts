@@ -9,11 +9,16 @@ import {
   fromJsonSchema,
   inputRequired,
   inputResponse,
+  isJSONRPCRequest,
   type CacheHint,
   type InputRequiredResult,
+  type JSONRPCMessage,
+  type MessageExtraInfo,
   type RequestStateCodec,
+  type Transport,
+  type TransportSendOptions,
 } from '@modelcontextprotocol/server';
-import { serveStdio } from '@modelcontextprotocol/server/stdio';
+import { serveStdio, StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod/v4';
 
 import { GATEWAY_IDS, PROVIDER_IDS } from '@open-ocr/engine/providers';
@@ -124,7 +129,74 @@ interface McpCapabilitiesResult {
 const ocrResultOutputSchema = fromJsonSchema<OcrMachineResult>(selfContainedResultSchema());
 const ocrCapabilitiesOutputSchema = fromJsonSchema<McpCapabilitiesResult>(selfContainedCapabilitiesToolSchema());
 
-// Versioned catalogs may be shared; discovery also contains the process cwd.
+/**
+ * Keep the modern-only stdio architecture while giving legacy clients an
+ * actionable diagnosis. The SDK's strict rejection currently reports an
+ * `initialize` request naming 2026-07-28 as both unsupported and supported;
+ * the method itself is the legacy-era signal, regardless of that string.
+ */
+export class ModernMcpDiagnosticTransport implements Transport {
+  readonly hasPerRequestStream: boolean | undefined;
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: <T extends JSONRPCMessage>(message: T, extra?: MessageExtraInfo) => void;
+
+  constructor(private readonly inner: Transport) {
+    this.hasPerRequestStream = inner.hasPerRequestStream;
+  }
+
+  get sessionId(): string | undefined {
+    return this.inner.sessionId;
+  }
+
+  async start(): Promise<void> {
+    this.inner.onclose = () => this.onclose?.();
+    this.inner.onerror = (error) => this.onerror?.(error);
+    this.inner.onmessage = <T extends JSONRPCMessage>(message: T, extra?: MessageExtraInfo): void => {
+      if (isJSONRPCRequest(message) && message.method === 'initialize') {
+        void this.inner.send({
+          jsonrpc: '2.0',
+          id: message.id,
+          error: {
+            code: -32600,
+            message: 'Legacy initialize handshake removed in MCP 2026-07-28; use server/discover or include the modern per-request _meta envelope.',
+            data: {
+              reason: 'legacy_initialize_removed',
+              protocolRevision: '2026-07-28',
+              requiredMeta: [
+                'io.modelcontextprotocol/protocolVersion',
+                'io.modelcontextprotocol/clientCapabilities',
+              ],
+            },
+          },
+        }).catch((error: unknown) => {
+          this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+        });
+        return;
+      }
+      this.onmessage?.(message, extra);
+    };
+    await this.inner.start();
+  }
+
+  send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
+    return this.inner.send(message, options);
+  }
+
+  close(): Promise<void> {
+    return this.inner.close();
+  }
+
+  setProtocolVersion(version: string): void {
+    this.inner.setProtocolVersion?.(version);
+  }
+
+  setSupportedProtocolVersions(versions: string[]): void {
+    this.inner.setSupportedProtocolVersions?.(versions);
+  }
+}
+
+// Discovery contains the process working directory; static catalogs may be shared.
 const STATIC_CACHE_HINT: CacheHint = { ttlMs: 3_600_000, cacheScope: 'public' };
 
 // Elicited confirmation before a billed run. Opt-in through the environment
@@ -158,8 +230,13 @@ const documentPath = z.string().min(1)
 const PATH_RESOLUTION_NOTE = 'Relative paths resolve against the server working directory, which ocr_capabilities '
   + 'and the server instructions report; prefer absolute paths.';
 
-const inputsField = z.array(documentPath).min(1)
-  .describe(`Files, directories, or globs. ${PATH_RESOLUTION_NOTE} Directories are scanned recursively, skipping hidden entries and node_modules, dist, build, vendor, and target unless hidden or exclude say otherwise.`);
+const pathInput = z.strictObject({
+  type: z.literal('path'),
+  path: documentPath,
+});
+
+const inputsField = z.array(pathInput).min(1)
+  .describe(`Typed local path inputs matching the run protocol. ${PATH_RESOLUTION_NOTE} Directories are scanned recursively, skipping hidden entries and node_modules, dist, build, vendor, and target unless hidden or exclude say otherwise.`);
 
 const limits = OCR_REQUEST_LIMITS;
 
@@ -356,7 +433,7 @@ export function buildExtractMcpRequest(input: ExtractMcpInput): OcrJobRequest {
   const discovery = discoveryRequest(input);
   return parseOcrJobRequest({
     ...requestBase(input),
-    inputs: input.inputs.map((inputPath) => ({ type: 'path' as const, path: inputPath })),
+    inputs: input.inputs,
     extraction: {
       ...(input.mode ? { mode: input.mode } : {}),
       ...(input.preset ? { preset: input.preset } : {}),
@@ -378,7 +455,7 @@ export function buildAgenticMcpRequest(input: AgenticMcpInput): OcrJobRequest {
   const discovery = discoveryRequest(input);
   return parseOcrJobRequest({
     ...requestBase(input),
-    inputs: input.inputs.map((inputPath) => ({ type: 'path' as const, path: inputPath })),
+    inputs: input.inputs,
     extraction: {
       mode: 'agentic',
       ...(input.contentFormat ? { contentFormat: input.contentFormat } : {}),
@@ -934,6 +1011,7 @@ export function createOcrMcpServer(version: string, cwd = process.cwd()): McpSer
 export async function runMcpServer(version: string): Promise<void> {
   const handle = serveStdio(() => createOcrMcpServer(version), {
     legacy: 'reject',
+    transport: new ModernMcpDiagnosticTransport(new StdioServerTransport()),
     // stdout is the JSON-RPC channel; out-of-band errors belong on stderr.
     onerror: (error) => process.stderr.write(`${error.message}\n`),
   });

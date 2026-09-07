@@ -5,9 +5,15 @@ import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temporary = mkdtempSync(path.join(tmpdir(), 'open-ocr-cli-pack-'));
+const npmCache = path.join(temporary, 'npm-cache');
 
 function run(command, args, cwd = root) {
-  return execFileSync(command, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+  return execFileSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, NPM_CONFIG_CACHE: npmCache },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
 }
 
 try {
@@ -17,11 +23,25 @@ try {
   mkdirSync(installDirectory);
   writeFileSync(path.join(installDirectory, 'package.json'), '{"private":true}\n');
   run('npm', ['install', path.join(temporary, tarballName)], installDirectory);
+  const npmMajor = Number.parseInt(run('npm', ['--version'], installDirectory), 10);
+  if (npmMajor >= 11) {
+    const pendingScripts = JSON.parse(
+      run('npm', ['approve-scripts', '--allow-scripts-pending', '--json'], installDirectory),
+    );
+    if (pendingScripts.allowScripts?.length !== 0) {
+      throw new Error(`Packed CLI has unreviewed install scripts: ${pendingScripts.allowScripts.join(', ')}`);
+    }
+  }
+  for (const packageName of ['@google/genai', '@open-ocr/engine', 'protobufjs']) {
+    if (existsSync(path.join(installDirectory, 'node_modules', ...packageName.split('/')))) {
+      throw new Error(`Packed CLI unexpectedly installed bundled dependency ${packageName}`);
+    }
+  }
   const binaryDirectory = path.join(installDirectory, 'node_modules', '.bin');
   const executable = path.join(binaryDirectory, process.platform === 'win32' ? 'open-ocr-cli.cmd' : 'open-ocr-cli');
   const help = run(executable, ['--help']);
   run(process.execPath, [path.join(root, 'scripts', 'smoke-mcp.mjs'), executable], installDirectory);
-  if (!help.includes('Provider-neutral multimodal OCR')) throw new Error('Packed CLI help did not contain the expected identity');
+  if (!help.includes('multimodal OCR for files')) throw new Error('Packed CLI help did not contain the expected identity');
   const providers = JSON.parse(run(executable, ['providers', '--json']));
   if (!Array.isArray(providers) || !providers.some((entry) => entry.id === 'openrouter')) {
     throw new Error('Packed CLI did not expose the OpenRouter provider');

@@ -38,6 +38,10 @@ open-ocr-cli schema capabilities
 
 An unknown name exits 2 with a typed error listing every accepted name.
 
+When a document status is `partial`, read its required `partialReason` and
+`nextAction` before deciding whether to accept useful output or rerun with a
+higher limit. Do not infer recovery from exit code 1 alone.
+
 Check the provider's `inputImageMimeTypes` before choosing a document: the profiles differ and the differences are not intuitive. The default `gemini` profile accepts HEIC/HEIF but **not** GIF; `kimi`, `muse`, and `openrouter` accept GIF but not HEIC/HEIF; `openai-compatible` refuses PDFs outright. A rejected type fails locally as `INPUT_INVALID` before any billed request.
 
 Run `open-ocr-cli doctor --check-credentials --json` before a paid extraction when credential or provider setup is uncertain. A dry run validates only local inputs and configuration; it does not prove endpoint access. Never request, print, copy, or store a raw API key. The CLI reads credentials only from configured environment variables.

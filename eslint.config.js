@@ -3,13 +3,33 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/coverage/**', 'node_modules', '.claude/**'] },
+  // Global ignores
+  { ignores: ['dist', '**/dist/**', 'coverage', '**/coverage/**', 'node_modules', '.claude/**', '*.config.js'] },
+
+  // Base configuration for all JS/TS files. Everything in this repo runs in
+  // Node (the OCR engine in packages/engine, the CLI in packages/cli, the evals
+  // harness),
+  // so `globals.node` is the baseline. Type-aware linting is enabled via
+  // `projectService` + `recommendedTypeChecked` (audit M-08). Newly-surfaced
+  // type-checked rules are set to 'warn' below as a ratchet so lint stays green
+  // while the noise is paid down incrementally.
   {
     files: ['**/*.{js,mjs,cjs,ts}'],
-    extends: [js.configs.recommended, ...tseslint.configs.recommendedTypeChecked],
+    extends: [
+      js.configs.recommended,
+      ...tseslint.configs.recommendedTypeChecked,
+    ],
     languageOptions: {
-      globals: { ...globals.node, ...globals.es2022 },
-      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: {
+        ...globals.node,
+        ...globals.es2022,
+      },
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
     },
     rules: {
       '@typescript-eslint/no-unused-vars': [
@@ -38,8 +58,27 @@ export default tseslint.config(
       '@typescript-eslint/no-unnecessary-type-assertion': 'warn',
     },
   },
+
+  // Config / tooling files and the Node-side eval scripts are not part of the
+  // app tsconfig project graph; lint them without type information to avoid
+  // "file not found by the project service" parsing errors (audit M-08).
   {
-    files: ['**/*.config.{js,ts}', 'eslint.config.js', 'evals/**/*.ts', 'scripts/**/*.{js,mjs,cjs,ts}'],
+    files: ['**/*.config.{js,ts}', 'evals/**/*.ts', 'scripts/**/*.{js,mjs,cjs,ts}'],
     extends: [tseslint.configs.disableTypeChecked],
   },
+
+  // Test files configuration - strict type safety enforced
+  {
+    files: ['**/*.{test,spec}.{js,mjs,cjs,ts}'],
+    languageOptions: {
+      globals: {
+        ...globals.vitest,
+        ...globals.node,
+      },
+    },
+    rules: {
+      // Enforce strict type safety in tests - this is a production project
+      '@typescript-eslint/no-explicit-any': 'error',
+    },
+  }
 );

@@ -1,24 +1,32 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": [
-      "ES2023"
-    ],
+    "lib": ["ES2023"],
     "module": "ESNext",
-    "moduleResolution": "bundler",
-    "noEmit": true,
-    "strict": true,
+    /* audit M-07: skipLibCheck:false surfaces unfixable TS2307 errors from
+       @google/genai .d.ts importing optional peers (@modelcontextprotocol/sdk)
+       we do not install. Kept true. */
     "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Incremental typecheck; build info is cached outside the working tree. */
+    "incremental": true,
+    "tsBuildInfoFile": "node_modules/.cache/tsbuildinfo.node",
+
+    /* Linting */
+    "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true,
-    "types": [
-      "node"
-    ]
+    "noFallthroughCasesInSwitch": true
   },
-  "include": [
-    "vitest.config.ts",
-    "packages/cli/tsup.config.ts",
-    "evals/**/*.ts"
-  ]
+  /* `evals` is included deliberately: it is the only other first-party TypeScript
+     outside `packages/engine` and `packages/cli`, and while it sat in no project the CI and
+     release typecheck gate never saw it. */
+  "include": ["vitest.config.ts", "packages/cli/tsup.config.ts", "evals/**/*.ts"]
 }

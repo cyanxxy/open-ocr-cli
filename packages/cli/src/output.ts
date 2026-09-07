@@ -347,9 +347,10 @@ async function writeExclusiveFallback(target: string, content: string): Promise<
   try {
     await fs.rm(target, { force: true });
   } catch (cleanupError) {
-    throw new Error(
+    throw new AggregateError(
+      [failure, cleanupError],
       `${errorMessage(failure)}; exclusive-write cleanup also failed: ${errorMessage(cleanupError)}`,
-      { cause: failure },
+      { cause: cleanupError },
     );
   }
   throw failure instanceof Error ? failure : new Error(errorMessage(failure));
@@ -475,7 +476,11 @@ export async function writeTextFileAtomically(
     } catch (cleanupError) {
       const originalMessage = error instanceof Error ? error.message : String(error);
       const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-      throw new Error(`${originalMessage}; staged-file cleanup also failed: ${cleanupMessage}`, { cause: error });
+      throw new AggregateError(
+        [error, cleanupError],
+        `${originalMessage}; staged-file cleanup also failed: ${cleanupMessage}`,
+        { cause: cleanupError },
+      );
     }
     throw error;
   }
