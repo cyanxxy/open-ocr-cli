@@ -185,16 +185,18 @@ function requestFlags(request: OcrJobRequest, outputDirectory?: string): Extract
     progress: request.extraction?.progress,
     detectImages: request.extraction?.detectImages,
     detectMath: request.extraction?.detectMath,
-    maxTokens: request.extraction?.maxTokens?.toString(),
-    maxIterations: request.extraction?.maxIterations?.toString(),
-    confidenceThreshold: request.extraction?.confidenceThreshold?.toString(),
-    concurrency: request.execution?.concurrency?.toString(),
-    retries: request.execution?.retries?.toString(),
-    timeout: request.execution?.timeoutSeconds?.toString(),
-    maxFiles: request.execution?.maxFiles?.toString(),
-    maxTotalMb: request.execution?.maxTotalMb?.toString(),
-    maxCost: request.execution?.maxCostUsd?.toString(),
-    requestsPerMinute: request.execution?.requestsPerMinute?.toString(),
+    // Numbers pass through as numbers: the request schema already validated
+    // them, and the resolver accepts both spellings.
+    maxTokens: request.extraction?.maxTokens,
+    maxIterations: request.extraction?.maxIterations,
+    confidenceThreshold: request.extraction?.confidenceThreshold,
+    concurrency: request.execution?.concurrency,
+    retries: request.execution?.retries,
+    timeout: request.execution?.timeoutSeconds,
+    maxFiles: request.execution?.maxFiles,
+    maxTotalMb: request.execution?.maxTotalMb,
+    maxCost: request.execution?.maxCostUsd,
+    requestsPerMinute: request.execution?.requestsPerMinute,
     failFast: request.execution?.failFast,
     hidden: request.discovery?.hidden,
     exclude: request.discovery?.exclude,
@@ -204,7 +206,11 @@ function requestFlags(request: OcrJobRequest, outputDirectory?: string): Extract
     // this, a perfectly ordinary directory name containing a dot —
     // `.open-ocr-results/run.2026` — was written as a single artifact file.
     outputPathKind: outputDirectory === undefined ? 'auto' : 'directory',
-    resume: request.delivery?.resume ?? true,
+    // Resume is on by default only where it can work: the default output
+    // directory is per run, so nothing in it can ever match an earlier run.
+    // Defaulting to true there silently re-billed every document while telling
+    // the caller resume was active.
+    resume: request.delivery?.resume ?? request.delivery?.outputDirectory !== undefined,
     overwrite: false,
     jsonl: false,
     quiet: true,
@@ -275,6 +281,14 @@ export async function executeOcrJobRequest(
   request: OcrJobRequest,
   execution: ExecuteOcrJobOptions,
 ): Promise<OcrJobServiceResult> {
+  // Everything warned about before the service runs is collected so the
+  // service can replay it as `run.warning` events and carry it in the result.
+  // The host's own channel still hears each one as it happens.
+  const priorWarnings: string[] = [];
+  const warn = (message: string): void => {
+    priorWarnings.push(message);
+    execution.onWarning?.(message);
+  };
   const stdinInputs = request.inputs.filter(isStdinRequestInput);
   if (stdinInputs.length > 0 && request.inputs.length !== 1) {
     throw configurationError(
@@ -318,7 +332,7 @@ export async function executeOcrJobRequest(
       customSchema,
       request.extraction?.schema ? 'extraction.schema' : 'extraction.schemaPath',
     );
-    if (schemaWarning) execution.onWarning?.(schemaWarning);
+    if (schemaWarning) warn(schemaWarning);
   }
   const deliveryMode = request.delivery?.mode ?? 'reference';
   const outputDirectory = deliveryMode === 'reference'
@@ -328,16 +342,14 @@ export async function executeOcrJobRequest(
     : undefined;
   // The default output directory is per-run, so a resume there can never match
   // an earlier run and the caller silently pays for the same documents again.
-  // `resume` defaults to true, so only an explicit request states an intent the
-  // default directory cannot honor; warning on every run would be pure noise.
-  // The result and event schemas are strict, so this rides the warning
-  // channel rather than a new response field.
+  // Resume is off by default without an output directory, so only an explicit
+  // request states an intent the default directory cannot honour.
   if (
     deliveryMode === 'reference'
     && request.delivery?.resume === true
     && request.delivery.outputDirectory === undefined
   ) {
-    execution.onWarning?.(
+    warn(
       'delivery.resume was requested without delivery.outputDirectory, so this run wrote to a new '
       + `per-run directory (${outputDirectory}) that no earlier run can match. `
       + 'Pass the same delivery.outputDirectory on every run for resume to skip unchanged documents.',
@@ -348,20 +360,18 @@ export async function executeOcrJobRequest(
     : fileConfig;
   const stdinInput = stdinInputs[0]?.type === 'stdin' ? stdinInputs[0] : undefined;
   const options = {
-    ...resolveCliOptions(requestFlags(request, outputDirectory), effectiveFileConfig, execution.cwd),
+    // Errors name request fields, not `extract` flags: this caller sent JSON.
+    ...resolveCliOptions(requestFlags(request, outputDirectory), effectiveFileConfig, execution.cwd, 'field'),
     customSchema,
     ...(stdinInput?.name ? { stdinName: stdinInput.name } : {}),
     ...(stdinInput?.mimeType ? { stdinType: stdinInput.mimeType } : {}),
   };
-  // Ignored fields are reported on the warning channel: the result and
-  // event schemas are strict, so a new response field would break consumers
-  // that validate against the published contract.
   const ignoredWarning = ignoredModeScopedOptionWarning(
     ignoredModeScopedOptions(suppliedModeScopedFields(request), options.mode),
     options.mode,
     'field',
   );
-  if (ignoredWarning) execution.onWarning?.(ignoredWarning);
+  if (ignoredWarning) warn(ignoredWarning);
   if (urlInputs.length > 0) {
     const urls = await resolveWebUrls(urlInputs.map((input) => input.url), undefined, execution.cwd);
     assertCredentialsAvailable(options);
@@ -370,6 +380,7 @@ export async function executeOcrJobRequest(
       abortController: execution.abortController,
       eventSink: execution.eventSink,
       onWarning: execution.onWarning,
+      priorWarnings,
       deliveryMode,
       progress: options.progress,
       enableSingleInputResume: deliveryMode === 'reference',
@@ -379,17 +390,17 @@ export async function executeOcrJobRequest(
     input.type === 'stdin' ? '-' : input.type === 'path' ? input.path : input.url
   )), options, execution.abortController.signal);
   // A directory scan that drops files hands back fewer documents than were
-  // requested, which the caller has to hear about. It rides the warning channel
-  // for the same reason ignored fields do — the result and event schemas
-  // are strict — and reuses the CLI's wording so both surfaces say one thing.
+  // requested, which the caller has to hear about. It reuses the CLI's wording
+  // so both surfaces say one thing.
   const skipSummary = describeDiscoverySkips(discovery.skipped);
-  if (skipSummary) execution.onWarning?.(`Discovery: ${skipSummary}`);
+  if (skipSummary) warn(`Discovery: ${skipSummary}`);
   assertCredentialsAvailable(options);
   return createOcrJobService().run(discovery.inputs, options, {
     runId: execution.runId,
     abortController: execution.abortController,
     eventSink: execution.eventSink,
     onWarning: execution.onWarning,
+    priorWarnings,
     deliveryMode,
     progress: options.progress,
     enableSingleInputResume: deliveryMode === 'reference',

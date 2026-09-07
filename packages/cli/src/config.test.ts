@@ -615,6 +615,12 @@ describe('CLI configuration', () => {
     expect(() => resolveCliOptions({ mode: 'template' }, {}, '/workspace')).toThrow('--preset is required');
     expect(() => resolveCliOptions({ format: 'csv' }, {}, '/workspace')).toThrow('only available in template mode');
     expect(() => resolveCliOptions({ concurrency: '0' }, {}, '/workspace')).toThrow('--concurrency');
+    // The machine surfaces ask for request-field vocabulary; a caller that sent
+    // JSON is not told to fix a flag it never typed.
+    expect(() => resolveCliOptions({ concurrency: 0 }, {}, '/workspace', 'field'))
+      .toThrow('execution.concurrency must be an integer from 1 to 16');
+    expect(() => resolveCliOptions({ thinking: 'max' }, {}, '/workspace', 'field'))
+      .toThrow('extraction.thinking max is supported by');
     expect(() => resolveCliOptions({ preset: 'missing' }, {}, '/workspace')).toThrow('Unknown extraction preset');
     expect(() => resolveCliOptions({ maxCost: '0' }, {}, '/workspace')).toThrow('--max-cost');
     expect(() => resolveCliOptions({ requestsPerMinute: '-1' }, {}, '/workspace')).toThrow('--requests-per-minute');

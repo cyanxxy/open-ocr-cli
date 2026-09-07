@@ -21,14 +21,17 @@ describe('logger', () => {
     process.env.NODE_ENV = 'development';
     const logger = await loadLogger();
 
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
+    const stdoutSpy = vi.spyOn(process.stdout, 'write');
     logger.debug('Test debug');
     logger.info('Test info');
     logger.warn('Test warn');
     logger.error('Test error');
 
-    expect(consoleSpy).toHaveBeenCalled();
+    expect(consoleSpy).toHaveBeenCalledTimes(4);
+    expect(stdoutSpy).not.toHaveBeenCalled();
+    stdoutSpy.mockRestore();
     consoleSpy.mockRestore();
   });
 
@@ -36,7 +39,7 @@ describe('logger', () => {
     process.env.NODE_ENV = 'production';
     const logger = await loadLogger();
 
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     logger.info('Test info');
     logger.debug('Test debug');
@@ -51,7 +54,7 @@ describe('logger', () => {
 
     logger.configure({ enableInProduction: true });
 
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     logger.error('Test error', new Error('Production error'));
 

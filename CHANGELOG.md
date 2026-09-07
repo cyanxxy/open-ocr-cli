@@ -1,5 +1,72 @@
 # Changelog
 
+## 4.0.0 - 2026-09-07
+
+Agent-facing contract changes. Protocol v2 schemas, the `run`/MCP surfaces,
+and the direct CLI's JSONL stream change together; there is no compatibility
+branch.
+
+### Fixed
+
+- Restore the CI dependency audit by updating `fast-uri`, `html-to-text` /
+  `deepmerge-ts`, `@humanfs/node`, and `fflate` to patched releases. Remove the
+  obsolete advisory exception and clean up workflow shell lint findings.
+
+- Keep every logger level on stderr so development logging cannot corrupt machine output.
+- Keep MCP discovery private to the client because it includes the server cwd;
+  clamp progress to its total and describe artifact replacement in tool annotations.
+- Honor cancellation during document-start events and join failed worker pools
+  before releasing the output lock.
+- Fail closed when an agent operation rejects with an undefined or non-Error reason.
+- Smoke-test the installed package's MCP stdio entry point as well as the CLI.
+
+### Breaking changes
+
+- `extract --jsonl` emits protocol v2 lifecycle events, the same stream as
+  `run --response-format jsonl`. The CLI-native `document`/`summary`/`error`
+  record family carrying `"version": 1` is gone.
+- `run.result` carries a required `warnings` array; the failure envelope and
+  `run.failed` carry an optional one. A new `run.warning` event with a
+  required `message` joins the event stream.
+- An agentic document's JSON artifact and inline `content.json` are the typed
+  `result-v2.schema.json#/$defs/agenticResult` shape instead of the engine's
+  raw `AgentMemory`. The step trace remains in the `agent-steps` artifact.
+- `capabilities.limits` drops `batchFiles` and `concurrency` and adds
+  `request`, the `min`/`max` of every numeric request field.
+- `delivery.resume` defaults to `true` only when `delivery.outputDirectory` is
+  set. The per-run default directory can never match an earlier run, so
+  resume is off there unless requested.
+- Option errors on `run` and MCP name request fields (`execution.concurrency`,
+  `extraction.thinking`) instead of `extract` flags.
+- MCP: `ocr_run_agentic` no longer accepts `instructions`, which agentic mode
+  never read.
+
+### MCP
+
+- New `ocr_capabilities` tool returning the capabilities document and the
+  server's `workingDirectory`; the same directory is stated in the server's
+  `instructions`. Tool descriptions say that calls block for the whole batch.
+- `ocr_extract` accepts an inline `schema`, `detectImages`, `detectMath`,
+  `hidden`, and `exclude`.
+- Progress notifications count finished documents against a `total` instead
+  of relaying a sequence number.
+- A client that cannot form-elicit under `OPEN_OCR_MCP_CONFIRM=1` is answered
+  with `MissingRequiredClientCapability` (`-32021`) naming `elicitation.form`.
+- The inline-delivery text-block summary is documented as a deliberate
+  departure from the tools specification's mirroring SHOULD.
+
+### Machine protocol
+
+- Warnings the run could not honour in full — ignored mode-scoped fields,
+  discovery skips, a resume that cannot match, schema compatibility — reach
+  the result and the event stream, not only stderr.
+- Every numeric request bound is declared once in `packages/cli/src/limits.ts`
+  and enforced by the schema, the option resolver, the MCP tool schemas, and
+  `capabilities` alike; a test guards the schema against drift.
+- Protocol requests no longer round-trip validated numbers through strings.
+
+[Full comparison](https://github.com/cyanxxy/open-ocr-cli/compare/v3.0.1...v4.0.0)
+
 ## 3.0.1 - 2026-08-14
 
 This patch completes the CLI-only repository restructure and tightens its

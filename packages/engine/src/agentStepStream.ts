@@ -39,6 +39,7 @@ export async function* streamAgentOperation<T>(
   let settled = false;
   let result: T | undefined;
   let failure: unknown;
+  let failed = false;
 
   const notify = (): void => {
     const pending = wake;
@@ -50,7 +51,7 @@ export async function* streamAgentOperation<T>(
     notify();
   }).then(
     (value) => { result = value; },
-    (error: unknown) => { failure = error; },
+    (error: unknown) => { failed = true; failure = error; },
   ).finally(() => {
     settled = true;
     notify();
@@ -73,7 +74,7 @@ export async function* streamAgentOperation<T>(
     });
   }
 
-  if (failure !== undefined) {
+  if (failed) {
     throw failure instanceof Error
       ? failure
       : new Error(typeof failure === 'string' ? failure : 'Agent operation failed');

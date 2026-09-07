@@ -4,6 +4,13 @@ import type { AgentStep } from './agentTypes';
 import { streamAgentOperation, waitForAbortableAgentDelay } from './agentStepStream';
 
 describe('streamAgentOperation', () => {
+  it.each([undefined, null, 'rejected'])('fails closed on a non-Error rejection: %s', async (reason) => {
+    // Exercise arbitrary rejections from third-party async operations.
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+    const generator = streamAgentOperation(() => Promise.reject(reason));
+    await expect(generator.next()).rejects.toThrow(reason === 'rejected' ? 'rejected' : 'Agent operation failed');
+  });
+
   it('yields steps that arrive between empty-queue check and waiter arming', async () => {
     const yielded: AgentStep[] = [];
     let resolveTurn!: (value: string) => void;

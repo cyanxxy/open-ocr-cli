@@ -89,6 +89,50 @@
       },
       "minProperties": 1
     },
+    "agenticField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "confidence"],
+      "properties": {
+        "value": { "type": "string" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "valid": { "type": "boolean" },
+        "validationMessage": { "type": "string" },
+        "validationRule": { "type": "string" },
+        "location": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["page", "x", "y", "width", "height", "units"],
+          "properties": {
+            "page": { "type": "integer", "minimum": 1 },
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "width": { "type": "number" },
+            "height": { "type": "number" },
+            "units": { "const": "normalized" }
+          }
+        }
+      }
+    },
+    "agenticResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documentType", "pageCount", "complexity", "specialFeatures", "confidence", "iterations", "stopReason", "fields"],
+      "properties": {
+        "documentType": { "type": "string" },
+        "pageCount": { "type": "integer", "minimum": 0 },
+        "complexity": { "enum": ["low", "medium", "high"] },
+        "specialFeatures": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "iterations": { "type": "integer", "minimum": 0 },
+        "stopReason": { "enum": ["succeeded", "partial", "max_iterations", "tool_limit_reached", "budget_exhausted", "cost_limit_reached", "cancelled", "failed"] },
+        "fields": { "type": "object", "additionalProperties": { "$ref": "#/$defs/agenticField" } }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
     "document": {
       "type": "object",
       "additionalProperties": false,
@@ -119,6 +163,17 @@
           "then": { "required": ["error"] }
         },
         {
+          "if": { "properties": { "mode": { "const": "agentic" } }, "required": ["mode"] },
+          "then": {
+            "properties": {
+              "content": {
+                "type": "object",
+                "properties": { "json": { "$ref": "#/$defs/agenticResult" } }
+              }
+            }
+          }
+        },
+        {
           "if": { "properties": { "status": { "const": "partial" } }, "required": ["status"] },
           "then": { "required": ["partialReason", "nextAction"] }
         }
@@ -127,7 +182,7 @@
     "success": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["protocolVersion", "type", "ok", "runId", "status", "startedAt", "completedAt", "durationMs", "total", "succeeded", "partial", "failed", "skipped", "mode", "provider", "gateway", "model", "usage", "costLimitReached", "documents"],
+      "required": ["protocolVersion", "type", "ok", "runId", "status", "startedAt", "completedAt", "durationMs", "total", "succeeded", "partial", "failed", "skipped", "mode", "provider", "gateway", "model", "usage", "costLimitReached", "warnings", "documents"],
       "properties": {
         "protocolVersion": { "const": 2 },
         "type": { "const": "run.result" },
@@ -149,6 +204,7 @@
         "usage": { "$ref": "#/$defs/usage" },
         "costLimitUsd": { "type": "number", "exclusiveMinimum": 0 },
         "costLimitReached": { "type": "boolean" },
+        "warnings": { "$ref": "#/$defs/warnings" },
         "documents": { "type": "array", "items": { "$ref": "#/$defs/document" } }
       },
       "allOf": [
@@ -172,6 +228,7 @@
         "ok": { "const": false },
         "runId": { "type": "string", "minLength": 1 },
         "status": { "const": "failed" },
+        "warnings": { "$ref": "#/$defs/warnings" },
         "error": { "$ref": "error-v2.schema.json" }
       }
     }

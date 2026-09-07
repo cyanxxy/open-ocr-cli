@@ -37,7 +37,7 @@ file, GitHub Release, container tag, Homebrew formula, and GitHub Action tag.
    npm run action:smoke
    npx audit-ci --config audit-ci.json
    docker build --tag open-ocr-cli:release-candidate .
-   VERSION=3.0.0
+   VERSION=4.0.0
    node scripts/assert-release-version.mjs "v$VERSION"
    ```
 
@@ -47,20 +47,20 @@ file, GitHub Release, container tag, Homebrew formula, and GitHub Action tag.
 4. Merge the release commit to `main`, wait for CI, then push the immutable tag:
 
    ```bash
-   VERSION=3.0.0
+   VERSION=4.0.0
    git tag "v$VERSION"
    git push origin "v$VERSION"
    ```
 
 5. Confirm the workflow published all five surfaces: npm, GitHub Release,
    `ghcr.io/cyanxxy/open-ocr-cli`, the attached Homebrew formula, and the moving
-   `v3` GitHub Action tag. The workflow only moves `v3` forward from an ancestor
+   `v4` GitHub Action tag. The workflow only moves `v4` forward from an ancestor
    and uses a force-with-lease so a concurrent tag change cannot be overwritten.
    Install from npm and run `open-ocr-cli doctor` once outside the repository.
 
 ## Rollback
 
 Never move or overwrite an immutable release tag. If a release is bad,
-mark that npm version unusable with a clear message, point the moving `v3`
-Action tag back to the last safe v3 release, mark the container tag as affected, and
+mark that npm version unusable with a clear message, point the moving `v4`
+Action tag back to the last safe v4 release, mark the container tag as affected, and
 ship a patch release. Preserve the original release artifacts for auditability.

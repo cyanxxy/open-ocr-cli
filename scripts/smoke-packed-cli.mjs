@@ -40,6 +40,7 @@ try {
   const binaryDirectory = path.join(installDirectory, 'node_modules', '.bin');
   const executable = path.join(binaryDirectory, process.platform === 'win32' ? 'open-ocr-cli.cmd' : 'open-ocr-cli');
   const help = run(executable, ['--help']);
+  run(process.execPath, [path.join(root, 'scripts', 'smoke-mcp.mjs'), executable], installDirectory);
   if (!help.includes('multimodal OCR for files')) throw new Error('Packed CLI help did not contain the expected identity');
   const providers = JSON.parse(run(executable, ['providers', '--json']));
   if (!Array.isArray(providers) || !providers.some((entry) => entry.id === 'openrouter')) {

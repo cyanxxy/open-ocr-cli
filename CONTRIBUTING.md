@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to Open OCR CLI.
+Thanks for contributing to Open OCR CLI, MCP server, and shared engine.
 
 ## Good First Contributions
 

@@ -51,7 +51,7 @@ guided paths.
 
 Also available as a [Docker image](packages/cli/README.md#distribution)
 (`ghcr.io/cyanxxy/open-ocr-cli`), a [GitHub Action](action.yml)
-(`cyanxxy/open-ocr-cli@v3`), and a Homebrew formula.
+(`cyanxxy/open-ocr-cli@v4`), and a Homebrew formula.
 
 ## Extraction modes
 
@@ -118,7 +118,7 @@ open-ocr-cli run --request request.json --response-format jsonl
 ```
 
 **MCP server** — `open-ocr-cli mcp` starts a stdio server exposing
-`ocr_extract`, `ocr_run_agentic`, and `ocr_web`, plus an
+`ocr_capabilities`, `ocr_extract`, `ocr_run_agentic`, and `ocr_web`, plus an
 `open-ocr://capabilities` resource. The host must open MCP revision
 `2026-07-28`; clients that use the earlier `initialize` handshake are rejected:
 
@@ -135,13 +135,16 @@ open-ocr-cli run --request request.json --response-format jsonl
 
 MCP local inputs use the same typed `{ "type": "path", "path": "…" }` objects
 as the machine protocol. Partial document results carry a typed
-`partialReason` and `nextAction`; the separate `extract --jsonl` v1 dialect is
-published through `open-ocr-cli schema jsonl-v1`.
+`partialReason` and `nextAction`. `extract --jsonl` and `run --response-format jsonl`
+share the protocol v2 lifecycle-event schema.
 
 **Agent skill** — a validated skill for Claude Code, Codex, and compatible
 agents ships at
 [`integrations/open-ocr/skills/open-ocr/SKILL.md`](integrations/open-ocr/skills/open-ocr/SKILL.md)
 and in the npm package under `skills/open-ocr/`.
+
+See [agent integration guidance](docs/agent-integrations.md) for Pi, Codex,
+Claude Agent SDK, and custom harnesses.
 
 All three are reference-first: large bodies land in `.open-ocr-results/<runId>`
 artifacts instead of flooding an agent's context, cancellation is honored, and

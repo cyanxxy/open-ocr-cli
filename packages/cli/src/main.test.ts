@@ -44,6 +44,7 @@ vi.mock('./runner', () => ({
 
 import { CliExitError, cliExitCode, ocrErrorPayload } from './errors';
 import { cliVersion, createProgram, machineFailureChannel, main } from './main';
+import { assertOcrJobEvent, type OcrJobEvent } from './protocol';
 
 const originalApiKey = process.env.GEMINI_API_KEY;
 let directory: string;
@@ -155,7 +156,7 @@ describe('CLI command exit contracts', () => {
     expect(mocks.runBatch).not.toHaveBeenCalled();
   });
 
-  it('ends a failed extract --jsonl stream with exactly one CLI-native error record', async () => {
+  it('ends a failed extract --jsonl stream with exactly one run.failed event', async () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     let thrown: unknown;
     let output: string;
@@ -174,21 +175,17 @@ describe('CLI command exit contracts', () => {
     expect(thrown).toMatchObject({ code: 'INPUT_NOT_FOUND' });
     const records = output.trim().split('\n').map((line) => JSON.parse(line) as { type: string });
     // Pre-flight rejection: discovery fails before runBatch is ever entered, so
-    // this record can only come from the command's own terminal emitter.
+    // this event can only come from the command's own terminal emitter.
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
-      type: 'error',
-      version: 1,
+      protocolVersion: 2,
+      type: 'run.failed',
+      sequence: 0,
       error: { code: 'INPUT_NOT_FOUND', category: 'input', retryable: false },
     });
-    // The terminal record belongs to the same CLI-native family as the document
-    // and summary lines. A protocol envelope here would make the failure line
-    // the only schema-valid line on an otherwise CLI-native stream.
-    expect(records[0]).not.toHaveProperty('protocolVersion');
-    expect(records[0]).not.toHaveProperty('runId');
-    expect(records[0]).not.toHaveProperty('sequence');
-    expect(records[0]).not.toHaveProperty('timestamp');
-    expect(records.map((record) => record.type)).not.toContain('run.failed');
+    // One dialect: the terminal event validates against the bundled event schema
+    // exactly as a `run --response-format jsonl` failure does.
+    expect(() => assertOcrJobEvent(records[0])).not.toThrow();
   });
 
   it('reports a mid-run fatal on the --jsonl stream without duplicating it', async () => {
@@ -218,8 +215,8 @@ describe('CLI command exit contracts', () => {
     const records = output.trim().split('\n');
     expect(records).toHaveLength(1);
     expect(JSON.parse(records[0]) as unknown).toMatchObject({
-      type: 'error',
-      version: 1,
+      type: 'run.failed',
+      sequence: 0,
       error: { code: 'OUTPUT_CONFLICT', category: 'output' },
     });
   });
@@ -229,14 +226,20 @@ describe('CLI command exit contracts', () => {
     await writeFile(input, new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]));
     // The service turns cancellation into skipped results and returns normally,
     // so the summary is written before anything downstream can fail.
-    mocks.runBatch.mockImplementationOnce((
+    mocks.runBatch.mockImplementationOnce(async (
       _inputs: unknown,
       _options: unknown,
-      runtime: { onTerminalRecord?: () => void },
+      runtime: { runId: string; eventSink?: (event: OcrJobEvent) => void | Promise<void> },
     ) => {
       process.emit('SIGINT');
-      runtime.onTerminalRecord?.();
-      return Promise.reject(new Error('Interrupted by SIGINT'));
+      await runtime.eventSink?.({
+        protocolVersion: 2,
+        type: 'run.completed',
+        runId: runtime.runId,
+        sequence: 0,
+        timestamp: new Date().toISOString(),
+      });
+      throw new Error('Interrupted by SIGINT');
     });
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     let output: string;
@@ -249,7 +252,8 @@ describe('CLI command exit contracts', () => {
       stdout.mockRestore();
     }
 
-    expect(output).toBe('');
+    const records = output.trim().split('\n').map((line) => JSON.parse(line) as { type: string });
+    expect(records.map((record) => record.type)).toEqual(['run.completed']);
     expect(process.exitCode).toBe(130);
   });
 
@@ -275,8 +279,8 @@ describe('CLI command exit contracts', () => {
     const records = output.trim().split('\n').map((line) => JSON.parse(line) as { type: string });
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
-      type: 'error',
-      version: 1,
+      type: 'run.failed',
+      sequence: 0,
       error: { code: 'CANCELLED', category: 'cancelled' },
     });
     expect(process.exitCode).toBe(130);
@@ -310,8 +314,8 @@ describe('CLI command exit contracts', () => {
     const records = output.trim().split('\n').map((line) => JSON.parse(line) as { type: string });
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
-      type: 'error',
-      version: 1,
+      type: 'run.failed',
+      sequence: 0,
       error: { code: 'CANCELLED', category: 'cancelled' },
     });
     expect(process.exitCode).toBe(130);
@@ -341,7 +345,7 @@ describe('CLI command exit contracts', () => {
   it.each([
     ['unknown option', ['extract', 'document.jpg', '--jsonl', '--totally-bogus'], 'unknown option'],
     ['missing operand', ['extract', '--jsonl'], 'missing required argument'],
-  ])('ends a --jsonl run rejected by the parser (%s) with one error record', async (
+  ])('ends a --jsonl run rejected by the parser (%s) with one run.failed event', async (
     _label: string,
     args: string[],
     expectedMessage: string,
@@ -363,8 +367,9 @@ describe('CLI command exit contracts', () => {
     });
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
-      type: 'error',
-      version: 1,
+      protocolVersion: 2,
+      type: 'run.failed',
+      sequence: 0,
       error: { code: 'CONFIG_INVALID', category: 'configuration', retryable: false },
     });
     expect(records[0].error.message).toContain(expectedMessage);
@@ -392,25 +397,23 @@ describe('CLI command exit contracts', () => {
 
   it('classifies the machine channel a failed parse still owes a record to', () => {
     const channel = (...args: string[]) => machineFailureChannel(['node', 'open-ocr-cli', ...args]);
-    expect(channel('extract', 'a.png', '--jsonl', '--bogus')).toEqual({ command: 'extract' });
-    expect(channel('extract', '--jsonl', '-')).toEqual({ command: 'extract' });
+    expect(channel('extract', 'a.png', '--jsonl', '--bogus')).toBe('jsonl');
+    expect(channel('extract', '--jsonl', '-')).toBe('jsonl');
     expect(channel('extract', 'a.png')).toBeUndefined();
     expect(channel('bogus-command', '--jsonl')).toBeUndefined();
     // After `--` every token is an operand, so a file literally named --jsonl
     // is an input, not a request for the stream.
     expect(channel('extract', '--', '--jsonl')).toBeUndefined();
 
-    // `run` always promises a machine payload; only the dialect varies. It must
-    // never borrow the extract record family — `--jsonl` there is not a flag.
-    expect(channel('run', '--request', 'r.json')).toEqual({ command: 'run', responseFormat: 'json' });
-    expect(channel('run', '--request', 'r.json', '--jsonl')).toEqual({ command: 'run', responseFormat: 'json' });
-    expect(channel('run', '--request', 'r.json', '--response-format', 'jsonl'))
-      .toEqual({ command: 'run', responseFormat: 'jsonl' });
-    expect(channel('run', '--request', 'r.json', '--response-format=jsonl'))
-      .toEqual({ command: 'run', responseFormat: 'jsonl' });
+    // `run` always promises a machine payload; only the format varies, and
+    // `--jsonl` is not one of its flags.
+    expect(channel('run', '--request', 'r.json')).toBe('json');
+    expect(channel('run', '--request', 'r.json', '--jsonl')).toBe('json');
+    expect(channel('run', '--request', 'r.json', '--response-format', 'jsonl')).toBe('jsonl');
+    expect(channel('run', '--request', 'r.json', '--response-format=jsonl')).toBe('jsonl');
     // An unparseable value falls back to the command's own default rather than
-    // guessing a dialect `run` would never have emitted.
-    expect(channel('run', '--response-format', 'bogus')).toEqual({ command: 'run', responseFormat: 'json' });
+    // guessing a format `run` would never have emitted.
+    expect(channel('run', '--response-format', 'bogus')).toBe('json');
   });
 
   it('ends a failed run parse with one protocol record on stdout', async () => {
@@ -792,10 +795,6 @@ describe('agent machine commands', () => {
       const schema = JSON.parse(stdout.mock.calls.flat().join('')) as { $id: string };
       expect(schema.$id).toContain('request-v2.schema.json');
 
-      stdout.mockClear();
-      await createProgram().parseAsync(['node', 'open-ocr-cli', 'schema', 'jsonl-v1']);
-      const jsonlSchema = JSON.parse(stdout.mock.calls.flat().join('')) as { $id: string };
-      expect(jsonlSchema.$id).toContain('jsonl-v1.schema.json');
 
     } finally {
       stdout.mockRestore();

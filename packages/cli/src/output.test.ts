@@ -3,8 +3,6 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 
-import Ajv2020 from 'ajv/dist/2020.js';
-import addFormats from 'ajv-formats';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveCliOptions } from './config';
@@ -12,18 +10,13 @@ import {
   assertArtifactTargetsAvailable,
   assertNoOutputCollisions,
   BatchOutputLock,
-  jsonlResult,
-  jsonlRunError,
-  jsonlSummary,
-  JSONL_STREAM_VERSION,
   ManifestStore,
   plannedArtifactTargets,
   primaryArtifact,
   writeArtifacts,
   writeBatchSummary,
 } from './output';
-import { OCR_PROTOCOL_SCHEMAS } from './protocol';
-import type { BatchSummary, OcrArtifacts, OcrJobResult, ResolvedCliOptions, ResolvedInput } from './types';
+import type { BatchSummary, OcrArtifacts, ResolvedCliOptions, ResolvedInput } from './types';
 
 let directory: string;
 let options: ResolvedCliOptions;
@@ -521,124 +514,5 @@ describe('CLI output', () => {
     } finally {
       rename.mockRestore();
     }
-  });
-});
-
-describe('extract --jsonl stream dialect', () => {
-  const jobResult: OcrJobResult = {
-    status: 'succeeded',
-    input,
-    mode: 'simple',
-    model: 'gemini-3.5-flash',
-    startedAt: '2026-07-15T00:00:00.000Z',
-    completedAt: '2026-07-15T00:00:01.000Z',
-    durationMs: 1000,
-    artifacts: { markdown: '# invoice' },
-    outputFiles: ['/workspace/out/invoice.md'],
-    attempts: 1,
-  };
-  const summary: BatchSummary = {
-    version: 1,
-    startedAt: '2026-07-15T00:00:00.000Z',
-    completedAt: '2026-07-15T00:00:01.000Z',
-    durationMs: 1000,
-    total: 1,
-    succeeded: 1,
-    partial: 0,
-    failed: 0,
-    skipped: 0,
-    mode: 'simple',
-    model: 'gemini-3.5-flash',
-    usage: {
-      requests: 1,
-      inputTokens: 10,
-      outputTokens: 5,
-      thoughtTokens: 0,
-      toolTokens: 0,
-      cachedTokens: 0,
-      totalTokens: 15,
-      estimatedCostUsd: 0.0001,
-    },
-    costLimitReached: false,
-    results: [jobResult],
-  };
-  const stream = (): Array<Record<string, unknown>> => [
-    jsonlResult(jobResult),
-    jsonlSummary(summary),
-    jsonlRunError({
-      code: 'INPUT_NOT_FOUND',
-      category: 'input',
-      message: 'Input does not exist: missing.png',
-      retryable: false,
-      hint: 'Check the input path and working directory.',
-    }),
-  ].map((line) => JSON.parse(line) as Record<string, unknown>);
-
-  it('versions every record on one scheme', () => {
-    // A stream whose records version independently cannot be evolved as a unit:
-    // a consumer would have to track three result shapes to read one
-    // file. `summary` inherits its version from BatchSummary, so this also pins
-    // that field to the stream version rather than letting the two drift.
-    expect(stream().map((record) => record.type)).toEqual(['document', 'summary', 'error']);
-    for (const record of stream()) expect(record.version).toBe(JSONL_STREAM_VERSION);
-  });
-
-  it('publishes a schema that validates every direct JSONL record shape', () => {
-    const ajv = new Ajv2020({ strict: true, strictRequired: false });
-    addFormats(ajv);
-    ajv.addSchema(OCR_PROTOCOL_SCHEMAS.error);
-    const validate = ajv.compile(OCR_PROTOCOL_SCHEMAS['jsonl-v1']);
-    for (const record of stream()) expect(validate(record), JSON.stringify(validate.errors)).toBe(true);
-
-    const partial = JSON.parse(jsonlResult({
-      ...jobResult,
-      status: 'partial',
-      partialReason: 'max_iterations',
-      nextAction: 'increase_max_iterations',
-    })) as Record<string, unknown>;
-    expect(validate(partial), JSON.stringify(validate.errors)).toBe(true);
-    delete partial.partialReason;
-    expect(validate(partial)).toBe(false);
-  });
-
-  it('carries no protocol envelope on any record', () => {
-    // The defect this guards: a protocol-shaped terminal record made schema
-    // validity anti-correlated with success — a strict validator rejected every
-    // line of a successful run and accepted the single line of a failed one.
-    for (const record of stream()) {
-      for (const field of ['protocolVersion', 'runId', 'sequence', 'timestamp']) {
-        expect(record).not.toHaveProperty(field);
-      }
-    }
-  });
-
-  it('keeps its type vocabulary disjoint from the run protocol events', () => {
-    // Both streams discriminate on `type`. Overlapping values would make that
-    // discriminator ambiguous, so a consumer could not tell a CLI record from a
-    // protocol event without first knowing which command produced the file.
-    const protocolTypes = new Set<string>(OCR_PROTOCOL_SCHEMAS['event-v2'].properties.type.enum);
-    for (const record of stream()) {
-      expect(protocolTypes.has(record.type as string)).toBe(false);
-    }
-  });
-
-  it('gives the terminal error record the same typed contract as every other surface', () => {
-    const [, , failure] = stream();
-    expect(failure.error).toEqual({
-      code: 'INPUT_NOT_FOUND',
-      category: 'input',
-      message: 'Input does not exist: missing.png',
-      retryable: false,
-      hint: 'Check the input path and working directory.',
-    });
-  });
-
-  it('drops the per-document results from the summary record', () => {
-    // The summary has to stay a bounded single line; a batch of thousands must
-    // not inline every document into it.
-    expect(jsonlSummary(summary)).not.toContain('"results"');
-    expect(JSON.parse(jsonlSummary(summary)) as Record<string, unknown>).toMatchObject({
-      discovery: { unsupported: 0, defaultExcluded: 0 },
-    });
   });
 });

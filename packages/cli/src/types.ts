@@ -1,4 +1,4 @@
-import type { AgentMemory, AgentStep } from '@open-ocr/engine/agentTypes';
+import type { AgentStep, AgentStopReason, NormalizedRegion } from '@open-ocr/engine/agentTypes';
 import type {
   ExtractedContent,
   JsonValue,
@@ -93,11 +93,17 @@ export interface ExtractCommandFlags {
   model?: string;
   thinking?: string;
   progress?: string;
-  concurrency?: string;
-  retries?: string;
-  timeout?: string;
-  maxFiles?: string;
-  maxTotalMb?: string;
+  /**
+   * Numeric options arrive as strings from Commander and as numbers from a
+   * validated protocol request. Accepting both spares the machine path a
+   * number → string → number round trip that only existed to satisfy the
+   * flag-shaped type.
+   */
+  concurrency?: string | number;
+  retries?: string | number;
+  timeout?: string | number;
+  maxFiles?: string | number;
+  maxTotalMb?: string | number;
   exclude?: string[];
   instruction?: string[];
   hidden?: boolean;
@@ -114,14 +120,43 @@ export interface ExtractCommandFlags {
   stdinType?: string;
   detectImages?: boolean;
   detectMath?: boolean;
-  maxTokens?: string;
-  maxIterations?: string;
-  confidenceThreshold?: string;
+  maxTokens?: string | number;
+  maxIterations?: string | number;
+  confidenceThreshold?: string | number;
   schema?: string;
   /** Internal machine-adapter signal for an already-validated in-memory schema. */
   customSchema?: boolean;
-  maxCost?: string;
-  requestsPerMinute?: string;
+  maxCost?: string | number;
+  requestsPerMinute?: string | number;
+}
+
+/**
+ * The JSON artifact an agentic run produces.
+ *
+ * This is a protocol shape (`result-v2.schema.json#/$defs/agenticResult`), not
+ * the engine's `AgentMemory`. The engine type carries session IDs, timestamps,
+ * and the raw processing history, and it changes with the engine; writing it
+ * verbatim made an internal type the artifact contract. The step trace is
+ * still available as the `agent-steps` artifact under `contentFormat: "all"`.
+ */
+export interface AgenticExtractionField {
+  value: string;
+  confidence: number;
+  valid?: boolean;
+  validationMessage?: string;
+  validationRule?: string;
+  location?: NormalizedRegion;
+}
+
+export interface AgenticExtractionResult {
+  documentType: string;
+  pageCount: number;
+  complexity: 'low' | 'medium' | 'high';
+  specialFeatures: string[];
+  confidence: number;
+  iterations: number;
+  stopReason: AgentStopReason;
+  fields: Record<string, AgenticExtractionField>;
 }
 
 export interface ResolvedCliOptions {
@@ -194,7 +229,7 @@ export interface ResolvedInput {
 
 export interface OcrArtifacts {
   markdown?: string;
-  json?: ExtractedContent | PresetStructuredOutput | AgentMemory | JsonValue;
+  json?: ExtractedContent | PresetStructuredOutput | AgenticExtractionResult | JsonValue;
   csv?: string;
   agentSteps?: AgentStep[];
 }

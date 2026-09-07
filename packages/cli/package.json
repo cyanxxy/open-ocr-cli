@@ -1,6 +1,6 @@
 {
   "name": "open-ocr-cli",
-  "version": "3.0.1",
+  "version": "4.0.0",
   "description": "Agent-first, provider-neutral multimodal OCR CLI for images, PDFs, URLs, JSON schemas, and agentic extraction with Gemini, Kimi, Muse, and OpenRouter.",
   "license": "MIT",
   "type": "module",
@@ -59,7 +59,7 @@
     ]
   },
   "devDependencies": {
-    "@open-ocr/engine": "3.0.1",
+    "@open-ocr/engine": "4.0.0",
     "@types/html-to-text": "^9.0.4",
     "tsup": "^8.5.1",
     "typescript": "^5.8.3"
@@ -72,7 +72,7 @@
     "ajv-formats": "^3.0.1",
     "commander": "^14.0.3",
     "fast-glob": "^3.3.3",
-    "html-to-text": "^10.0.0",
+    "html-to-text": "^10.0.1",
     "ipaddr.js": "^2.4.0",
     "pdfjs-dist": "^6.2.108",
     "sharp": "^0.35.3",

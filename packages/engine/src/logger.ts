@@ -59,29 +59,10 @@ class Logger {
     const timestamp = new Date().toISOString();
     const prefix = `[${timestamp}] [${level}]`;
     
-    // In development, use console methods directly
-    if (this.isDevelopment) {
-      switch (level) {
-        case 'ERROR':
-          console.error(prefix, message, ...args);
-          break;
-        case 'WARN':
-          console.warn(prefix, message, ...args);
-          break;
-        case 'INFO':
-          console.info(prefix, message, ...args);
-          break;
-        case 'DEBUG':
-          console.log(prefix, message, ...args);
-          break;
-      }
-    } else if (this.config.enableInProduction) {
-      // In production, could send to monitoring service instead
-      // For now, just use console.log with sanitized output
-      console.log(prefix, message, ...args.map(arg => 
-        arg instanceof Error ? this.sanitizeError(arg) : arg
-      ));
-    }
+    // stdout is reserved for CLI results and MCP frames in every environment.
+    console.error(prefix, message, ...args.map(arg =>
+      arg instanceof Error ? this.sanitizeError(arg) : arg
+    ));
   }
 
   error(message: string, error?: unknown, ...args: unknown[]): void {

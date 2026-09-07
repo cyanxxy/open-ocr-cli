@@ -12,7 +12,6 @@ import {
   OcrJobService,
   type OcrDocumentExtractor,
 } from './ocrJobService';
-import { jsonlResult } from './output';
 import type { OcrJobEvent } from './protocol';
 import type { OcrJobResult } from './types';
 
@@ -75,6 +74,70 @@ afterEach(async () => {
 });
 
 describe('OcrJobService', () => {
+  it('does not start extraction when cancelled by the document-start event', async () => {
+    const documentPath = path.join(directory, 'cancel.jpg');
+    await writeFile(documentPath, JPEG_BYTES);
+    const options = { ...resolveCliOptions({ dryRun: true }, {}, directory), dryRun: false };
+    const inputs = await discoverInputs([documentPath], options);
+    const extractDocument = vi.fn<OcrDocumentExtractor>();
+    const abortController = new AbortController();
+    const execution = await new OcrJobService({ extractDocument }).run(inputs, options, {
+      runId: 'cancel-at-start',
+      deliveryMode: 'inline',
+      abortController,
+      eventSink: (event) => {
+        if (event.type === 'document.started') abortController.abort(new Error('cancelled'));
+      },
+    });
+    expect(extractDocument).not.toHaveBeenCalled();
+    expect(execution.result.status).toBe('cancelled');
+    expect(execution.result.documents).toHaveLength(1);
+  });
+
+  it('joins active workers before releasing the output lock on an event failure', async () => {
+    const paths = ['first.jpg', 'second.jpg'].map((name) => path.join(directory, name));
+    await Promise.all(paths.map((file) => writeFile(file, JPEG_BYTES)));
+    const options = {
+      ...resolveCliOptions({ dryRun: true }, {}, directory),
+      dryRun: false,
+      concurrency: 2,
+      output: path.join(directory, 'output'),
+    };
+    const inputs = await discoverInputs(paths, options);
+    let started!: () => void;
+    const secondStarted = new Promise<void>((resolve) => { started = resolve; });
+    let finish!: () => void;
+    const secondFinished = new Promise<void>((resolve) => { finish = resolve; });
+    let aborted!: () => void;
+    const secondAborted = new Promise<void>((resolve) => { aborted = resolve; });
+    const extractDocument: OcrDocumentExtractor = async (input, _options, signal) => {
+      if (input.absolutePath === paths[1]) {
+        signal.addEventListener('abort', aborted, { once: true });
+        started();
+        await secondFinished;
+      } else {
+        await secondStarted;
+      }
+      return { artifacts: { markdown: 'extracted' }, attempts: 1 };
+    };
+    const run = new OcrJobService({ extractDocument }).run(inputs, options, {
+      runId: 'join-workers',
+      abortController: new AbortController(),
+      eventSink: (event) => {
+        if (event.type === 'document.completed') throw new Error('sink failed');
+      },
+    });
+    const outcome = run.then(() => undefined, (error: unknown) => error);
+    try {
+      await secondAborted;
+      expect(await readdir(options.output)).toContain('.open-ocr.lock');
+    } finally {
+      finish();
+    }
+    expect(await outcome).toBeInstanceOf(Error);
+    expect(await readdir(options.output)).not.toContain('.open-ocr.lock');
+  });
+
   it('runs independently of terminal I/O and emits ordered reference-first events', async () => {
     const documentPath = path.join(directory, 'document.jpg');
     const outputDirectory = path.join(directory, 'artifacts');
@@ -336,9 +399,8 @@ describe('OcrJobService', () => {
     // The provider's sentence still arrives; only the credential is replaced.
     expect(result.error).toBe('Provider rejected request for key [REDACTED_KEY] [INVALID_ARGUMENT]');
     expectOneFailureSource(execution.summary.results);
-    // Each persisted sink, read back as bytes: the `--jsonl` document record,
-    // the resume manifest, and the batch summary.
-    expect(jsonlResult(result)).not.toContain(ECHOED_KEY);
+    // Each persisted sink, read back as bytes: the resume manifest and the
+    // batch summary.
     const [manifest, summary] = await Promise.all([
       readFile(path.join(outputDirectory, '.open-ocr-manifest.json'), 'utf8'),
       readFile(path.join(outputDirectory, 'batch-summary.json'), 'utf8'),

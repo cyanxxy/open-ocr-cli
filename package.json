@@ -1,7 +1,7 @@
 {
   "name": "open-ocr-workspace",
   "private": true,
-  "version": "3.0.1",
+  "version": "4.0.0",
   "description": "Provider-neutral multimodal OCR engine, CLI, and MCP server for images, PDFs, URLs, JSON schemas, and agentic extraction.",
   "license": "MIT",
   "type": "module",
@@ -41,7 +41,7 @@
   ],
   "overrides": {
     "esbuild": "^0.28.1",
-    "fast-uri": "3.1.5"
+    "fast-uri": "3.1.6"
   },
   "scripts": {
     "lint": "eslint .",

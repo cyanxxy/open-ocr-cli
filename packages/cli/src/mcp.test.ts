@@ -208,19 +208,15 @@ describe('Open OCR MCP server', () => {
         supportedVersions: ['2026-07-28'],
         resultType: 'complete',
         ttlMs: 3_600_000,
-        cacheScope: 'public',
+        cacheScope: 'private',
       });
 
       const tools = await request(2, 'tools/list', { _meta: modernMeta() });
       expect(tools.result).toMatchObject({ ttlMs: 3_600_000, cacheScope: 'public' });
-      const listed = tools.result?.tools as Array<{
-        name: string;
-        inputSchema?: { properties?: { inputs?: { items?: { properties?: Record<string, unknown> } } } };
-        outputSchema?: { type?: string };
-      }>;
-      expect(listed.map((tool) => tool.name)).toEqual(['ocr_extract', 'ocr_run_agentic', 'ocr_web']);
+      const listed = tools.result?.tools as Array<{ name: string; inputSchema?: { properties?: { inputs?: { items?: { properties?: Record<string, unknown> } } } }; outputSchema?: { type?: string } }>;
+      expect(listed.map((tool) => tool.name)).toEqual(['ocr_capabilities', 'ocr_extract', 'ocr_run_agentic', 'ocr_web']);
       expect(listed.every((tool) => tool.outputSchema?.type === 'object')).toBe(true);
-      expect(listed[0]?.inputSchema?.properties?.inputs?.items?.properties).toMatchObject({
+      expect(listed.find((tool) => tool.name === 'ocr_extract')?.inputSchema?.properties?.inputs?.items?.properties).toMatchObject({
         type: { const: 'path' },
         path: { type: 'string' },
       });
@@ -236,7 +232,6 @@ describe('Open OCR MCP server', () => {
       'tools/list',
       'resources/list',
       'resources/templates/list',
-      'server/discover',
     ])('advertises %s as cacheable rather than taking the uncacheable default', async (method) => {
       const { request } = await driveServer(process.cwd());
 
@@ -269,7 +264,7 @@ describe('Open OCR MCP server', () => {
       // Proof the guard is not merely slow: a later request still gets served,
       // so nothing consumed the channel.
       const tools = await request(2, 'tools/list', { _meta: modernMeta() });
-      expect((tools.result?.tools as unknown[]).length).toBe(3);
+      expect((tools.result?.tools as unknown[]).length).toBe(4);
     });
 
     it('refuses an unrecognized tool argument instead of dropping it', async () => {
@@ -301,10 +296,63 @@ describe('Open OCR MCP server', () => {
 
       const progress = notifications.filter((message) => message.method === 'notifications/progress');
       expect(progress.length).toBeGreaterThan(0);
-      expect(progress[0].params).toMatchObject({ progressToken: 'p1' });
-      // Sequence-derived and monotonic, so a client can order them.
+      expect(progress[0].params).toMatchObject({ progressToken: 'p1', progress: 0, total: 1 });
+      // Strictly increasing, as the spec requires, and bounded by the document
+      // count so a client can draw it rather than watch a counter grow.
+      expect(progress.every((message) => {
+        const params = message.params as { progress: number; total: number };
+        return params.progress <= params.total;
+      })).toBe(true);
       const values = progress.map((message) => (message.params as { progress: number }).progress);
-      expect(values).toEqual([...values].sort((left, right) => left - right));
+      for (let index = 1; index < values.length; index += 1) expect(values[index]).toBeGreaterThan(values[index - 1]);
+      expect(values.at(-1)).toBe(1);
+      expect(values.every((value) => value <= 1)).toBe(true);
+    });
+
+    it('serves capabilities as a tool and names the working directory', async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-mcp-capabilities-'));
+      cleanupPaths.push(directory);
+      const { request } = await driveServer(directory);
+
+      // A resource is application-driven and many hosts never show it to the
+      // model; a tool is model-controlled. The working directory is what a
+      // relative tool-argument path resolves against, and nothing else in the
+      // revision tells the client what it is now that roots are deprecated.
+      const reply = await request(1, 'tools/call', { name: 'ocr_capabilities', arguments: {}, _meta: modernMeta() });
+      expect(reply.error).toBeUndefined();
+      expect(reply.result?.isError).toBeUndefined();
+      expect(reply.result?.structuredContent).toMatchObject({
+        workingDirectory: directory,
+        capabilities: { protocolVersion: 2, limits: { request: { concurrency: { min: 1, max: 16 } } } },
+      });
+      const discover = await request(2, 'server/discover', { _meta: modernMeta() });
+      expect(discover.result?.instructions).toContain(directory);
+    });
+
+    it('carries warnings in the result rather than only on stderr', async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), 'open-ocr-mcp-warnings-'));
+      cleanupPaths.push(directory);
+      await writeFile(path.join(directory, 'scan.jpg'), JPEG_BYTES);
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const { request } = await driveServer(directory);
+        const reply = await request(1, 'tools/call', {
+          name: 'ocr_extract',
+          arguments: {
+            inputs: [{ type: 'path', path: 'scan.jpg' }], mode: 'template', preset: 'invoice', detectMath: true,
+            dryRun: true, noConfig: true, delivery: 'inline',
+          },
+          _meta: modernMeta(),
+        });
+        // A host may not forward stderr, and the skill tells agents not to
+        // parse it; the ignored field has to be in the result the model reads.
+        const structured = reply.result?.structuredContent as { warnings: string[] };
+        expect(structured.warnings).toEqual([
+          'ignoring option(s) that template mode does not use: extraction.detectMath',
+        ]);
+      } finally {
+        stderr.mockRestore();
+      }
     });
 
     it('diagnoses the removed initialize handshake instead of contradicting its revision', async () => {
@@ -327,7 +375,7 @@ describe('Open OCR MCP server', () => {
 
       const tools = await request(2, 'tools/list', { _meta: modernMeta() });
       expect(tools.error).toBeUndefined();
-      expect((tools.result?.tools as unknown[]).length).toBe(3);
+      expect((tools.result?.tools as unknown[]).length).toBe(4);
     });
 
     it('pins the reusable server factory to 2026-07-28', async () => {
@@ -522,36 +570,29 @@ describe('Open OCR MCP server', () => {
       });
     });
 
-    it('refuses with a typed error when a modern client cannot be prompted', async () => {
+    it.each([
+      ['no elicitation at all', {}],
+      ['URL elicitation only', { elicitation: { url: {} } }],
+    ])('answers -32021 naming form elicitation when a modern client cannot be prompted (%s)', async (
+      _label,
+      capabilities,
+    ) => {
       vi.stubEnv('OPEN_OCR_MCP_CONFIRM', '1');
       const { request } = await driveServer(process.cwd());
 
-      // Capabilities live on the per-request envelope in this revision.
+      // The base protocol names this outcome: a server that needs a capability
+      // the client did not declare MUST answer MissingRequiredClientCapability
+      // listing it. A tool-level failure told the model to fix its arguments,
+      // which is not where the problem is.
       const refused = await request(1, 'tools/call', {
         name: 'ocr_web',
         arguments: { urls: ['https://example.com/report'], noConfig: true },
-        _meta: modernMeta({}),
+        _meta: modernMeta(capabilities),
       });
-      expect(refused.error).toBeUndefined();
-      expect(refused.result?.structuredContent).toMatchObject({
-        ok: false,
-        error: { code: 'CONFIG_INVALID' },
-      });
-    });
-
-    it('refuses with a typed error when a modern client supports URL elicitation only', async () => {
-      vi.stubEnv('OPEN_OCR_MCP_CONFIRM', '1');
-      const { request } = await driveServer(process.cwd());
-
-      const refused = await request(1, 'tools/call', {
-        name: 'ocr_web',
-        arguments: { urls: ['https://example.com/report'], noConfig: true },
-        _meta: modernMeta({ elicitation: { url: {} } }),
-      });
-      expect(refused.error).toBeUndefined();
-      expect(refused.result?.structuredContent).toMatchObject({
-        ok: false,
-        error: { code: 'CONFIG_INVALID' },
+      expect(refused.result).toBeUndefined();
+      expect(refused.error).toMatchObject({
+        code: -32021,
+        data: { requiredCapabilities: { elicitation: { form: {} } } },
       });
     });
 
